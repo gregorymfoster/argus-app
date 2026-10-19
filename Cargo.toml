@@ -1,0 +1,21 @@
+[workspace]
+members = ["engine", "cli"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+debug = false
+# No LTO, many codegen units and incremental, like `fast` (2026-10-18, 4-core cloud): after an
+# engine change the release cli rebuilt in 6 s instead of 182 s with thin LTO, and `just speed`
+# was equal or faster on every metric. app/Cargo.toml mirrors this. See docs/agents/build-speed.md.
+lto = false
+codegen-units = 256
+incremental = true
+
+# `just check`, `just render` and tests. Same settings as release now; kept as its own target
+# folder so test builds and shipped builds don't evict each other.
+[profile.fast]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 256

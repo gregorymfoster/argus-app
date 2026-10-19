@@ -1,0 +1,17 @@
+{
+  "name": "argus-app",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:debug": "tauri build --debug --no-bundle",
+    "e2e": "tauri build --debug --no-bundle && node scripts/e2e.mjs",
+    "e2e:quick": "tauri build --debug --no-bundle && E2E_QUICK=1 node scripts/e2e.mjs",
+    "icons": "tauri icon icons/source.png -o icons"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0"
+  }
+}

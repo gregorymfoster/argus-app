@@ -1,0 +1,31 @@
+[package]
+name = "argus-app"
+version = "0.0.1"
+edition = "2021"
+description = "Argus desktop app: the Tauri 2 shell over the engine's commands"
+
+# Kept out of the root workspace so `just check` stays fast and needs no WebKit.
+[workspace]
+
+[[bin]]
+name = "argus-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+argus-engine = { path = "../engine" }
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Same as the root workspace's release profile (no LTO, incremental): see the note there.
+[profile.release]
+opt-level = 3
+debug = false
+lto = false
+codegen-units = 256
+incremental = true

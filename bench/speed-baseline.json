@@ -1,0 +1,22 @@
+{
+  "linux-x86_64-4cores": {
+    "decode_ms[ILCE-7RM2]": 99.4,
+    "decode_ms[ILCE-7RM5]": 129.4,
+    "edit_open_ms": 222.6,
+    "edit_slider_ms": 27.0,
+    "import_ms_per_photo": 55.2,
+    "preview_kb": 328.3,
+    "previews_ms_per_photo[full]": 195.6,
+    "previews_ms_per_photo[gentle]": 400.8
+  },
+  "macos-aarch64-16cores": {
+    "decode_ms[ILCE-7RM2]": 43.5,
+    "decode_ms[ILCE-7RM5]": 42.2,
+    "edit_open_ms": 23.0,
+    "edit_slider_ms": 7.4,
+    "import_ms_per_photo": 20.2,
+    "preview_kb": 328.3,
+    "previews_ms_per_photo[full]": 20.8,
+    "previews_ms_per_photo[gentle]": 403.9
+  }
+}

@@ -1,0 +1,13 @@
+#!/usr/bin/env perl
+# Portable `timeout SECONDS CMD...` for Greg's Mac, which has no coreutils `timeout`.
+# Exits 124 when the time limit kills the command, like GNU timeout.
+# e.g. scripts/timeout 600 cargo build --release -p argus-cli
+use strict; use warnings;
+die "usage: timeout SECONDS CMD...\n" unless @ARGV >= 2;
+my $secs = shift;
+my $pid = fork() // die "fork: $!\n";
+if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"; }
+local $SIG{ALRM} = sub { kill 'TERM', -$pid; sleep 2; kill 'KILL', -$pid; exit 124; };
+alarm $secs;
+waitpid($pid, 0);
+exit($? & 127 ? 128 + ($? & 127) : $? >> 8);

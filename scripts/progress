@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Run a long step with progress, heartbeats and a stall watchdog, so nothing hangs silently.
+
+    scripts/progress NAME [--stall SECS] [--timeout SECS] [--every SECS] -- CMD ARGS...
+    scripts/progress status          one line per step: state, elapsed, ETA, last output
+
+The command's output passes through unchanged (stdout stays stdout, stderr stays stderr)
+and is also appended, timestamped, to out/logs/NAME.log. out/logs/NAME.status is one line,
+rewritten at every heartbeat: an agent checks a step with `scripts/progress status` (or
+`cat out/logs/*.status`) at most every 5 minutes instead of re-reading a whole log.
+
+Heartbeat: every --every seconds (default 60) a `[progress NAME]` line on stderr says how
+long it has run, how long since the last output, done/total and the ETA when known.
+ETA comes from `::progress DONE/TOTAL [label]` lines the command prints, else from how long
+the last successful run of NAME took (out/logs/durations.json).
+Watchdog: no output for --stall seconds (default 900) kills the command's process group
+and exits 124, like `timeout` (--stall 0 turns it off); --timeout caps the whole run the same way.
+Exit code is the command's own. Python 3.9+ stdlib only (Greg's Mac has 3.9).
+"""
+import json, os, re, selectors, signal, subprocess, sys, time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGS = os.environ.get("ARGUS_PROGRESS_DIR") or os.path.join(ROOT, "out", "logs")
+MARK = re.compile(rb"::progress\s+(\d+)\s*/\s*(\d+)\s*(.*)")
+
+
+def fmt(s):
+    s = int(max(s, 0))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def durations():
+    try:
+        with open(os.path.join(LOGS, "durations.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def status():
+    now = time.time()
+    names = sorted(n for n in os.listdir(LOGS) if n.endswith(".status")) if os.path.isdir(LOGS) else []
+    if not names:
+        print("progress: no steps recorded in", LOGS)
+    for n in names:
+        try:
+            with open(os.path.join(LOGS, n)) as f:
+                s = json.load(f)
+        except (OSError, ValueError):
+            continue
+        state = s["state"]
+        if state == "running":
+            try:
+                os.kill(s["pid"], 0)
+                alive = True
+            except PermissionError:
+                alive = True
+            except OSError:
+                alive = False
+            if not alive or now - s["updated"] > 3 * s["every"] + 5:
+                state = "DEAD? (no heartbeat since %s ago)" % fmt(now - s["updated"])
+        age = "" if s["state"] == "running" else f", ended {fmt(now - s['updated'])} ago"
+        print(f"{n[:-7]}: {state}, {s['line']}{age}")
+
+
+def main(argv):
+    if argv[:1] == ["status"]:
+        return status() or 0
+    if "--" not in argv or argv.index("--") < 1 or argv.index("--") == len(argv) - 1:
+        sys.exit(__doc__)
+    opts, cmd = argv[: argv.index("--")], argv[argv.index("--") + 1 :]
+    name, stall, limit, every = opts[0], 900.0, 0.0, 60.0
+    it = iter(opts[1:])
+    for o in it:
+        v = float(next(it))
+        if o == "--stall": stall = v
+        elif o == "--timeout": limit = v
+        elif o == "--every": every = v
+        else: sys.exit(f"progress: unknown option {o}")
+
+    os.makedirs(LOGS, exist_ok=True)
+    log = open(os.path.join(LOGS, name + ".log"), "ab")
+    status_path = os.path.join(LOGS, name + ".status")
+    prev = durations().get(name)
+    start = last_out = time.time()
+    done = total = None
+    label = last_line = ""
+
+    env = dict(os.environ, PYTHONUNBUFFERED="1")  # a piped Python child would otherwise go quiet
+    child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True)
+    log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {name}: {' '.join(cmd)}\n".encode())
+
+    def summary(state):
+        now = time.time()
+        el = now - start
+        parts = [f"{fmt(el)} elapsed"]
+        if total:
+            parts.append(f"{done}/{total}{' ' + label if label else ''}")
+            if done:
+                parts.append(f"ETA {fmt(el / done * (total - done))}")
+        elif prev and state == "running":
+            parts.append(f"ETA ~{fmt(prev - el)} (last run {fmt(prev)})" if el < prev else f"over last run's {fmt(prev)}")
+        if state == "running":
+            parts.append(f"last output {fmt(now - last_out)} ago")
+        if last_line:
+            parts.append(repr(last_line[:120]))
+        return ", ".join(parts)
+
+    def write_status(state):
+        tmp = status_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"state": state, "pid": child.pid, "cmd": cmd, "start": start,
+                       "updated": time.time(), "every": every, "line": summary(state)}, f)
+        os.replace(tmp, status_path)
+
+    def kill(why):
+        msg = f"[progress {name}] {why}: killing it ({summary('running')})"
+        print(msg, file=sys.stderr, flush=True)
+        log.write((msg + "\n").encode())
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(child.pid, sig)
+            except OSError:
+                pass
+            try:
+                child.wait(5)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+
+    def interrupt(*_):
+        raise KeyboardInterrupt
+    for sig in (signal.SIGTERM, signal.SIGHUP):  # e.g. scripts/timeout killing our group: take the child with us
+        signal.signal(sig, interrupt)
+
+    sel = selectors.DefaultSelector()
+    for stream, out in ((child.stdout, sys.stdout.buffer), (child.stderr, sys.stderr.buffer)):
+        os.set_blocking(stream.fileno(), False)
+        sel.register(stream, selectors.EVENT_READ, (out, bytearray()))
+    write_status("running")
+    next_beat, killed, exited = start + every, None, None
+
+    def on_line(raw):
+        nonlocal done, total, label, last_line
+        ts = time.strftime("%H:%M:%S ").encode()
+        log.write(ts + raw + (b"" if raw.endswith(b"\n") else b"\n"))
+        text = raw.rstrip(b"\r\n")
+        m = MARK.search(text)
+        if m:
+            done, total, label = int(m[1]), int(m[2]), m[3].decode(errors="replace").strip()
+        if text.strip():
+            last_line = text.decode(errors="replace").strip()
+
+    try:
+        while sel.get_map():
+            for key, _ in sel.select(timeout=1.0):
+                out, buf = key.data
+                chunk = key.fileobj.read()
+                if not chunk:
+                    sel.unregister(key.fileobj)
+                    if buf:
+                        on_line(bytes(buf))
+                    continue
+                out.write(chunk)
+                out.flush()
+                last_out = time.time()
+                buf += chunk
+                *lines, rest = re.split(rb"(?<=[\n\r])", bytes(buf))
+                buf[:] = rest
+                for l in lines:
+                    on_line(l)
+            now = time.time()
+            if child.poll() is not None:  # exited, but a background grandchild may hold the pipes
+                exited = exited or now
+                if now - exited > 2:
+                    break
+            if stall and now - last_out > stall:
+                killed = f"no output for {fmt(now - last_out)} (stall limit {fmt(stall)})"
+            elif limit and now - start > limit:
+                killed = f"ran past its {fmt(limit)} limit"
+            if killed:
+                kill(killed)
+                break
+            if now >= next_beat:
+                next_beat = now + every
+                beat = f"[progress {name}] {summary('running')}"
+                print(beat, file=sys.stderr, flush=True)
+                log.write((time.strftime("%H:%M:%S ") + beat + "\n").encode())
+                log.flush()
+                write_status("running")
+    except KeyboardInterrupt:
+        kill("interrupted")
+        killed = "interrupted"
+    code = child.wait()
+    if killed:
+        code = 124
+    state = "ok" if code == 0 else ("stalled" if killed else f"failed (exit {code})")
+    if code == 0:
+        d = durations()
+        d[name] = round(time.time() - start, 1)
+        with open(os.path.join(LOGS, "durations.json"), "w") as f:
+            json.dump(d, f, indent=1, sort_keys=True)
+    write_status(state)
+    log.write(f"=== {name}: {state} after {fmt(time.time() - start)}\n".encode())
+    log.close()
+    if code != 0 or time.time() - start > every:
+        print(f"[progress {name}] {state} after {fmt(time.time() - start)}", file=sys.stderr, flush=True)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

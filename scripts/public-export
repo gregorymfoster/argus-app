@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Copy main's current tree, minus everything private, into a public snapshot repo.
+# The private repo keeps its full history (and Greg's bench photos); the public repo only ever
+# sees snapshots of HEAD, so nothing private can leak through an old commit.
+#   scripts/public-export DIR     DIR empty or missing: a fresh repo with one commit.
+#                                 DIR a clone of the public repo: one new "Sync" commit on top.
+# It never pushes: check DIR, then `git -C DIR push` yourself. The public repo is
+# github.com/gregorymfoster/argus-app (Greg, 2026-10-19); see README "Build from source".
+set -euo pipefail
+cd "$(dirname "$0")/.."
+dest="${1:?usage: scripts/public-export DIR}"
+
+# Private: Greg's photos and Lightroom data (bench fixtures, goldens rendered from his RAWs)
+# and the bench tooling that reads his catalog. Add a path here before it can go public.
+PRIVATE=(
+  fixtures/bench
+  fixtures/golden
+  bench/cull_pairs.py bench/degrade.py bench/extract.py bench/fit_recipe.py bench/harvest.py
+  bench/judge.py bench/lrcat.py bench/report.html bench/report.py bench/score.py bench/variants
+  .claude/skills/bench-report
+)
+
+sha=$(git rev-parse --short HEAD)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+git archive HEAD | tar -x -C "$tmp"
+for p in "${PRIVATE[@]}"; do rm -rf "${tmp:?}/$p"; done
+
+# Leak check: no photos outside the app icons, no personal paths or addresses.
+leaks=$(cd "$tmp" && find . -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.arw' \
+  -o -iname '*.dng' -o -iname '*.heic' -o -iname '*.tif*' -o -iname '*.webp' -o -iname '*.db' -o -iname '*.mcat' \) \
+  -not -path './app/icons/*' | sort)
+words=$(grep -rlE --exclude=public-export 'gregorymfoster@gmail|GoogleDrive-|/Users/gregfoster|lrlibrary' "$tmp" | sed "s|$tmp/||" | sort || true)
+if [ -n "$leaks$words" ]; then
+  echo "public-export: private files or text left in the tree, add them to PRIVATE or scrub them:" >&2
+  printf '%s\n' $leaks $words >&2
+  exit 1
+fi
+
+mkdir -p "$dest"
+if [ ! -d "$dest/.git" ]; then
+  [ -z "$(ls -A "$dest")" ] || { echo "public-export: $dest is not empty and not a git repo" >&2; exit 1; }
+  git -C "$dest" init -q -b main
+fi
+# Replace the snapshot's contents wholesale, keeping only its .git.
+find "$dest" -mindepth 1 -maxdepth 1 -not -name .git -exec rm -rf {} +
+cp -a "$tmp/." "$dest/"
+git -C "$dest" add -A
+if git -C "$dest" diff --cached --quiet; then
+  echo "public-export: $dest already matches $sha"
+  exit 0
+fi
+msg="Argus at $sha"
+git -C "$dest" rev-parse -q --verify HEAD >/dev/null && msg="Sync from $sha"
+git -C "$dest" commit -q -m "$msg"
+echo "public-export: $dest has \"$msg\" ($(git -C "$dest" ls-files | wc -l) files); push it with git -C $dest push"

@@ -1,0 +1,65 @@
+{
+  "note": "Every model Argus ships (ADR 0013). engine/tests/analyzers.rs checks each file's hash and that every licence is on the allow-list. scripts/models/fetch.sh rebuilds them.",
+  "models": [
+    {
+      "file": "selfie_multiclass_256x256.onnx",
+      "analyzer": "segment",
+      "what": "MediaPipe multiclass selfie segmenter, converted from TFLite with tf2onnx",
+      "source": "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite",
+      "license": "Apache-2.0",
+      "bytes": 16454491,
+      "sha256": "b53f01a3b7ab93fdbab9c9e6445d282d43ab13d2bea13e2f7e6fc7552db1732f",
+      "embedded": true
+    },
+    {
+      "file": "face_detection_yunet_2023mar.onnx",
+      "analyzer": "faces",
+      "what": "OpenCV Zoo YuNet face detector",
+      "source": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+      "license": "MIT",
+      "bytes": 232589,
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "embedded": true
+    },
+    {
+      "file": "deeplabv3_mnv2_ade20k.onnx",
+      "analyzer": "sky",
+      "what": "TensorFlow DeepLab v3 MobileNetV2 on ADE20K, frozen graph cut to logits, tf2onnx",
+      "source": "https://storage.googleapis.com/download.tensorflow.org/models/deeplabv3_mnv2_ade20k_train_2018_12_03.tar.gz",
+      "license": "Apache-2.0",
+      "bytes": 9195334,
+      "sha256": "5c8a30f53cde921c952ee8edd29f0c5815634134f22430a9674b53e84f0901c8",
+      "embedded": true
+    },
+    {
+      "file": "face_landmarks_mediapipe.onnx",
+      "analyzer": "eyes",
+      "what": "MediaPipe Face Landmarker: face_landmarks_detector.tflite (478 points) from face_landmarker.task, tf2onnx",
+      "source": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+      "license": "Apache-2.0",
+      "bytes": 4920995,
+      "sha256": "88d8736f8208299718feb269e99431a2ac9dbbfec4d51fb7eeca3a0e60587119",
+      "embedded": true
+    },
+    {
+      "file": "face_blendshapes_mediapipe.onnx",
+      "analyzer": "eyes",
+      "what": "MediaPipe Face Landmarker: face_blendshapes.tflite (52 expression scores) from face_landmarker.task, tf2onnx",
+      "source": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+      "license": "Apache-2.0",
+      "bytes": 1882058,
+      "sha256": "8fb55c4f5681b956ce6e136b17738736470419db46916a1a529bcc3b89cefc69",
+      "embedded": true
+    },
+    {
+      "file": "image_embedder_mediapipe.onnx",
+      "analyzer": "embedding",
+      "what": "MediaPipe Image Embedder, MobileNetV3 large (1280 numbers), tf2onnx at opset 14 for HardSwish",
+      "source": "https://storage.googleapis.com/mediapipe-models/image_embedder/mobilenet_v3_large/float32/latest/mobilenet_v3_large.tflite",
+      "license": "Apache-2.0",
+      "bytes": 10961723,
+      "sha256": "e6c7326029b23bd94ceab4b017ecf4508adbfdb44bddd0773d63d416971d59fb",
+      "embedded": true
+    }
+  ]
+}

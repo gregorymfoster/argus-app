@@ -1,0 +1,719 @@
+// Screenshots every screen and runs smoke checks through the real UI,
+// checks, so an agent can verify UI changes without a human.
+//
+//   node scripts/shots.mjs              all shots
+//   node scripts/shots.mjs cull look    only names containing these words
+
+import { createServer } from 'vite';
+import { chromium } from 'playwright';
+import { mkdirSync } from 'node:fs';
+
+const filters = process.argv.slice(2);
+const out = new URL('../out/shots/', import.meta.url).pathname;
+mkdirSync(out, { recursive: true });
+
+const server = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5199, strictPort: true }, logLevel: 'error' });
+await server.listen();
+const base = 'http://localhost:5199/';
+
+const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
+const errors = [];
+const results = [];
+
+// `zoom` renders as the app's View › Zoom would (prototype/src/ui/zoom.ts): a webview zoomed
+// to z lays out like a viewport 1/z the size at z times the pixel density.
+async function page(path, variants = '', zoom = 1) {
+  const ctx = await browser.newContext({ viewport: { width: Math.round(1440 / zoom), height: Math.round(900 / zoom) }, deviceScaleFactor: zoom });
+  const p = await ctx.newPage();
+  p.on('pageerror', (e) => errors.push(`${path}: ${e.message}`));
+  p.on('console', (m) => m.type() === 'error' && !/fonts\.g/.test(m.text()) && errors.push(`${path}: ${m.text()}`));
+  const q = variants ? `?v=${variants}` : '';
+  await p.goto(`${base}${q}${path}`);
+  await p.waitForTimeout(700);
+  return { p, ctx };
+}
+
+async function shot(name, path, { variants = '', act, zoom } = {}) {
+  if (filters.length && !filters.some((f) => name.includes(f))) return;
+  const { p, ctx } = await page(path, variants, zoom);
+  if (act) await act(p);
+  await p.screenshot({ path: `${out}${name}.png` });
+  results.push(name);
+  await ctx.close();
+}
+
+// Screens
+// The desktop app's Mac chrome (overlay title bar, translucent sidebar), previewed in the browser.
+await shot('00-mac-chrome-cull', '?chrome=mac#/cull', { act: (p) => p.waitForTimeout(600) });
+await shot('00b-mac-chrome-edit', '?chrome=mac#/edit/p15', { act: (p) => p.waitForTimeout(600) });
+await shot('01-import-dialog', '#/import');
+await shot('02-import-started', '#/import', {
+  act: async (p) => {
+    await p.getByRole('button', { name: 'Import 112 photos' }).click();
+    await p.waitForTimeout(1200);
+  },
+});
+await shot('03-cull', '#/cull', { act: (p) => p.waitForTimeout(600) });
+await shot('03b-cull-hover-flags', '#/cull', {
+  act: async (p) => {
+    await p.locator('.tile').nth(2).hover();
+    await p.waitForTimeout(300);
+  },
+});
+await shot('03c-cull-dense', '#/cull', {
+  act: async (p) => {
+    for (let i = 0; i < 3; i++) await p.keyboard.press('Minus');
+    await p.waitForTimeout(600);
+  },
+});
+await shot('03d-cull-context-menu', '#/cull', {
+  act: async (p) => {
+    await p.locator('.tile').nth(1).click({ button: 'right' });
+    await p.waitForTimeout(300);
+  },
+});
+await shot('03d2-shoot-context-menu', '#/cull', {
+  act: async (p) => {
+    await p.getByTestId('shoot-tahoe').click({ button: 'right' });
+    await p.waitForTimeout(300);
+  },
+});
+await shot('03d3-shoot-rename', '#/cull', {
+  act: async (p) => {
+    await p.getByTestId('shoot-tahoe').dblclick();
+    await p.keyboard.type('Boat tour');
+    await p.waitForTimeout(200);
+  },
+});
+await shot('03d4-cull-pinched-large', '#/cull', {
+  act: async (p) => {
+    await p.mouse.move(700, 400);
+    await p.keyboard.down('Control');
+    for (let i = 0; i < 6; i++) await p.mouse.wheel(0, -40);
+    await p.keyboard.up('Control');
+    await p.waitForTimeout(600);
+  },
+});
+await shot('03e-agent-provider-menu', '#/cull', {
+  act: async (p) => {
+    await p.getByTestId('provider').click();
+    await p.waitForTimeout(300);
+    // Each option's title and note stay inside its own row (they overlapped, Greg 2026-10-18).
+    const rows = await p.locator('[role=menuitem]').evaluateAll((els) => els.map((e) => [e.getBoundingClientRect(), e.scrollHeight - e.clientHeight]));
+    rows.forEach(([r, spill], i) => {
+      if (spill > 0) throw new Error(`provider option ${i} spills out of its row`);
+      if (i && r.top < rows[i - 1][0].bottom - 0.5) throw new Error(`provider option ${i} overlaps the one above`);
+    });
+  },
+});
+await shot('03f-zoom-80', '#/cull', { zoom: 0.8 });
+await shot('03g-zoom-125', '#/cull', { zoom: 1.25 });
+await shot('03h-zoom-125-edit', '#/edit/p15', { zoom: 1.25 });
+await shot('03e-export-dialog', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Meta+e');
+    await p.keyboard.press('Control+e');
+    await p.waitForTimeout(400);
+  },
+});
+await shot('03f-export-running', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Control+e');
+    await p.getByRole('button', { name: /^Web/ }).click();
+    await p.getByTestId('export-start').click();
+    await p.waitForTimeout(1200);
+  },
+});
+await shot('04-loupe', '#/loupe/p5');
+await shot('05-compare', '#/cull', {
+  act: async (p) => {
+    await p.locator('.tile:has(.badge)').first().click();
+    await p.keyboard.press('c');
+    await p.waitForTimeout(900);
+  },
+});
+await shot('05b-compare-ai-prefers', '#/cull', {
+  act: async (p) => {
+    await p.locator('.tile:has(.badge)').first().click();
+    await p.keyboard.press('c');
+    await p.waitForTimeout(500);
+    await p.keyboard.press('ArrowUp');
+    await p.waitForTimeout(600);
+  },
+});
+await shot('06-look-empty', '#/look');
+await shot('07-look-applied', '#/look', {
+  act: async (p) => {
+    await p.getByRole('button', { name: /Warm, soft/ }).click();
+    await p.waitForTimeout(2600);
+  },
+});
+await shot('08-edit', '#/edit/p15', {
+  act: async (p) => {
+    await p.getByRole('button', { name: /Brighten her face/ }).click();
+    await p.waitForTimeout(3200);
+    await p.keyboard.press('o');
+    await p.waitForTimeout(300);
+  },
+});
+await shot('08b-edit-suggestions', '#/edit/p15', {
+  act: async (p) => {
+    await p.keyboard.press('Tab');
+    await p.keyboard.press('Tab');
+    await p.waitForTimeout(300);
+  },
+});
+await shot('09b-palette-ask', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Control+k');
+    await p.keyboard.type('which photos have closed eyes');
+    await p.waitForTimeout(300);
+  },
+});
+await shot('09-palette', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Control+k');
+    await p.keyboard.type('look');
+    await p.waitForTimeout(300);
+  },
+});
+await shot('10-settings-library', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Control+Comma');
+    await p.getByTestId('settings-library').click();
+    await p.getByTestId('library-settings').waitFor();
+    await p.waitForTimeout(300);
+  },
+});
+for (const id of ['general', 'import', 'export']) {
+  await shot(`10-settings-${id}`, '#/cull', {
+    act: async (p) => {
+      await p.keyboard.press('Control+Comma');
+      await p.getByTestId(`settings-${id}`).click();
+      await p.getByTestId(`settings-${id}-page`).waitFor();
+      await p.waitForTimeout(300);
+    },
+  });
+}
+await shot('12-best-photos', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('b');
+    await p.getByTestId('best-photos').waitFor();
+    await p.waitForTimeout(300);
+  },
+});
+await shot('13-stars-filter', '#/cull', {
+  act: async (p) => {
+    await p.getByTestId('stars-filter').click();
+    await p.waitForTimeout(300);
+  },
+});
+await shot('14-cull-hover-stars', '#/cull', {
+  act: async (p) => {
+    await p.locator('.tile').nth(1).locator('.stars button').nth(3).hover();
+    await p.waitForTimeout(300);
+  },
+});
+
+// First launch in the app: no Library yet, so it asks where to make one (the engine is faked).
+if (!filters.length || filters.some((f) => 'first-run'.includes(f))) {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  const p = await ctx.newPage();
+  p.on('pageerror', (e) => errors.push(`first-run: ${e.message}`));
+  await p.route('**/api/library', (r) => r.fulfill({ json: { current: null, exists: false, recent: [], suggested: '/Users/greg/Pictures/Argus/library' } }));
+  await p.goto(`${base}?library=live`);
+  await p.getByTestId('first-run').waitFor();
+  await p.screenshot({ path: `${out}11-first-run.png` });
+  results.push('11-first-run');
+  await ctx.close();
+}
+
+// Smoke checks
+async function check(name, fn) {
+  if (filters.length && !filters.some((f) => name.includes(f))) return;
+  try {
+    await fn();
+    results.push(`ok  ${name}`);
+  } catch (e) {
+    errors.push(`FAIL ${name}: ${e.message}`);
+  }
+}
+
+const verdict = (p, i) => p.locator('.tile').nth(i).getAttribute('data-verdict');
+
+await check('smoke-rename-shoot', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.getByTestId('shoot-tahoe').dblclick();
+  await p.keyboard.type('Boat tour');
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(200);
+  const name = await p.getByTestId('shoot-tahoe').textContent();
+  if (!name.includes('2026-10-12_Boat-tour')) throw new Error(`sidebar shows ${name}`);
+  const head = await p.locator('h1').first().textContent();
+  if (head !== '2026-10-12_Boat-tour') throw new Error(`header shows ${head}`);
+  // Esc cancels.
+  await p.getByTestId('shoot-tahoe').focus();
+  await p.keyboard.press('Enter');
+  await p.keyboard.type('Nope');
+  await p.keyboard.press('Escape');
+  if (!(await p.getByTestId('shoot-tahoe').textContent()).includes('Boat-tour')) throw new Error('Esc renamed');
+  await ctx.close();
+});
+
+await check('smoke-grid-size-keeps-columns-sane', async () => {
+  const { p, ctx } = await page('#/cull');
+  const cols = () => p.locator('.grid-row').first().locator('.tile').count();
+  const before = await cols();
+  await p.locator('.tile').first().click();
+  await p.keyboard.press('Equal');
+  await p.keyboard.press('Equal');
+  const bigger = await cols();
+  await p.mouse.move(700, 400);
+  await p.keyboard.down('Control');
+  for (let i = 0; i < 8; i++) await p.mouse.wheel(0, 60);
+  await p.keyboard.up('Control');
+  await p.waitForTimeout(200);
+  const smaller = await cols();
+  if (!(bigger < before && smaller > bigger)) throw new Error(`columns ${before} -> ${bigger} -> ${smaller}`);
+  await ctx.close();
+});
+
+await check('smoke-flag-keys-advance', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').first().click();
+  await p.keyboard.press('x');
+  if ((await verdict(p, 0)) !== 'reject') throw new Error(`X: expected reject, got ${await verdict(p, 0)}`);
+  // Flagging jumped to the next Photo, so P lands on tile 1.
+  await p.keyboard.press('p');
+  if ((await verdict(p, 1)) !== 'pick') throw new Error(`P after X: expected tile 1 pick, got ${await verdict(p, 1)}`);
+  await p.keyboard.press('ArrowLeft');
+  await p.keyboard.press('ArrowLeft');
+  await p.keyboard.press('u');
+  if ((await verdict(p, 0)) !== 'unflagged') throw new Error(`U: expected unflagged, got ${await verdict(p, 0)}`);
+  await ctx.close();
+});
+
+const stars = (p, i) => p.locator('.tile').nth(i).locator('.stars').first();
+
+await check('smoke-star-keys-confirm-and-advance', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').first().click();
+  const ai = await stars(p, 0).getAttribute('data-stars');
+  if (!ai || ai === '0' || (await stars(p, 0).getAttribute('data-you'))) throw new Error(`tile 0 should show suggested stars, got ${ai}`);
+  // Pressing the AI's own number confirms it: same stars, now the person's.
+  await p.keyboard.press(ai);
+  if ((await stars(p, 0).getAttribute('data-you')) == null || (await stars(p, 0).getAttribute('data-stars')) !== ai) throw new Error('confirming kept or lost the wrong stars');
+  // Rating moved on, so 5 lands on tile 1; 0 there clears it.
+  await p.keyboard.press('5');
+  if ((await stars(p, 1).getAttribute('data-stars')) !== '5') throw new Error('5 did not rate tile 1');
+  await p.keyboard.press('ArrowLeft');
+  await p.keyboard.press('0');
+  if ((await stars(p, 1).getAttribute('data-stars')) !== '0') throw new Error('0 did not clear tile 1');
+  await ctx.close();
+});
+
+await check('smoke-best-photos-and-star-filter', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.keyboard.press('b');
+  const best = p.getByTestId('best-photos').locator('.tile');
+  const n = await best.count();
+  if (n < 5 || n > 20) throw new Error(`expected about one in ten Best Photos, got ${n}`);
+  if ((await best.first().locator('.rank').textContent()) !== '#1') throw new Error('Best Photos should open on #1');
+  await p.keyboard.press('b');
+  await p.getByTestId('stars-filter').click();
+  await p.getByRole('menuitem', { name: /and up/ }).first().click(); // 4 and up
+  const shown = await p.locator('.grid-v .tile .stars').evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-stars'))));
+  if (!shown.length || shown.some((x) => x < 4)) throw new Error(`4+ filter showed ${shown}`);
+  await ctx.close();
+});
+
+await check('smoke-flag-click-toggle', async () => {
+  const { p, ctx } = await page('#/cull');
+  const tile = p.locator('.tile').nth(3);
+  await tile.hover();
+  await tile.getByRole('button', { name: 'Pick' }).click();
+  if ((await tile.getAttribute('data-verdict')) !== 'pick') throw new Error('click Pick did not pick');
+  await tile.getByRole('button', { name: 'Pick' }).click();
+  if ((await tile.getAttribute('data-verdict')) !== 'unflagged') throw new Error('second click did not clear');
+  await ctx.close();
+});
+
+await check('smoke-multiselect-flag', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').nth(0).click();
+  await p.locator('.tile').nth(3).click({ modifiers: ['Shift'] });
+  await p.keyboard.press('x');
+  for (let i = 0; i <= 3; i++) if ((await verdict(p, i)) !== 'reject') throw new Error(`tile ${i} not rejected`);
+  await p.keyboard.press('Control+z');
+  await p.waitForTimeout(100);
+  if ((await verdict(p, 0)) === 'reject' && (await verdict(p, 3)) === 'reject') throw new Error('undo did not revert the batch');
+  await ctx.close();
+});
+
+await check('smoke-compare-keep-best', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile:has(.badge)').first().click();
+  await p.keyboard.press('c');
+  await p.waitForTimeout(400);
+  const cells = p.locator('.stack-row [data-testid^="survey-"]');
+  const n = await cells.count();
+  if (n < 2) throw new Error(`expected a Stack, got ${n}`);
+  await p.keyboard.press('k');
+  const vs = await cells.evaluateAll((els) => els.map((e) => e.getAttribute('data-verdict')));
+  if (vs.filter((v) => v === 'pick').length !== 1 || vs.filter((v) => v === 'reject').length !== n - 1) throw new Error(`got ${vs}`);
+  await ctx.close();
+});
+
+await check('smoke-look-slider', async () => {
+  const { p, ctx } = await page('#/look');
+  await p.getByRole('button', { name: /Warm, soft/ }).click();
+  await p.waitForTimeout(2600);
+  const before = await p.locator('.look-after img').first().evaluate((el) => getComputedStyle(el).filter);
+  await p.getByRole('button', { name: 'Adjust' }).click();
+  await p.getByRole('slider', { name: 'Exposure' }).first().focus();
+  for (let i = 0; i < 10; i++) await p.keyboard.press('ArrowRight');
+  const after = await p.locator('.look-after img').first().evaluate((el) => getComputedStyle(el).filter);
+  if (before === after) throw new Error('slider did not change render');
+  await ctx.close();
+});
+
+await check('smoke-sync-to-look', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  await p.getByRole('slider', { name: 'Temp' }).first().focus();
+  for (let i = 0; i < 5; i++) await p.keyboard.press('ArrowRight');
+  await p.getByRole('button', { name: 'Sync to Look' }).click();
+  await p.goto(`${base}#/look`);
+  await p.waitForTimeout(400);
+  const h = await p.locator('[data-testid="look-card"] h3').getAttribute('aria-label');
+  if (!/Shoot Look/.test(h ?? '')) throw new Error(`expected a Shoot Look, got ${h}`);
+  await ctx.close();
+});
+
+await check('smoke-agent-edit-masks', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  await p.getByRole('button', { name: /Brighten her face/ }).click();
+  await p.waitForTimeout(3200);
+  await p.getByRole('tab', { name: 'Masking' }).click();
+  const n = await p.locator('.mask-row').count();
+  if (n < 2) throw new Error(`expected Masks, got ${n}`);
+  await ctx.close();
+});
+
+await check('smoke-edit-v2-recommended-fixes-people-crop', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  // Recommended at an Amount, then a fix that toggles.
+  await p.getByTestId('rec-warm-film').click();
+  const temp = async () => Number((await p.locator('.slider', { hasText: 'Temp' }).first().locator('.val').textContent()).replace('−', '-'));
+  if ((await temp()) !== 16) throw new Error(`Warm film set temp ${await temp()}`);
+  await p.getByTestId('rec-natural').click();
+  if ((await temp()) !== 0) throw new Error(`switching Looks left temp ${await temp()}`);
+  await p.getByTestId('fix-shadows').click();
+  if ((await p.getByTestId('fix-shadows').getAttribute('aria-pressed')) !== 'true') throw new Error('Lift shadows did not turn on');
+  await p.getByTestId('fix-shadows').click();
+  if ((await p.getByTestId('fix-shadows').getAttribute('aria-pressed')) !== 'false') throw new Error('Lift shadows did not turn off');
+  // A person Mask with the people picker and parts.
+  await p.getByRole('tab', { name: 'Masking' }).click();
+  await p.getByTestId('mask-create').getByRole('button', { name: 'People' }).click();
+  await p.getByRole('button', { name: 'Person 2' }).click();
+  await p.getByLabel('Hair', { exact: true }).click();
+  if (!(await p.locator('.mask-row.sel', { hasText: 'Faces · Person 2' }).count())) throw new Error('the person Mask did not follow the picker');
+  // Crop at 4:5 and back.
+  await p.getByRole('tab', { name: 'Crop' }).click();
+  await p.getByRole('radio', { name: '4:5' }).click();
+  if ((await p.getByRole('radio', { name: '4:5' }).getAttribute('aria-checked')) !== 'true') throw new Error('4:5 did not take');
+  if (!(await p.getByTestId('crop-overlay').count())) throw new Error('no crop box on the photo');
+  await ctx.close();
+});
+
+await check('smoke-presets-apply-and-undo', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  await p.getByRole('tab', { name: 'Presets' }).click();
+  await p.getByTestId('preset-bw-contrast').click();
+  await p.waitForTimeout(200);
+  if ((await p.locator('.preset.on').count()) !== 1) throw new Error('the preset did not apply');
+  await p.keyboard.press('Meta+z');
+  await p.keyboard.press('Control+z');
+  await p.waitForTimeout(200);
+  if ((await p.locator('.preset.on').count()) !== 0) throw new Error('Undo left the preset on');
+  await ctx.close();
+});
+
+await check('smoke-suggestions-preview-accept-undo', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  const takes = await p.locator('[data-testid="take"]').count();
+  if (takes < 3) throw new Error(`expected your edit plus takes, got ${takes}`);
+  await p.keyboard.press('Tab');
+  await p.keyboard.press('Tab');
+  const flag = await p.locator('[data-testid="previewing"]').textContent();
+  if (!/Punchy/.test(flag ?? '')) throw new Error(`Tab twice should preview the second take, got ${flag}`);
+  if (!(await p.locator('[data-testid="take-diff"]').isVisible())) throw new Error('no diff for the take');
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(200);
+  if (await p.locator('[data-testid="previewing"]').count()) throw new Error('still previewing after accept');
+  const exposure = await p.getByRole('slider', { name: 'Exposure' }).first().getAttribute('aria-valuenow');
+  if (Number(exposure) !== 0.65) throw new Error(`accepting should set exposure 0.65, got ${exposure}`);
+  await p.keyboard.press('Control+z');
+  await p.waitForTimeout(200);
+  const back = await p.getByRole('slider', { name: 'Exposure' }).first().getAttribute('aria-valuenow');
+  if (Number(back) === 0.65) throw new Error('undo did not put the edit back');
+  await p.keyboard.press('Control+Shift+a');
+  await p.waitForTimeout(200);
+  const toast = await p.locator('[data-sonner-toast]').first().textContent();
+  if (!/Matching \d+ Photos/.test(toast ?? '')) throw new Error(`no toast for apply to the rest: ${toast}`);
+  await p.evaluate(() => (location.hash = '#/edit/p16'));
+  await p.waitForTimeout(400);
+  const matched = await p.locator('.take-name', { hasText: /^Match / }).count();
+  if (!matched) throw new Error(`apply to the rest gave the next Photo no matched take: ${await p.locator('.take-name').allTextContents()} at ${await p.evaluate(() => location.hash)}`);
+  await ctx.close();
+});
+
+await check('smoke-grid-accept-first-takes', async () => {
+  const { p, ctx } = await page('#/cull');
+  const badges = await p.locator('[data-testid="takes-badge"]').count();
+  if (!badges) throw new Error('no Suggestions badges in the grid');
+  // Two Picks side by side (Picks get takes first).
+  await p.locator('.tile').nth(5).click();
+  await p.locator('.tile').nth(6).click({ modifiers: ['Shift'] });
+  await p.keyboard.press('a');
+  await p.waitForTimeout(200);
+  const toast = await p.locator('[data-sonner-toast]').first().textContent();
+  if (!/Suggestions on 2 Photos/.test(toast ?? '')) throw new Error(`expected one batch for 2 Photos, got ${toast}`);
+  await ctx.close();
+});
+
+await check('smoke-import-path-no-spaces', async () => {
+  const { p, ctx } = await page('#/import');
+  const path = await p.locator('#copy').inputValue();
+  if (/\s/.test(path)) throw new Error(`path has spaces: ${path}`);
+  await p.locator('#copy').fill('~/Pictures/My Shoot');
+  const typed = await p.locator('#copy').inputValue();
+  if (/\s/.test(typed)) throw new Error(`typed path kept spaces: ${typed}`);
+  await ctx.close();
+});
+
+await check('smoke-queue-drag-reorders', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.sidebar [data-testid="queue-progress"]').first().click();
+  await p.getByTestId('queue-popover').waitFor();
+  const labels = () => p.getByTestId('queue-jobs').locator('.job-label').allTextContents();
+  const before = await labels();
+  const rows = p.getByTestId('queue-jobs').getByTestId('queue-job');
+  await rows.nth(2).dragTo(rows.nth(0));
+  await p.waitForTimeout(200);
+  const after = await labels();
+  if (after[0] !== before[2]) throw new Error(`drag didn't move ${before[2]} to the top: ${after.join(' / ')}`);
+  await rows.nth(2).hover();
+  await p.screenshot({ path: `${out}15-queue-reorder.png` });
+  await p.waitForTimeout(3300); // a poll must not undo it
+  if ((await labels())[0] !== before[2]) throw new Error('the next poll put the old order back');
+  await ctx.close();
+});
+
+await check('smoke-ai-marks-show-queued-and-working', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').first().waitFor();
+  const marks = await p.getByTestId('ai-mark').evaluateAll((els) => els.map((e) => e.className));
+  if (!marks.some((c) => c.includes('queued'))) throw new Error(`no queued marks: ${marks.length}`);
+  await p.getByTestId('stars-filter').click();
+  await p.getByTestId('ai-filter-waiting').click();
+  const left = await p.locator('.grid-v .tile').count();
+  const withMark = await p.locator('.grid-v .tile [data-testid="ai-mark"]').count();
+  if (!left || left !== withMark) throw new Error(`Waiting filter shows ${left} tiles, ${withMark} with a mark`);
+  await ctx.close();
+});
+
+await check('smoke-eye-badges-on-tiles-and-loupe', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').first().waitFor();
+  const closed = await p.locator('.grid-v [data-testid="eyes-closed"]').count();
+  const soft = await p.locator('.grid-v [data-testid="soft-focus"]').count();
+  if (!closed || !soft) throw new Error(`badges: ${closed} closed, ${soft} soft`);
+  // Informational only: a closed-eye Photo keeps whatever flag it had.
+  const tile = p.locator('.grid-v .tile:has([data-testid="eyes-closed"])').first();
+  await tile.scrollIntoViewIfNeeded();
+  await tile.locator('.ph').screenshot({ path: `${out}/17-eye-badge-tile.png` });
+  await tile.dblclick();
+  await p.getByTestId('loupe-strip').getByTestId('eyes-closed').waitFor();
+  await p.screenshot({ path: `${out}/18-loupe-eye-badge.png` });
+  await ctx.close();
+});
+
+await check('smoke-restart-to-update', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const p = await ctx.newPage();
+  await p.goto(`${base}?update=ready#/cull`);
+  await p.getByTestId('update-restart').waitFor();
+  if (!(await p.getByTestId('update-restart').innerText()).includes('0.1.2')) throw new Error('the button does not name the version');
+  await p.getByTestId('update-restart').hover();
+  await p.waitForTimeout(700);
+  await p.screenshot({ path: `${out}/15-update-ready.png` });
+  await p.evaluate(() => window.dispatchEvent(new CustomEvent('argus:settings', { detail: 'updates' })));
+  await p.getByTestId('settings-update-restart').waitFor();
+  await p.screenshot({ path: `${out}/16-settings-updates.png` });
+  await ctx.close();
+  // No update ready: no button.
+  const { p: q, ctx: c2 } = await page('#/cull');
+  if (await q.getByTestId('update-restart').count()) throw new Error('Restart to update shows with nothing to install');
+  await c2.close();
+});
+
+await check('smoke-settings-nav-only-selected-active', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.evaluate(() => window.dispatchEvent(new CustomEvent('argus:settings')));
+  await p.getByTestId('settings').waitFor();
+  const state = () =>
+    p.evaluate(() =>
+      [...document.querySelectorAll('.settings-nav-item')]
+        .map((b) => ({ id: b.dataset.testid, current: b.getAttribute('aria-current'), bg: getComputedStyle(b).backgroundColor, focused: document.activeElement === b })),
+    );
+  const transparent = (bg) => bg === 'transparent' || /rgba\(0, 0, 0, 0\)/.test(bg);
+  const verify = async (want) => {
+    await p.mouse.move(1, 1); // the pointer leaves the nav, so hover can't colour anything
+    await p.waitForTimeout(200);
+    const items = await state();
+    if (items.length < 3) throw new Error(`found ${items.length} Settings sections`);
+    for (const b of items) {
+      const on = b.id === `settings-${want}`;
+      if (on !== (b.current === 'page')) throw new Error(`${b.id} aria-current=${b.current} with ${want} open`);
+      if (on === transparent(b.bg)) throw new Error(`${b.id} background ${b.bg} with ${want} open`);
+    }
+  };
+  await verify('ai');
+  await p.getByTestId('settings-library').click();
+  await verify('library');
+  await p.getByTestId('settings-keys').click();
+  await verify('keys');
+  await ctx.close();
+});
+
+// Lightroom zoom and pan (ui/zoomPan.ts). Trackpad pinch is a synthetic ctrl+wheel
+// (Chromium) and gesture events (WebKit, the Mac app); the Mac thread checks a real one.
+await check('smoke-zoom-pan', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  const sel = '[data-testid=edit-stage] .stage-fit > .photo';
+  const readout = async () => (await p.getByTestId('zoom-readout').textContent()).trim();
+  const rect = () => p.locator(sel).evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; });
+  const settle = () => p.waitForTimeout(320);
+  const fire = (type, init) =>
+    p.locator('[data-testid=edit-stage]').evaluate((el, [type, init]) => {
+      const e = type === 'wheel' ? new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init }) : Object.assign(new Event(type, { bubbles: true, cancelable: true }), init);
+      el.dispatchEvent(e);
+    }, [type, init]);
+  const fit = await rect();
+  const cx = fit.x + fit.w * 0.3;
+  const cy = fit.y + fit.h * 0.4;
+  // Pinch around a point: the photo spot under the fingers stays put.
+  for (let i = 0; i < 10; i++) await fire('wheel', { deltaY: -30, ctrlKey: true, clientX: cx, clientY: cy });
+  await settle();
+  let r = await rect();
+  if (r.w < fit.w * 1.5) throw new Error(`pinch did not zoom (width ${fit.w} -> ${r.w})`);
+  const u = (r2) => [(cx - r2.x) / r2.w, (cy - r2.y) / r2.h];
+  const [u0, v0] = u(fit);
+  const [u1, v1] = u(r);
+  if (Math.abs(u0 - u1) > 0.01 || Math.abs(v0 - v1) > 0.01) throw new Error(`pinch drifted: ${u0.toFixed(3)},${v0.toFixed(3)} -> ${u1.toFixed(3)},${v1.toFixed(3)}`);
+  if (!/%$/.test(await readout())) throw new Error(`readout says ${await readout()}`);
+  if (!(await p.getByTestId('nav-view').count())) throw new Error('the Navigator shows no visible area');
+  // Two-finger scroll pans.
+  const before = await rect();
+  await fire('wheel', { deltaX: 60, deltaY: 40, clientX: cx, clientY: cy });
+  await settle();
+  r = await rect();
+  if (Math.abs(before.x - 60 - r.x) > 1 || Math.abs(before.y - 40 - r.y) > 1) throw new Error(`scroll panned ${before.x - r.x},${before.y - r.y}, wanted 60,40`);
+  // WebKit's pinch.
+  await p.keyboard.press('z');
+  await settle();
+  await fire('gesturestart', { scale: 1, clientX: cx, clientY: cy });
+  await fire('gesturechange', { scale: 3, clientX: cx, clientY: cy });
+  await fire('gestureend', { scale: 3, clientX: cx, clientY: cy });
+  await settle();
+  r = await rect();
+  if (Math.abs(r.w / fit.w - 3) > 0.05) throw new Error(`gesture scale 3 zoomed ${r.w / fit.w}`);
+  // Z toggles Fit and 100%; ⌘0 fits, ⌘+ steps in.
+  await p.keyboard.press('z');
+  await settle();
+  if ((await readout()) !== 'Fit') throw new Error(`Z from zoomed left ${await readout()}`);
+  await p.keyboard.press('z');
+  await settle();
+  if ((await readout()) !== '100%') throw new Error(`Z from Fit went to ${await readout()}`);
+  await p.keyboard.press('ControlOrMeta+0');
+  await settle();
+  if ((await readout()) !== 'Fit') throw new Error(`⌘0 left ${await readout()}`);
+  await p.keyboard.press('ControlOrMeta+Equal');
+  await settle();
+  if ((await readout()) === 'Fit') throw new Error('⌘+ did not zoom the photo');
+  const appZoom = await p.evaluate(() => document.documentElement.style.zoom);
+  if (appZoom) throw new Error(`⌘+ zoomed the app (${appZoom}) instead of the photo`);
+  await p.keyboard.press('ControlOrMeta+0');
+  await settle();
+  // Click zooms to 100% at the point, click again fits.
+  await p.mouse.click(cx, cy);
+  await settle();
+  if ((await readout()) !== '100%') throw new Error(`click went to ${await readout()}`);
+  // Space-drag is the hand tool.
+  r = await rect();
+  await p.keyboard.down('Space');
+  await p.mouse.move(cx, cy);
+  await p.mouse.down();
+  await p.mouse.move(cx - 80, cy - 30, { steps: 4 });
+  await p.waitForTimeout(100);
+  await p.mouse.up();
+  await p.keyboard.up('Space');
+  await settle();
+  const dragged = await rect();
+  if (Math.abs(r.x - dragged.x) < 40) throw new Error(`Space-drag moved the photo ${r.x - dragged.x}px`);
+  if ((await readout()) !== '100%') throw new Error('Space-drag toggled the zoom');
+  await p.waitForTimeout(450);
+  await p.mouse.click(cx, cy);
+  await settle();
+  if ((await readout()) !== 'Fit') throw new Error(`second click left ${await readout()}`);
+  // Navigator presets.
+  await p.getByTestId('zoom-200').click();
+  await settle();
+  if ((await readout()) !== '200%') throw new Error(`200% preset shows ${await readout()}`);
+  await p.screenshot({ path: `${out}14-edit-zoom-200.png` });
+  // The crop box still drags while zoomed, and a click there doesn't toggle the zoom.
+  await p.getByRole('tab', { name: 'Crop' }).click();
+  await p.getByRole('radio', { name: '4:5' }).click();
+  await p.getByTestId('zoom-fit').click();
+  await settle();
+  await p.keyboard.press('z');
+  await settle();
+  const shade = p.locator('.crop-shade');
+  const s0 = await shade.boundingBox();
+  const vis = await p.getByTestId('edit-stage').boundingBox();
+  const sx = Math.max(s0.x, vis.x) + 30;
+  const sy = Math.max(s0.y, vis.y) + 30;
+  await p.mouse.move(sx, sy);
+  await p.mouse.down();
+  await p.mouse.move(sx + 60, sy, { steps: 4 });
+  await p.mouse.up();
+  await settle();
+  const s1 = await shade.boundingBox();
+  if (Math.abs(s1.x - s0.x - 60) > 3) throw new Error(`crop moved ${s1.x - s0.x}px while zoomed, wanted 60`);
+  if ((await readout()) !== '100%') throw new Error(`dragging the crop changed the zoom to ${await readout()}`);
+  await ctx.close();
+  // The Loupe shares it.
+  const l = await page('#/loupe/p15');
+  const lr = () => l.p.locator('[data-testid=loupe] .stage-fit > .photo').evaluate((el) => el.getBoundingClientRect().width);
+  const w0 = await lr();
+  await l.p.locator('[data-testid=loupe]').evaluate((el) => {
+    const b = el.getBoundingClientRect();
+    for (let i = 0; i < 8; i++) el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -30, ctrlKey: true, clientX: b.left + b.width / 2, clientY: b.top + b.height / 2 }));
+  });
+  await l.p.waitForTimeout(320);
+  if ((await lr()) < w0 * 1.5) throw new Error('pinch did not zoom the Loupe');
+  await l.p.screenshot({ path: `${out}14b-loupe-zoomed.png` });
+  await l.p.keyboard.press('ArrowRight');
+  await l.p.waitForTimeout(500);
+  if ((await lr()) < w0 * 1.5) throw new Error('the zoom did not carry to the next photo');
+  await l.ctx.close();
+});
+
+await browser.close();
+await server.close();
+console.log(results.join('\n'));
+console.log(`\nShots in ${out}`);
+if (errors.length) {
+  console.error('\nProblems:\n' + errors.join('\n'));
+  process.exit(1);
+}

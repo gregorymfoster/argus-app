@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Skip a step whose inputs haven't changed since it last passed (a content-hash build cache).
+
+    scripts/cached NAME [--in PATH]... [--stat PATH]... [--key CMD]... [--out PATH]... -- CMD ARGS...
+
+The key is a hash of the command, the contents of every file git sees under each --in path
+(tracked and untracked, minus .gitignore'd), the names and sizes of everything under
+each --stat path (big ignored inputs like fixtures/raw), and the output of each --key shell
+command (e.g. `rustc -vV`). If the key matches the last successful run and every --out path
+exists, CMD is skipped; otherwise it runs and, on exit 0, the key is saved in out/cache/NAME.key.
+Paths are relative to the repo root. ARGUS_NO_CACHE=1 always runs. Python 3.9+ stdlib only.
+Cargo already caches compiled crates; this caches the steps above it: test runs, the
+frontend build, npm installs. See docs/agents/build-speed.md.
+"""
+import hashlib, os, subprocess, sys, time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def usage():
+    sys.exit(__doc__.strip().splitlines()[2].strip())
+
+
+def main(argv):
+    if "--" not in argv or not argv or argv[0].startswith("-"):
+        usage()
+    split = argv.index("--")
+    name, opts, cmd = argv[0], argv[1:split], argv[split + 1:]
+    ins, stats, keys, outs = [], [], [], []
+    lists = {"--in": ins, "--stat": stats, "--key": keys, "--out": outs}
+    for flag, value in zip(opts[::2], opts[1::2]):
+        if flag not in lists:
+            usage()
+        lists[flag].append(value)
+    if len(opts) % 2 or not cmd:
+        usage()
+
+    h = hashlib.sha256()
+    h.update(repr(cmd).encode())
+    if ins:
+        files = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *ins],
+            cwd=ROOT, check=True, capture_output=True).stdout.split(b"\0")
+        for f in sorted(set(filter(None, files))):
+            path = os.path.join(ROOT, os.fsdecode(f))
+            h.update(f + b"\0")
+            try:
+                with open(path, "rb") as fh:
+                    h.update(hashlib.sha256(fh.read()).digest())
+            except OSError:
+                h.update(b"missing")
+    for top in stats:
+        for dirpath, dirs, names in os.walk(os.path.join(ROOT, top)):
+            dirs.sort()
+            for n in sorted(names):
+                st = os.stat(os.path.join(dirpath, n))
+                h.update(f"{os.path.relpath(dirpath, ROOT)}/{n} {st.st_size}\n".encode())
+    for k in keys:
+        h.update(subprocess.run(k, shell=True, cwd=ROOT, capture_output=True).stdout)
+    key = h.hexdigest()
+
+    store = os.path.join(ROOT, "out", "cache", name + ".key")
+    try:
+        with open(store) as f:
+            saved = f.read().strip()
+    except OSError:
+        saved = ""
+    outputs_ok = all(os.path.exists(os.path.join(ROOT, o)) for o in outs)
+    if saved == key and outputs_ok and os.environ.get("ARGUS_NO_CACHE") != "1":
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(store)))
+        print(f"cached: {name} skipped, inputs unchanged since it passed at {when} (ARGUS_NO_CACHE=1 reruns)")
+        return 0
+
+    code = subprocess.call(cmd)
+    if code == 0:
+        os.makedirs(os.path.dirname(store), exist_ok=True)
+        with open(store, "w") as f:
+            f.write(key + "\n")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,141 @@
+# Backup only: releases are built on Greg's Mac with scripts/release/local.sh, which is free.
+# This builds the Mac app on a GitHub macOS runner instead (paid minutes on a private repo).
+# Run it by hand from the Actions tab with a version. See docs/release.md.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the v (e.g. 0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Releases go to a public, binaries-only repo because argus itself is private and the
+  # updater can't sign in to read its releases. Override with the RELEASE_REPO variable.
+  RELEASE_REPO: ${{ vars.RELEASE_REPO || 'gregorymfoster/argus-releases' }}
+  PLATFORM: darwin-aarch64
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Work out the version
+        id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then v="${INPUT_VERSION#v}"; else v="${GITHUB_REF_NAME#v}"; fi
+          echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "::error::'$v' is not a semver version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+
+      - name: Check the signing key and release repo are set up
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || missing="$missing secret:TAURI_SIGNING_PRIVATE_KEY"
+          [ -n "$PUBKEY" ] || missing="$missing variable:TAURI_UPDATER_PUBKEY"
+          if [ "$RELEASE_REPO" != "$GITHUB_REPOSITORY" ] && [ -z "$RELEASES_TOKEN" ]; then missing="$missing secret:RELEASES_TOKEN"; fi
+          if [ -n "$missing" ]; then echo "::error::Missing$missing. Run scripts/release/setup.sh once on the Mac (docs/release.md)."; exit 1; fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+
+      - name: Test the release scripts
+        run: node --test scripts/release/latest-json.test.mjs
+
+      - name: Build and sign the app
+        working-directory: app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          # Release-only config merged over tauri.conf.json: version from the tag, the real
+          # updater public key, where installed copies look for updates, and an ad-hoc
+          # signature (no Apple account, ADR 0004; Apple Silicon won't run an unsigned bundle).
+          jq -n --arg v "$VERSION" --arg k "$PUBKEY" \
+            --arg e "https://github.com/$RELEASE_REPO/releases/latest/download/latest.json" \
+            '{version: $v, bundle: {createUpdaterArtifacts: true, macOS: {signingIdentity: "-"}}, plugins: {updater: {pubkey: $k, endpoints: [$e]}}}' \
+            > "$RUNNER_TEMP/release.conf.json"
+          if [ -f package-lock.json ]; then npm ci; fi
+          if [ -x node_modules/.bin/tauri ]; then tauri=node_modules/.bin/tauri; else tauri="npx --yes @tauri-apps/cli@2"; fi
+          # hdiutil on hosted macOS runners sometimes fails with "Resource busy" while making the
+          # .dmg. Retry; the Rust build is cached after the first attempt, so a retry only re-bundles.
+          for attempt in 1 2 3; do
+            if $tauri build --bundles app,dmg --config "$RUNNER_TEMP/release.conf.json"; then break; fi
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::bundling failed (attempt $attempt), retrying"
+            hdiutil info | grep -E '^/dev/disk' | awk '{print $1}' | xargs -n1 hdiutil detach -force 2>/dev/null || true
+            sleep 10
+          done
+
+      - name: Collect the release files
+        id: files
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          bundle_dir=$(find . -path ./node_modules -prune -o -type d -path '*/release/bundle' -print | head -n1)
+          [ -n "$bundle_dir" ] || { echo "::error::no release bundle directory found"; exit 1; }
+          dmg=$(ls "$bundle_dir"/dmg/*.dmg | head -n1)
+          tarball=$(ls "$bundle_dir"/macos/*.app.tar.gz | head -n1)
+          [ -f "$tarball.sig" ] || { echo "::error::updater signature missing; is the signing key right?"; exit 1; }
+          mkdir -p dist
+          # Version the updater bundle's name so each release's asset URL is unique.
+          name="Argus_${VERSION}_aarch64"
+          cp "$dmg" "dist/$name.dmg"
+          cp "$tarball" "dist/$name.app.tar.gz"
+          node scripts/release/latest-json.mjs --version "$VERSION" --repo "$RELEASE_REPO" --tag "$TAG" \
+            --platform "$PLATFORM" --bundle "$name.app.tar.gz" --sig "$tarball.sig" \
+            --notes "Argus $VERSION" > dist/latest.json
+          cat dist/latest.json
+          ls -la dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ env.RELEASE_REPO == github.repository && github.token || secrets.RELEASES_TOKEN }}
+          TAG: ${{ steps.v.outputs.tag }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          {
+            echo "Built from gregorymfoster/argus@${GITHUB_SHA::7}."
+            echo
+            echo "First install: open the .dmg, drag Argus to Applications, then approve it once in System Settings > Privacy & Security > Open Anyway. Later versions install themselves."
+            if [ -n "$prev" ]; then echo; echo "Changes since $prev:"; git log --format='- %s' "$prev..HEAD" | head -n 50; fi
+          } > dist/notes.md
+          gh release create "$TAG" --repo "$RELEASE_REPO" --title "Argus $VERSION" --notes-file dist/notes.md \
+            dist/*.dmg dist/*.app.tar.gz dist/latest.json
+
+      - name: Tag the source
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "$TAG"

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Land the current work on main: rebase onto origin/main, run `just check`, push to main.
+# Works from any branch (cloud sessions often start on claude/*): commits go to origin main.
+# Retries the push on network errors and re-rebases if another thread pushed first.
+#   scripts/land            (or `just land`)
+#   LAND_SKIP_CHECK=1 scripts/land   docs-only change, skips `just check`
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  echo "land: commit or stash your changes first" >&2
+  exit 1
+fi
+
+for attempt in 1 2 3 4 5; do
+  git fetch -q origin main || { sleep $((2 ** attempt)); continue; }
+  if ! git rebase -q origin/main; then
+    echo "land: rebase onto origin/main hit a conflict. Resolve it (git status), 'git rebase --continue', then rerun." >&2
+    echo "land: ADR or schema-step numbers clashing? Take the next free number on origin/main." >&2
+    exit 1
+  fi
+  if [ "${LAND_SKIP_CHECK:-}" != "1" ] && [ "${checked:-}" != "$(git rev-parse HEAD^{tree})" ]; then
+    just check
+    checked=$(git rev-parse HEAD^{tree})
+  fi
+  if git push -q origin HEAD:main; then
+    echo "land: pushed $(git rev-parse --short HEAD) to main"
+    exit 0
+  fi
+  echo "land: push failed (attempt $attempt), fetching and retrying" >&2
+  sleep $((2 ** attempt))
+done
+echo "land: gave up after 5 attempts" >&2
+exit 1
