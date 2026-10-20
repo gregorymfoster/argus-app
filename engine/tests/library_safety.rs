@@ -177,7 +177,9 @@ fn daily_backups_are_made_once_a_day_and_pruned_to_the_newest_fourteen() {
     let (root, _) = library(tmp.path());
     let lib = Library::open(&root).unwrap();
     let made = lib.backup_if_due().unwrap().expect("first backup");
-    assert!(made.starts_with(root.join("backups")));
+    // Canonical on both sides: macOS temp dirs live under /var, a link to /private/var.
+    let backups = root.join("backups").canonicalize().unwrap();
+    assert!(made.canonicalize().unwrap().starts_with(&backups));
     assert!(
         lib.backup_if_due().unwrap().is_none(),
         "not due again today"
@@ -278,7 +280,7 @@ fn kill_child_writer() {
         .iter()
         .map(|p| p.id)
         .collect();
-    for n in 0.. {
+    for n in 0..usize::MAX {
         let id = ids[n % ids.len()];
         let batch = lib.begin_batch(Author::Ai, "kill test").unwrap();
         let v = lib

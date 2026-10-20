@@ -192,7 +192,7 @@ impl Provider for Fake {
                     reason: "fake".into(),
                     stack: Some(1),
                     rank: Some(p.n as u32),
-                    stars: Some(if p.n == 1 { 4 } else { 2 }),
+                    stars: Some(if p.n == 1 { 4 } else { 1 }),
                     best: (p.n == 1).then_some(1),
                 })
                 .collect(),
@@ -219,7 +219,7 @@ fn cull_shoot_defaults_to_the_newest_shoot_and_passes_provider_choice() {
             r["rejects"].as_u64(),
             r["stacks"].as_u64()
         ),
-        (Some(1), Some(2), Some(1))
+        (Some(0), Some(2), Some(1))
     );
     assert_eq!(
         json1(&tools, "list_stacks", json!({ "shoot_id": 1 }))

@@ -294,6 +294,17 @@ impl Tools {
                 }
                 one(out)
             }
+            "style_profile" => {
+                let a: StyleArgs = parse(args)?;
+                let p = match &a.corrections {
+                    Some(c) => crate::style::Profile::learn(&crate::style::corrections_from(c)?),
+                    None => crate::style::Profile::of_library(&lib)?,
+                };
+                let mut out = to_json(&p)?;
+                out["line"] = json!(crate::style::Profile::line(&p.moves));
+                out["min_photos"] = json!(crate::style::MIN_PHOTOS);
+                one(out)
+            }
             "export_usage_bench" => {
                 let a: ExportUsageBench = parse(args)?;
                 let folder = export::expand_home(&a.folder);
@@ -370,6 +381,11 @@ impl Tools {
             "set_stacks" => {
                 let a: SetStacks = parse(args)?;
                 lib.replace_stacks(a.shoot_id, &a.stacks)?;
+                one(stacks(&lib, a.shoot_id)?)
+            }
+            "stack_bursts" => {
+                let a: ShootArg = parse(args)?;
+                crate::bursts::stack_shoot(&mut lib, a.shoot_id, true)?;
                 one(stacks(&lib, a.shoot_id)?)
             }
             "list_stacks" => {
@@ -878,6 +894,12 @@ fn specs() -> Vec<ToolSpec> {
             read_only: true,
         },
         ToolSpec {
+            name: "stack_bursts",
+            description: "Find a Shoot's bursts (frames seconds apart that look alike) and join them into its Stacks, keeping the Stacks it has. Returns every Stack, best frame first. Import does this by itself once a Shoot's Photos are analyzed; a cull keeps the bursts too.",
+            input_schema: json!({ "type": "object", "required": ["shoot_id"], "properties": { "shoot_id": id } }),
+            read_only: false,
+        },
+        ToolSpec {
             name: "set_stacks",
             description: "Replace all of a Shoot's Stacks. Each inner list is one Stack of Photo ids, best frame first; lists of one are ignored.",
             input_schema: json!({ "type": "object", "required": ["shoot_id", "stacks"], "properties": {
@@ -1106,6 +1128,13 @@ fn specs() -> Vec<ToolSpec> {
             input_schema: json!({ "type": "object", "properties": {
                 "recording": { "type": "boolean" }, "clear": { "type": "boolean" }, "photo_id": id } }),
             read_only: false,
+        },
+        ToolSpec {
+            name: "style_profile",
+            description: "The person's style profile, learned from the usage log: how they usually correct the AI's takes before exporting (median slider changes on Photos where they kept a take, shrunk while there are few). Fresh Suggestions add these moves to every take; a take name with enough corrections of its own gets its own (by_take). Empty below min_photos corrections. corrections, a list of {take, moved: {slider: change}}, learns from that list instead of this Library (benches, tests).",
+            input_schema: json!({ "type": "object", "properties": {
+                "corrections": { "type": "array", "items": { "type": "object" } } } }),
+            read_only: true,
         },
         ToolSpec {
             name: "export_usage_bench",
@@ -1829,6 +1858,12 @@ struct ExportPhotos {
     sequence_total: Option<usize>,
     /// False keeps this export out of the usage log (bench exports of the log itself).
     record: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StyleArgs {
+    corrections: Option<Value>,
 }
 
 #[derive(Deserialize)]

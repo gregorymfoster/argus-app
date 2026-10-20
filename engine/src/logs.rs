@@ -8,8 +8,31 @@ use std::path::{Path, PathBuf};
 pub const MAX_BYTES: u64 = 2_000_000;
 
 /// One timestamped line on stderr (and so in the log): `2026-10-19T02:47:11Z message`.
+/// Also a `note` in the Debug log.
 pub fn note(msg: &str) {
     eprintln!("{} {msg}", crate::library::time::now());
+    crate::debug_log::event("note", serde_json::json!({ "msg": msg }));
+}
+
+/// Start this process's Debug log and Resource meter in `dir` (the app, `argus serve` and
+/// the CLI's long commands), with a `start` line saying what is running where.
+pub fn start_debug(dir: &Path, proc: &str) {
+    if crate::debug_log::init(dir, proc).is_err() {
+        return;
+    }
+    crate::debug_log::event(
+        "start",
+        serde_json::json!({
+            "args": std::env::args().skip(1).collect::<Vec<_>>(),
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "cpus": std::thread::available_parallelism().map_or(0, |n| n.get()),
+            "mem_total_bytes": crate::meter::mem_total(),
+            "compute": std::env::var("ARGUS_COMPUTE").ok(),
+            "ollama_model": std::env::var("ARGUS_OLLAMA_MODEL").ok(),
+        }),
+    );
+    crate::meter::start();
 }
 
 /// Where the app logs on this Mac: ARGUS_LOG_DIR, else `~/Library/Logs/Argus`.

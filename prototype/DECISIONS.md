@@ -18,6 +18,10 @@ Looks are Shoot-wide. Describe the Look to the Agent and it lands on every Pick,
 
 Paths never contain spaces. Defaults join words with hyphens and a date prefix with an underscore (`~/Pictures/Argus/2026-10-12_tahoe`), and a typed space becomes a hyphen.
 
+## Bursts (Greg, 2026-10-20)
+
+Greg wanted bursts stacked while culling so he keeps one or two frames from each. Argus now stacks bursts without a model (look-alike frames shot seconds apart) as soon as Import has analyzed a Shoot, and the AI cull joins its Stacks to them. The Stacks view (N, Lightroom's Survey key, or the layers icon in the view switch) is Survey for one Stack at a time: focus starts on the AI's best frame, P/X/U and stars work on the focused frame, Enter keeps it (or the frames you picked with P), drops the AI's other Picks and moves to the next Stack you haven't done. The frames you don't keep stay Unflagged by default; "The rest: Rejected" in the header rejects them instead and is remembered. A collapsed Stack in the grid shows the frame you kept as its cover.
+
 ## Components
 
 shadcn/ui on Radix for controls and dialogs (hand-written into `src/components/ui/` because the shadcn registry is blocked from the build container; the files match shadcn's shapes, so `npx shadcn add` can replace them later), Tailwind v4 with the design tokens as theme colors, cmdk for ⌘K, TanStack Virtual for the grid, Sonner for toasts, react-hotkeys-hook for shortcuts and lucide for icons. `src/ui/kit.tsx` composes these into Argus-specific pieces (labelled slider, segmented toggle, tooltip with a key hint), so a control changes in one place.

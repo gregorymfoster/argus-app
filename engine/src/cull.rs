@@ -31,8 +31,8 @@ pub const CULL_FACTS: &[&str] = &["signals", "eyes", "embedding"];
 /// Image-embedding similarity at which two frames show the same scene (a burst), and at
 /// which they are near-identical. Measured on the bench: burst frames 0.85-0.95, exact
 /// duplicates 0.99+, different scenes 0.3-0.6.
-const SAME_SCENE: f32 = 0.85;
-const NEAR_IDENTICAL: f32 = 0.97;
+pub(crate) const SAME_SCENE: f32 = 0.85;
+pub(crate) const NEAR_IDENTICAL: f32 = 0.97;
 
 /// For each Photo in capture order, how it compares with the one before ("same scene as
 /// Photo 11"), or "" when it's a new scene.
@@ -688,7 +688,7 @@ pub fn split_chunks(photos: &[SheetPhoto], max: usize) -> Vec<std::ops::Range<us
 }
 
 /// Seconds since an arbitrary epoch from `YYYY-MM-DDTHH:MM:SS...`; 0 if unparseable.
-fn seconds(t: &str) -> i64 {
+pub(crate) fn seconds(t: &str) -> i64 {
     let num = |a: usize, b: usize| t.get(a..b).and_then(|s| s.parse::<i64>().ok());
     let (Some(y), Some(m), Some(d)) = (num(0, 4), num(5, 7), num(8, 10)) else {
         return 0;
@@ -762,8 +762,9 @@ pub fn apply(lib: &mut Library, sheet: &ContactSheet, result: &CullResult) -> Re
             kept += 1;
             continue;
         }
-        lib.set_verdict(&[id], c.verdict, Author::Ai, Some(&c.reason), Some(batch))?;
-        match c.verdict {
+        let verdict = cautious(c);
+        lib.set_verdict(&[id], verdict, Author::Ai, Some(&c.reason), Some(batch))?;
+        match verdict {
             Verdict::Pick => picks += 1,
             Verdict::Reject => rejects += 1,
             Verdict::Unflagged => unflagged += 1,
@@ -777,13 +778,20 @@ pub fn apply(lib: &mut Library, sheet: &ContactSheet, result: &CullResult) -> Re
         })
         .filter(|m: &Vec<PhotoId>| m.len() > 1)
         .collect();
+    // The model sometimes leaves a burst apart; join the bursts the Facts show.
+    let stacks = crate::bursts::merge(&stacks, &crate::bursts::find(lib, &current)?);
     lib.replace_stacks(sheet.shoot, &stacks)?;
     // Best Photos: in the model's order, never two from one Stack.
+    let stack_of: HashMap<PhotoId, usize> = stacks
+        .iter()
+        .enumerate()
+        .flat_map(|(i, m)| m.iter().map(move |&id| (id, i)))
+        .collect();
     best.sort_by_key(|&(rank, _, id)| (rank, id));
     let mut stacks_used = HashSet::new();
     let best: Vec<PhotoId> = best
         .into_iter()
-        .filter(|&(_, stack, _)| stack.is_none_or(|s| stacks_used.insert(s)))
+        .filter(|&(_, _, id)| stack_of.get(&id).is_none_or(|&s| stacks_used.insert(s)))
         .map(|(_, _, id)| id)
         .collect();
     lib.replace_best_photos(sheet.shoot, &best)?;
@@ -802,6 +810,17 @@ pub fn apply(lib: &mut Library, sheet: &ContactSheet, result: &CullResult) -> Re
         missing: by_n.len() - seen.len(),
         ignored,
     })
+}
+
+/// The Verdict the AI may set (Greg, 2026-10-20): it rates every Photo and rejects only a frame
+/// it rated 1 star for a named technical flaw; picking is left to the person's own cull pass.
+/// On his clean 2026-10-10 card no model picked his keepers much better than chance, and Qwen
+/// rejected 14 of them, while it caught every damaged frame (docs/research/cull-scorer.md).
+fn cautious(c: &CullPhoto) -> Verdict {
+    match c.verdict {
+        Verdict::Reject if c.stars.is_none_or(|s| s <= 1) => Verdict::Reject,
+        _ => Verdict::Unflagged,
+    }
 }
 
 /// Claude over the Messages API (raw HTTP; there is no official Rust SDK).
@@ -860,12 +879,14 @@ const SYSTEM: &str = "You cull photo shoots for a photographer. You see every ph
 shoot, in capture order, before deciding anything, and you judge each photo against the \
 rest of the shoot rather than in isolation.
 
-For each photo decide a Verdict, the way a careful photographer flags in Lightroom:
-- pick: a keeper. Sharp where it matters, eyes open, good expression and moment, sound exposure \
-and composition. When several frames show the same moment, pick only the best one or two.
-- reject: clearly not worth keeping: missed focus, motion blur, closed eyes or awkward expression \
-on the main subject, badly exposed beyond rescue, or a weaker duplicate of a picked frame.
-- unflagged: a genuine close call you want the photographer to decide.
+For each photo decide a Verdict. The photographer does the real cull afterwards, so you only \
+set aside frames that are plainly broken and leave every judgment of taste to your stars:
+- reject: only a frame with a concrete technical flaw you can name: missed focus or motion blur \
+on the subject, closed eyes on the main subject, or exposure beyond rescue. Rate it 1 star. Never \
+reject a frame because it is ordinary, a weaker version of another frame, or a scene you like \
+less: a wrong reject hides a keeper from the photographer.
+- unflagged: every other frame, including the ones you would keep. Your stars say which are best.
+- pick: never. The photographer picks.
 
 Group near-identical frames (bursts, repeated attempts at the same shot) into Stacks by giving \
 them the same stack number, and rank the frames inside each Stack (1 = best). Look across the \
@@ -877,8 +898,8 @@ Rate every photo with Lightroom stars, judged against the rest of this shoot:
 - 4: excellent, clearly worth editing and sharing.
 - 3: a good, solid keeper.
 - 2: usable but flawed, or a weaker version of a better frame.
-- 1: a technical failure or an obvious reject.
-Stars agree with the Verdict: a pick has 3 or more, a reject 2 or fewer.
+- 1: a technical failure (and only then a reject).
+Use the whole range: spread the shoot across 2 to 5 so the photographer can sort by stars.
 
 Then choose the shoot's Best Photos: the strongest frames, the ones you would show someone \
 first. Take about one photo in ten (at least one), never two from the same Stack or two \
@@ -891,8 +912,8 @@ highlights and crushed shadows. Treat them as hints beside your own eyes: a low 
 percentile backs up a frame that looks soft, but a deliberate shallow-focus or dark, moody \
 frame can still be among the best. Where there are faces near enough to read, a face model \
 adds whether eyes are closed and whether the faces are sharp (focus on the eyes compared with \
-the sharpest part of the frame). A blink is usually a reject when a near-identical frame has \
-open eyes, but closed eyes in a kiss or a laugh can be the moment. An image model also notes \
+the sharpest part of the frame). A blink is usually 1 or 2 stars when a near-identical frame \
+has open eyes, but closed eyes in a kiss or a laugh can be the moment. An image model also notes \
 when a photo shows the same scene as the one before it (likely the same Stack) or is \
 near-identical to it.
 
@@ -1512,6 +1533,7 @@ impl Provider for ClaudeCode {
             sheet.intro(),
             result_schema()
         );
+        let t = Instant::now();
         let out = std::process::Command::new(&self.bin)
             .args([
                 "-p",
@@ -1532,6 +1554,7 @@ impl Provider for ClaudeCode {
                 self.bin
             ))
         })?;
+        crate::agent::log_claude(&self.model, &out, t.elapsed());
         let stdout = String::from_utf8_lossy(&out.stdout);
         let v: Value = serde_json::from_str(&stdout).map_err(|_| {
             Error(format!(

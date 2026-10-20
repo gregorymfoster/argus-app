@@ -5,7 +5,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-export type Screen = 'import' | 'cull' | 'loupe' | 'compare' | 'look' | 'edit';
+export type Screen = 'import' | 'cull' | 'loupe' | 'compare' | 'bursts' | 'look' | 'edit';
 
 export interface Decision {
   id: string;

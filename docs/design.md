@@ -22,7 +22,7 @@ The photo is the hero. Argus wears Claude's dark palette (Greg, 2026-10-18): nea
 
 Terracotta marks action and focus: the primary button, progress bars, keyboard focus, text selection, checked boxes and chosen import sources. Every other color is reserved for meaning: blue for Pick (Claude's link blue), red for Reject, no color for Unflagged, green only for "done" states, and a single amber marker for the current Shoot. Reject moved from orange to red with the palette change so it never reads as the accent.
 
-UI text and Agent prose use the Mac's own SF Pro, and numbers and metadata use SF Mono, as Cursor and Claude do (Greg, 2026-10-18). Bundled Geist and Geist Mono stand in wherever SF isn't available, such as the Linux test runs.
+UI text and Agent prose use the Mac's own SF Pro (Greg, 2026-10-18). Numbers and metadata use Nordwand Mono (Greg, 2026-10-20), bundled in `prototype/src/fonts/nordwand-mono/` under the SIL OFL; it replaced SF Mono. Bundled Geist stands in for SF Pro wherever SF isn't available, such as the Linux test runs.
 
 Every AI action shows as a compact step with its timing, and offers a review or undo of exactly what it changed.
 
@@ -36,6 +36,22 @@ Waiting is never a bare spinner (Greg, 2026-10-18). When progress is knowable (c
 
 Lightroom stars under each tile, before the reason. The AI's are dim with a small sparkle ("suggested"); the person's are solid. Keys 0-5 rate and move on like flags; pressing the AI's own number confirms it. Best Photos is a grid filter (B): #1 large, the rest in rank order with reasons, and a gold award badge with the rank on grid tiles. A ★ menu in the grid header filters by least stars. Mock: the "AI star ratings" boards on the design canvas.
 
+## Design v3: quieter chrome (Greg, 2026-10-20)
+
+Greg put Argus's sidebar and grid toolbar next to the Claude app's and asked to keep modernizing and simplifying. The gap was boxes. Argus wrapped every group in a tinted tray, gave Import and the background-work card their own bordered cards, and showed keycaps at rest. Claude's chrome has almost none of that: rows are plain text with a muted icon, only the selected item gets a soft chip, and actions in a header are bare icons and labels.
+
+So the rule now is one chip per group. A segmented group (the view switch, the flag filter) has no tray, and only its active item gets the `--chip` fill (white 7.5%). Header buttons are ghost: no fill at rest, a `--hover` wash under the pointer. Keycaps don't show at rest in the sidebar or headers; a row's shortcut fades in as a quiet hint when you hover it, and tooltips and ⌘K still teach every key. Counts stay (Lightroom shows them, and Greg wants information on the screen) but they're set in the sans at `--text-3`, not mono.
+
+Sidebar: search is a hairline-outlined field, not a filled pill. Import is the first row under it, where modern Lightroom keeps its + and Claude keeps New. Rows are `--row-h` (28px) with 7px radii, labels in `--text` and 14px (`--icon`) icons in `--text-2`. The open Shoot is marked by the chip and an amber folder (`--shoot`), no terracotta bar. The foot holds background work and the Resource meter as flat rows above one hairline, like Claude's account row.
+
+Header controls are 26 to 27px tall at 12.5px. The same rule covers the bars around a photo: the Loupe flag row has no tray (its P, X, U fade in on hover), the Info and Agent tabs chip only the open one, and footer and header key hints are plain letters with no keycap. In Edit, Auto and B&W are ghost buttons; one-click fixes and Agent prompts keep their soft fill, since an outline on each would add borders. In Import, the From and New/All pickers are borderless and Cancel is ghost beside the one terracotta Import. The rules live in one "Design v3" block at the end of `prototype/src/styles.css`, scoped to `.sidebar` and `.panel-head` so later screens pick them up by using those classes. `node prototype/scripts/design-shots.mjs OUTDIR` takes retina shots of the window, sidebar and Cull toolbar for before/after comparisons.
+
+| Token | Value | Use |
+|---|---|---|
+| chip | white 7.5% | the one active item in a group, the selected sidebar row |
+| row-h | 28px | sidebar rows |
+| icon | 14px | sidebar icons (13px in headers) |
+
 ## Agreed patterns
 
 Greg chose these in the prototype on 2026-10-17. They hold until he uses the real app and changes his mind, which we expect, so build them to be easy to swap.
@@ -48,7 +64,7 @@ Grid thumbnails change size with a trackpad pinch, the size slider in the toolba
 
 For Looks, chat comes first: Greg describes what he wants and the Agent builds it. Before and after shows as split tiles. AI edits apply directly, with one undo for the whole batch. In deep edit, each Mask is a card with its own sliders.
 
-The Edit panel copies Lightroom's (Greg, 2026-10-18: "just copy Lightroom for starters"), laid out as design pass v2 on the canvas (Greg, 2026-10-18: "much better, implement it"). A thin tool strip down the right edge opens Edit (E), Crop (C), Masking (M), Presets (⇧P) and History. Edit has Auto (⇧A) and B&W (V) on top, a Profile (Argus Color or Monochrome, which is what B&W switches, as Lightroom's), then a Recommended row of four Looks for this Photo with an Amount (0 to 200, scaling the Look from what it replaced) and one-click fixes that toggle (Enhance sky, Brighten faces, Even skin, Lift shadows). Below come collapsible Light and Color sections in Lightroom's order and names, each with an eye that previews the photo without it, then Color mixer and Retouch, closed until opened. Only sliders the engine renders appear. Crop has aspect ratios, Straighten and a crop box dragged on the uncropped photo. Masking shows Create new mask as a grid (Subject, Sky, Background, People, Brush, Linear, Radial, Hair), the Photo's Masks as rows, and for a People Mask Lightroom's Select People: a face thumbnail per person the engine finds, Everyone, and checkboxes for face skin, body skin, eyes, teeth, hair and the whole person. Linear and Radial Masks are placed with handles on the photo. The Presets tool keeps the full list of Looks, B&W and adaptive presets; hovering any preset, Recommended Look or fix previews it on the photo through the engine. The Agent sits under the open tool. The grid has "Auto all" (⇧A, or on a selection) so a whole Shoot can get Auto before culling.
+The Edit panel copies Lightroom's (Greg, 2026-10-18: "just copy Lightroom for starters"), laid out as design pass v2 on the canvas (Greg, 2026-10-18: "much better, implement it"). A thin tool strip down the right edge opens Edit (E), Crop (C), Masking (M), Presets (⇧P) and History. Edit has Auto (⇧A) and B&W (V) on top, a Profile (Argus Color or Monochrome, which is what B&W switches, as Lightroom's), then a Recommended row of four Looks for this Photo with an Amount (0 to 200, scaling the Look from what it replaced) and one-click fixes that toggle (Enhance sky, Brighten faces, Even skin, Lift shadows). Below come collapsible Light and Color sections in Lightroom's order and names, each with an eye that previews the photo without it, then Color mixer and Retouch, closed until opened. Only sliders the engine renders appear. Crop has aspect ratios, Straighten and a crop box dragged on the uncropped photo. Masking shows Create new mask as a grid (Subject, Sky, Background, People, Brush, Linear, Radial, Hair), the Photo's Masks as rows, and for a People Mask Lightroom's Select People: a face thumbnail per person the engine finds, Everyone, and checkboxes for face skin, body skin, eyes, teeth, hair and the whole person. Linear and Radial Masks are placed with handles on the photo. The Presets tool keeps the full list of Looks, B&W and adaptive presets; hovering any preset, Recommended Look or fix previews it on the photo through the engine. The Agent sits under the open tool. The grid has "Auto all" (⇧A, or on a selection) so a whole Shoot can get Auto before culling. Its Sort menu follows Lightroom's (Capture time, Stars, Flag, File name, each with a direction; ⇧S flips between Stars, most first, and Capture time); a Stack sorts by its best frame and stays together, and the Loupe and filmstrip follow the same order.
 
 ## Components
 
@@ -85,7 +101,7 @@ The window is one flat surface split by hairlines (sidebar | content | Agent), n
 
 Hairlines are translucent white so one border reads the same on the ground, on panels and over photos. Buttons don't get them. Greg (2026-10-18) asked for fewer borders and gentler hovers, like the chips in Claude's thread header, so secondary buttons, chips, kbd hints and segmented controls are a soft `--fill` tint with no outline, and hover lifts it to `--fill-hover`. Outlines stay where they carry meaning: inputs, popovers, tiles, the composer and the selected crop ratio's terracotta fill. Primary actions keep the solid terracotta fill and keyboard focus keeps its ring. Raised surfaces get a 1px inner top highlight, and popovers (menus, palette, dialogs, toasts, tooltips) share one layered `--pop` shadow.
 
-Radii are 4 to 6 (chips, tiles, buttons, menu items), 8 (panels, menus) and 10 (composer, dialogs, ⌘K palette). Spacing follows a 4px grid: panel headers are 40px, sidebar rows 26px, menu and palette rows 28 to 32px.
+Radii are 4 to 7 (chips, tiles, buttons, menu items, sidebar rows), 8 (panels, menus) and 10 (composer, dialogs, ⌘K palette). Spacing follows a 4px grid: panel headers are 40px, sidebar rows 28px, menu and palette rows 28 to 32px.
 
 Type: UI text is 13px with secondary text at 11.5 to 12px, headings are 13 to 15px at weight 500 with slightly tight tracking, and Agent prose is 13.5px sans at a relaxed 1.6 line height. Numbers use tabular figures. Fallback fonts are bundled (Fontsource packages), never fetched from Google.
 

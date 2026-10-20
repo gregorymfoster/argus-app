@@ -24,7 +24,7 @@ export function Filmstrip({ order, pos, stackIds = [], open }: { order: string[]
         const cls = [id === order[pos] ? 'on' : '', stackIds.includes(id) ? 'in-stack' : '', v === 'reject' ? 'rejected' : ''].join(' ');
         return (
           <button key={id} className={cls} onClick={() => open(id)} aria-label={`${s.file}, ${s.reason}`}>
-            <PhotoView photo={s} edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
+            <PhotoView photo={s} size="tile" edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
             {v === 'pick' && <span className="dot pick" />}
           </button>
         );

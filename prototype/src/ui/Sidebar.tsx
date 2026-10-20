@@ -6,12 +6,13 @@ import { ShootItem } from './ShootItem';
 import { useLibrary, verdictOf } from '../store/library';
 import { go, type Route } from '../router';
 import { QueueProgress } from './Queue';
+import { MeterLine } from './Meter';
 import { UpdateButton } from './Updates';
-import { Kbd } from './kit';
 
 /**
  * The Library sidebar (Design pass v2): search, the Library's views, every Shoot newest
- * first with the open one marked, then Import and the background work at the foot.
+ * first with the open one marked, and the background work at the foot. Import sits at the top,
+ * where modern Lightroom keeps its + (Design v3, 2026-10-20).
  * Views of one Shoot (grid, loupe, compare, edit) live in the Cull header instead.
  */
 export function Sidebar({ route, onPalette, onExport, onAuto, onCull }: { route: Route; onPalette: () => void; onExport: () => void; onAuto: () => void; onCull: () => void }) {
@@ -42,7 +43,12 @@ export function Sidebar({ route, onPalette, onExport, onAuto, onCull }: { route:
         <Search size={13} />
         Search or jump
         <span className="grow" />
-        <kbd>⌘K</kbd>
+        <span className="hint">⌘K</span>
+      </button>
+      <button className={`nav-item nav-import ${route.name === 'import' ? 'active' : ''}`} onClick={() => go({ name: 'import' })} data-testid="nav-import">
+        <Download size={14} />
+        Import
+        <span className="hint">⌘⇧I</span>
       </button>
       <div className="nav-label">Library</div>
       <button className={`nav-item ${SHOOT.id === 'all' && route.name !== 'import' ? 'active' : ''}`} onClick={() => view('all')} aria-current={SHOOT.id === 'all' || undefined} data-testid="nav-all">
@@ -83,18 +89,11 @@ export function Sidebar({ route, onPalette, onExport, onAuto, onCull }: { route:
         )}
       </div>
       <span className="grow" />
-      <UpdateButton />
-      <button className={`nav-import ${route.name === 'import' ? 'active' : ''}`} onClick={() => go({ name: 'import' })} data-testid="nav-import">
-        <Download size={13} />
-        Import
-        <span className="grow" />
-        <span className="keys">
-          <Kbd>⌘</Kbd>
-          <Kbd>⇧</Kbd>
-          <Kbd>I</Kbd>
-        </span>
-      </button>
-      <QueueProgress />
+      <div className="sidebar-foot">
+        <UpdateButton />
+        <QueueProgress />
+        <MeterLine />
+      </div>
     </nav>
   );
 }

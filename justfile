@@ -17,6 +17,7 @@ check:
     scripts/progress fmt -- cargo fmt --all -- --check
     scripts/cached clippy {{rust_inputs}} -- scripts/progress clippy -- cargo clippy --workspace --all-targets --profile fast -- -D warnings
     scripts/cached test {{rust_inputs}} -- scripts/progress test -- cargo test --workspace --profile fast
+    scripts/cached install-sh --in scripts/release/install.sh --in scripts/release/install.test.sh --in scripts/release/stamp-install.sh -- scripts/release/install.test.sh
     @ls fixtures/raw/*.ARW >/dev/null 2>&1 || echo "warning: fixtures/raw is empty, so golden and RAW tests were SKIPPED (see CLAUDE.md for getting the RAWs)"
 
 # Render a RAW to out/<stem>.jpg (JPEG q90 by default) and print timings. e.g. `just render fixtures/raw/DSC03945.ARW --long-edge 2048`
@@ -42,6 +43,11 @@ layout:
 import-check:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
     cd prototype && ../scripts/progress import-check -- node scripts/import-check.mjs
+
+# How light the open app is (Linux/cloud only): startup, bundle, idle engine calls, React renders and CPU (visible and hidden), and memory after scrolling a 1,000-Photo grid. Writes prototype/out/perf/<label>.json; compare two with `node prototype/scripts/perf.mjs --diff a.json b.json`. See docs/agents/performance.md.
+perf *args:
+    scripts/progress build-cli -- cargo build --profile fast -p argus-cli
+    cd prototype && npm run build >/dev/null && ../scripts/progress perf -- node scripts/perf.mjs {{args}}
 
 # Time decode, Import, previews and Edit re-renders on the sample RAWs and compare with bench/speed-baseline.json (fails on a >30% slowdown). `just speed --save` records this machine's baseline.
 speed *args:

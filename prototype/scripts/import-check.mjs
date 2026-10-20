@@ -32,8 +32,10 @@ const mock = httpServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
-    const r = JSON.parse(body);
     res.setHeader('content-type', 'application/json');
+    // GETs with no body (model lists, /api/ps) get an empty answer rather than crashing the mock.
+    if (!body) return res.end(JSON.stringify({ models: [] }));
+    const r = JSON.parse(body);
     if (r.messages.length === 0) return res.end(JSON.stringify({ message: { content: '' }, done: true }));
     namingCalls++;
     setTimeout(() => res.end(JSON.stringify({ message: { content: '{"name":"Boat Tour"}' }, done: true })), 800);

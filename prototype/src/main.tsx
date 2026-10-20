@@ -1,6 +1,7 @@
 // Fonts ship with the app (no Google Fonts request), so the Mac app looks the same offline.
 import '@fontsource-variable/geist/wght.css';
 import '@fontsource-variable/geist-mono/wght.css';
+import './fonts/nordwand-mono/nordwand-mono.css';
 import { installMacChrome } from './ui/macChrome';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

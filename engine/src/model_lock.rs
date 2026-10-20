@@ -120,6 +120,10 @@ pub fn take(waiting: &dyn Fn(Option<&str>)) -> Turn {
         .and_then(|v| v.parse().ok())
         .map_or(Duration::from_millis(500), Duration::from_millis);
     let mut told: Option<String> = None;
+    // A line on stderr every minute while waiting, so a stall watchdog (scripts/progress)
+    // sees a process that is waiting its turn rather than a hung one.
+    let started = std::time::Instant::now();
+    let mut heartbeat = started;
     loop {
         match ahead_of(&dir, &name) {
             None => break,
@@ -127,6 +131,14 @@ pub fn take(waiting: &dyn Fn(Option<&str>)) -> Turn {
                 if told.as_deref() != Some(w.as_str()) {
                     waiting(Some(&w));
                     told = Some(w);
+                }
+                if heartbeat.elapsed() >= Duration::from_secs(60) {
+                    heartbeat = std::time::Instant::now();
+                    eprintln!(
+                        "argus: waiting {} min for the model: {}",
+                        started.elapsed().as_secs() / 60,
+                        told.as_deref().unwrap_or_default()
+                    );
                 }
             }
         }
@@ -142,6 +154,14 @@ pub fn take(waiting: &dyn Fn(Option<&str>)) -> Turn {
     };
     if told.is_some() {
         waiting(None);
+        crate::debug_log::event(
+            "model_wait",
+            serde_json::json!({
+                "who": who(),
+                "waited_s": started.elapsed().as_secs_f64(),
+                "on": told,
+            }),
+        );
     }
     Turn { marker }
 }

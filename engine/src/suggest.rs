@@ -13,6 +13,7 @@ use crate::library::{JobStatus, Library, PhotoId};
 use crate::masks::Coverage;
 use crate::recipe::{Adjust, Local, Recipe};
 use crate::signals::Light;
+use crate::style::Profile;
 use crate::tools::{Part, Tools};
 use crate::variant::TakeSpec;
 use crate::{Error, Result};
@@ -172,6 +173,8 @@ struct Take {
     title: String,
     why: String,
     set: BTreeMap<String, f64>,
+    /// The person's usual corrections (`style::Profile`), added after `set`.
+    style: BTreeMap<String, f64>,
     recipe: Recipe,
     light: Light,
     jpeg: Vec<u8>,
@@ -203,8 +206,18 @@ pub fn suggest_photo(
         Some(v) => Recipe::from_value(&v.recipe)?,
         None => Recipe::default(),
     };
-    drop(lib);
     let matched = a.reference_id.is_some();
+    // How the person corrects takes, from the usage log (a variant can pin it). Matched
+    // takes copy their hand-edited reference, which is already their style.
+    let style = match (&v.style, matched) {
+        (_, true) => Profile::default(),
+        (Some(moves), _) => Profile {
+            moves: moves.clone(),
+            ..Default::default()
+        },
+        (None, _) => Profile::of_library(&lib).unwrap_or_default(),
+    };
+    drop(lib);
     let count = a.count.unwrap_or(if matched { 2 } else { 3 }).clamp(1, 5);
 
     // Each Suggestion is a whole edit, so it starts from cleared sliders and crop. Matched
@@ -276,6 +289,13 @@ pub fn suggest_photo(
         } else {
             vec![]
         };
+        if !style.is_empty() {
+            text += &format!(
+                "\nThis photographer's own habit, learned from how they finished earlier takes, goes on top of each \
+                 take after your settings: {}. Don't add it yourself.\n",
+                Profile::line(&style.moves)
+            );
+        }
         text += "\nThe takes:\n";
         for (i, start) in starts.iter_mut().enumerate() {
             let c = &characters[i % characters.len()];
@@ -341,7 +361,8 @@ pub fn suggest_photo(
             // The character names stay put, so benches and the usage log can tell takes apart.
             p.title = characters[i % characters.len()].name.clone();
         }
-        takes.push(take(tools, a.photo_id, &starts[i], p, scene)?);
+        let own = style.for_take(&p.title).clone();
+        takes.push(take(tools, a.photo_id, &starts[i], p, &own, scene)?);
     }
     if takes.is_empty() {
         return Err(Error("the model proposed no Suggestions".into()));
@@ -420,7 +441,7 @@ pub fn suggest_photo(
             if !matched {
                 p.title = title.clone();
             }
-            let next = take(tools, a.photo_id, &t.start, p, scene)?;
+            let next = take(tools, a.photo_id, &t.start, p, &t.style, scene)?;
             if worse_light(&t.light, &next.light) {
                 t.done = true;
                 continue;
@@ -538,6 +559,7 @@ fn take(
     id: PhotoId,
     start: &Recipe,
     p: Proposal,
+    style: &BTreeMap<String, f64>,
     scene: Option<Coverage>,
 ) -> Result<Take> {
     let mut r = start.clone();
@@ -548,6 +570,9 @@ fn take(
             let _ = apply_setting(&mut r, path, v, false);
         }
     }
+    for (path, &v) in style {
+        let _ = apply_setting(&mut r, path, v, true);
+    }
     r.global = r.global.clamped();
     let (jpeg, info) = render(tools, id, Some(&r))?;
     let light = serde_json::from_value(info["light_stats"].clone()).unwrap_or_default();
@@ -556,6 +581,7 @@ fn take(
         title: p.title.trim().to_string(),
         why: p.why.trim().to_string(),
         set: p.set,
+        style: style.clone(),
         recipe: r,
         light,
         jpeg,

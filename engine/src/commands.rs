@@ -271,8 +271,46 @@ fn args<T: DeserializeOwned>(command: &str, v: Value) -> Result<T> {
 static IMPORT: std::sync::Mutex<(bool, Option<std::result::Result<Value, String>>)> =
     std::sync::Mutex::new((false, None));
 
+/// Polled every few seconds: in the Debug log only when slow or failing.
+const POLLS: &[&str] = &[
+    "queue_status",
+    "progress",
+    "import_result",
+    "resource_usage",
+    "list_jobs",
+    "suggestions_progress",
+];
+
+/// [`run`], timed into the Debug log with its arguments (cut short) and outcome.
 pub fn dispatch(tools: &Tools, command: &str, a: Value) -> Result<Value> {
+    if !crate::debug_log::enabled() {
+        return run(tools, command, a);
+    }
+    let args: String = a.to_string().chars().take(300).collect();
+    let t = std::time::Instant::now();
+    let r = run(tools, command, a);
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    if !POLLS.contains(&command) || ms > 250.0 || r.is_err() {
+        crate::debug_log::event(
+            "command",
+            json!({
+                "command": command,
+                "duration_ms": (ms * 10.0).round() / 10.0,
+                "ok": r.is_ok(),
+                "error": r.as_ref().err().map(|e| e.0.clone()),
+                "args": args,
+            }),
+        );
+    }
+    r
+}
+
+fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
     match command {
+        "resource_usage" => Ok(crate::meter::snapshot(
+            a["watch"].as_bool().unwrap_or(true),
+            a["points"].as_u64().map(|n| n as usize),
+        )),
         "start_import" => {
             {
                 let mut state = IMPORT.lock().unwrap();
@@ -473,33 +511,23 @@ pub fn dispatch(tools: &Tools, command: &str, a: Value) -> Result<Value> {
         }
         "eye_flags" => {
             // The grid's closed-eye and soft-focus badges: read what the background
-            // `analyze` job stored, so a Shoot of hundreds costs one query per Photo.
+            // `analyze` job stored, in one query for the whole Shoot.
             use crate::analyzers::{eyes, Analyzer, Fact};
             let a: PhotosArgs = args(command, a)?;
             let lib = Library::open(tools.library())?;
-            let photos = lib.list_photos(&PhotoFilter {
-                shoot: a.shoot_id,
-                verdict: None,
-            })?;
             let mut out = Vec::new();
-            for p in photos {
-                let Some(row) = lib.fact(p.id, "eyes")? else {
-                    continue;
-                };
-                if row.version != eyes::Eyes.version() {
+            for (id, version, value) in lib.fact_values("eyes", a.shoot_id)? {
+                if version != eyes::Eyes.version() {
                     continue;
                 }
-                let reads: Vec<_> = eyes::read(&Fact {
-                    value: row.value,
-                    blob: None,
-                })
-                .into_iter()
-                .filter(|r| r.read)
-                .collect();
+                let reads: Vec<_> = eyes::read(&Fact { value, blob: None })
+                    .into_iter()
+                    .filter(|r| r.read)
+                    .collect();
                 let closed = reads.iter().any(|r| r.eyes_closed);
                 let soft = !reads.is_empty() && reads.iter().all(|r| r.focus < eyes::SOFT);
                 if closed || soft {
-                    out.push(json!({ "id": p.id, "closed": closed, "soft": soft }));
+                    out.push(json!({ "id": id, "closed": closed, "soft": soft }));
                 }
             }
             Ok(Value::Array(out))
@@ -617,15 +645,38 @@ fn parts_json(parts: Vec<Part>) -> Value {
     out
 }
 
+/// Long edge of the grid's thumbnails (`previews/thumbs/...`): crisp on a Retina screen up
+/// to tiles of 240 points. Decoding one costs a twentieth of a 2048 px preview, which is
+/// what made scrolling a big Shoot heavy (docs/agents/performance.md).
+pub const THUMB_EDGE: u32 = 480;
+const THUMBS: &str = "previews/thumbs/";
+
 /// Resolve a Library-relative file a transport was asked for (a preview), refusing
-/// anything that could escape the Library's previews folder.
+/// anything that could escape the Library's previews folder. `previews/thumbs/<preview>`
+/// is that preview at [`THUMB_EDGE`], made on first request and kept as cache (Settings ›
+/// Library › Clear cache removes them) until the preview changes.
 pub fn library_file(lib_root: &Path, rel: &str) -> Option<PathBuf> {
     let rel = rel.trim_start_matches('/');
     let ok = rel.starts_with("previews/")
         && !rel
             .split(['/', '\\'])
             .any(|part| part == ".." || part.is_empty());
-    let path = lib_root.join(ok.then_some(rel)?);
+    let rel = ok.then_some(rel)?;
+    if let Some(of) = rel.strip_prefix(THUMBS) {
+        let thumb = lib_root.join(rel);
+        let preview = library_file(lib_root, &format!("previews/{of}"))?;
+        let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let fresh = matches!((modified(&thumb), modified(&preview)), (Some(t), Some(p)) if t >= p);
+        if !fresh {
+            if let Err(e) = write_thumb(&preview, &thumb) {
+                eprintln!("thumbnail of {}: {e}", preview.display());
+                // The preview itself still shows.
+                return Some(preview);
+            }
+        }
+        return Some(thumb);
+    }
+    let path = lib_root.join(rel);
     // A camera preview Argus has since replaced with its own render: a page that listed
     // the Photos before the swap still asks for the old name.
     if !path.exists() {
@@ -637,4 +688,27 @@ pub fn library_file(lib_root: &Path, rel: &str) -> Option<PathBuf> {
         }
     }
     Some(path)
+}
+
+fn write_thumb(preview: &Path, thumb: &Path) -> Result<()> {
+    let bytes = std::fs::read(preview).map_err(|e| Error(e.to_string()))?;
+    let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+        .map_err(|e| Error(e.to_string()))?
+        .thumbnail(THUMB_EDGE, THUMB_EDGE)
+        .to_rgb8();
+    let (width, height) = img.dimensions();
+    let jpeg = crate::render::encode_jpeg(
+        &crate::RgbImage {
+            width: width as usize,
+            height: height as usize,
+            data: img.into_raw(),
+        },
+        82,
+    )?;
+    let dir = thumb.parent().expect("a thumbnail has a folder");
+    std::fs::create_dir_all(dir).map_err(|e| Error(e.to_string()))?;
+    // Via a temporary file, so a reader never sees half of one.
+    let tmp = thumb.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&tmp, jpeg).map_err(|e| Error(e.to_string()))?;
+    std::fs::rename(&tmp, thumb).map_err(|e| Error(e.to_string()))
 }

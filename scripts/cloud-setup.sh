@@ -25,16 +25,28 @@ fi
 
 # Sample RAWs: copy them from the project's shared folder when it holds them (fixtures/raw*/),
 # so sessions don't each pull ~1 GB from Greg's Mac. Copies, not links: Import refuses symlinks.
-for shared in /mnt/project-files/fixtures/raw /mnt/project-files/fixtures/raw-a7rv; do
+for shared in /mnt/project-files/fixtures/raw /mnt/project-files/fixtures/raw-a7rv /mnt/project-files/fixtures/bench-raw; do
   [ -d "$shared" ] || continue
   dest="fixtures/$(basename "$shared")"
   mkdir -p "$dest"
   for f in "$shared"/*.ARW; do [ -e "$f" ] && [ ! -e "$dest/$(basename "$f")" ] && cp "$f" "$dest/"; done
 done
+# The bench RAWs are stored xz-compressed in the shared folder (a third smaller; its 10 GB quota
+# filled up, 2026-10-20). Unpack them in the background: ~5 s each, so a session starts at once and
+# a bench run started before they're all out uses the camera JPEG for the rest (wait for the
+# `xz -dc` job to finish: `pgrep -f bench-raw` prints nothing once it has).
+if ls /mnt/project-files/fixtures/bench-raw/*.ARW.xz >/dev/null 2>&1; then
+  mkdir -p fixtures/bench-raw target
+  nohup nice -n 10 sh -c 'for f in /mnt/project-files/fixtures/bench-raw/*.ARW.xz; do
+    out="fixtures/bench-raw/$(basename "$f" .xz)"
+    [ -e "$out" ] || { xz -dc "$f" > "$out.part" && mv "$out.part" "$out"; } || rm -f "$out.part"
+  done' > target/bench-raw-unpack.log 2>&1 < /dev/null &
+fi
 
 # sccache with its cache in the project's shared folder, so a new container reuses the dependency
 # builds earlier sessions made: a cold `cargo test --no-run` measured 416 s without, 130 s with
 # (2026-10-18, docs/agents/build-speed.md). Hits need the same target path, which cloud sessions share.
+# Capped at 1G: the shared folder's quota is 10 GB and the bench RAWs need most of it.
 # Set in the container's own ~/.cargo/config.toml, never the repo's, so Greg's Mac is untouched.
 if [ -d /mnt/project-files ] && [ ! -x "$HOME/.local/bin/sccache" ]; then
   v=0.14.0
@@ -45,7 +57,7 @@ fi
 if [ -x "$HOME/.local/bin/sccache" ] && ! grep -q rustc-wrapper "$HOME/.cargo/config.toml" 2>/dev/null; then
   cat > "$HOME/.local/bin/argus-sccache" <<EOS
 #!/bin/sh
-export SCCACHE_DIR=/mnt/project-files/cache/sccache SCCACHE_CACHE_SIZE=3G
+export SCCACHE_DIR=/mnt/project-files/cache/sccache SCCACHE_CACHE_SIZE=1G
 exec "$HOME/.local/bin/sccache" "\$@"
 EOS
   chmod +x "$HOME/.local/bin/argus-sccache"

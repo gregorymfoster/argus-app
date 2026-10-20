@@ -2,8 +2,8 @@
 // can't tell which ones have been AI processed and which are still enqueued"). Read from
 // the queue: the running job and the queued ones, polled gently.
 
-import { useEffect, useState } from 'react';
-import { call } from './backend';
+import { useMemo } from 'react';
+import { usePoll } from './poll';
 import { LIVE, liveShootId } from './live';
 import { PHOTOS } from './dummy';
 
@@ -61,20 +61,8 @@ const none: AiStatus = { of: () => null, queued: 0 };
 
 /** The AI state of every Photo in the open Shoot, refreshed every few seconds. */
 export function useAiStatus(): AiStatus {
-  const [s, setS] = useState<AiStatus>(() => (LIVE ? none : demo()));
-  useEffect(() => {
-    if (!LIVE) return;
-    let on = true;
-    const load = async () => {
-      const [q, jobs] = await Promise.all([call<{ running: JobLite | null }>('queue_status'), call<JobLite[]>('list_jobs', { status: 'queued', limit: 1000 })]).catch(() => [null, null] as const);
-      if (on && q && jobs) setS(status(q.running, jobs));
-    };
-    void load();
-    const t = setInterval(load, 5000);
-    return () => {
-      on = false;
-      clearInterval(t);
-    };
-  }, []);
-  return s;
+  // The running job comes with the Queue chip's poll; only the queued list is its own.
+  const q = usePoll<{ running: JobLite | null }>(LIVE ? 'progress' : null, {}, 5000);
+  const jobs = usePoll<JobLite[]>(LIVE ? 'list_jobs' : null, { status: 'queued', limit: 1000 }, 5000);
+  return useMemo(() => (!LIVE ? demo() : q && jobs ? status(q.running, jobs) : none), [q, jobs]);
 }

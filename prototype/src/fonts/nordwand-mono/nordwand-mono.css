@@ -1,0 +1,6 @@
+/* Nordwand Mono 1.3.1 by Tanguy Vivier (github.com/tywr/Nordwand-Mono), SIL OFL 1.1 (OFL.txt).
+   Argus's monospace for file names, EXIF, counts and timings (Greg, 2026-10-20). */
+@font-face { font-family: 'Nordwand Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('./NordwandMono-Regular.woff2') format('woff2'); }
+@font-face { font-family: 'Nordwand Mono'; font-style: normal; font-weight: 500; font-display: swap; src: url('./NordwandMono-Medium.woff2') format('woff2'); }
+@font-face { font-family: 'Nordwand Mono'; font-style: normal; font-weight: 600; font-display: swap; src: url('./NordwandMono-SemiBold.woff2') format('woff2'); }
+@font-face { font-family: 'Nordwand Mono'; font-style: normal; font-weight: 700; font-display: swap; src: url('./NordwandMono-Bold.woff2') format('woff2'); }

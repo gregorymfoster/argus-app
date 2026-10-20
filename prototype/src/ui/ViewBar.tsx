@@ -3,21 +3,23 @@
 // them; any screen's header can.
 
 import type { ReactNode } from 'react';
-import { ArrowLeft, Columns2, LayoutGrid, SlidersHorizontal, Sparkles, Square } from 'lucide-react';
+import { ArrowLeft, Columns2, Layers, LayoutGrid, SlidersHorizontal, Sparkles, Square } from 'lucide-react';
 import { go } from '../router';
+import { STACKS } from '../data/dummy';
 import { useQueue } from '../data/suggestions';
 import { QueuePopover, queueLine } from './Queue';
 import { Kbd, Tip } from './kit';
 import { Button } from '@/components/ui/button';
 
-export type View = 'grid' | 'loupe' | 'compare' | 'edit';
+export type View = 'grid' | 'loupe' | 'compare' | 'bursts' | 'edit';
 
-/** Grid, Loupe, Compare and Edit for `id`; Compare needs `compareIds` (a Stack or a selection). */
+/** Grid, Loupe, Compare, Stacks (burst culling) and Edit for `id`; Compare needs `compareIds` (a Stack or a selection). */
 export function ViewSwitch({ view, id, compareIds }: { view: View; id?: string; compareIds?: string[] }) {
   const items: { v: View; label: string; key: string; icon: ReactNode; to?: () => void }[] = [
     { v: 'grid', label: 'Grid', key: 'G', icon: <LayoutGrid size={12} />, to: () => go({ name: 'cull' }) },
     { v: 'loupe', label: 'Loupe', key: 'E', icon: <Square size={12} />, to: id ? () => go({ name: 'loupe', id }) : undefined },
     { v: 'compare', label: 'Compare', key: 'C', icon: <Columns2 size={12} />, to: compareIds && compareIds.length > 1 ? () => go({ name: 'compare', ids: compareIds }) : undefined },
+    { v: 'bursts', label: 'Stacks: keep the best of each burst', key: 'N', icon: <Layers size={12} />, to: STACKS.length ? () => go({ name: 'bursts' }) : undefined },
     { v: 'edit', label: 'Edit', key: 'D', icon: <SlidersHorizontal size={12} />, to: id ? () => go({ name: 'edit', id }) : undefined },
   ];
   return (

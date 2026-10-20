@@ -141,6 +141,24 @@ await shot('05b-compare-ai-prefers', '#/cull', {
     await p.waitForTimeout(600);
   },
 });
+await shot('05c-bursts', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('n');
+    await p.waitForTimeout(900);
+  },
+});
+await shot('05d-bursts-kept-two', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('n');
+    await p.waitForTimeout(500);
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(400);
+    await p.keyboard.press('p');
+    await p.keyboard.press('ArrowRight');
+    await p.keyboard.press('p');
+    await p.waitForTimeout(600);
+  },
+});
 await shot('06-look-empty', '#/look');
 await shot('07-look-applied', '#/look', {
   act: async (p) => {
@@ -205,6 +223,13 @@ await shot('12-best-photos', '#/cull', {
 await shot('13-stars-filter', '#/cull', {
   act: async (p) => {
     await p.getByTestId('stars-filter').click();
+    await p.waitForTimeout(300);
+  },
+});
+await shot('13b-sort-menu', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Shift+S');
+    await p.getByTestId('sort').click();
     await p.waitForTimeout(300);
   },
 });
@@ -327,6 +352,27 @@ await check('smoke-best-photos-and-star-filter', async () => {
   await ctx.close();
 });
 
+await check('smoke-sort-by-stars', async () => {
+  const { p, ctx } = await page('#/cull');
+  const stars = () => p.locator('.grid-v .tile .stars').evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-stars'))));
+  const before = await stars();
+  await p.keyboard.press('Shift+S');
+  const sorted = await stars();
+  if (sorted.some((x, i) => i > 0 && x > sorted[i - 1])) throw new Error(`⇧S did not sort by stars, most first: ${sorted}`);
+  if (sorted.join() === before.join()) throw new Error('⇧S changed nothing');
+  await p.reload();
+  await p.getByTestId('sort').waitFor();
+  if ((await p.getByTestId('sort').getAttribute('data-sort')) !== 'stars:desc') throw new Error('the sort was not remembered');
+  await p.getByTestId('sort').click();
+  await p.getByTestId('sort-asc').click();
+  const asc = await stars();
+  if (asc.some((x, i) => i > 0 && x < asc[i - 1])) throw new Error(`Fewest first is not ascending: ${asc}`);
+  await p.getByTestId('sort').click();
+  await p.getByTestId('sort-capture').click();
+  if ((await stars()).join() !== before.join()) throw new Error('Capture time did not restore the grid');
+  await ctx.close();
+});
+
 await check('smoke-flag-click-toggle', async () => {
   const { p, ctx } = await page('#/cull');
   const tile = p.locator('.tile').nth(3);
@@ -361,6 +407,41 @@ await check('smoke-compare-keep-best', async () => {
   await p.keyboard.press('k');
   const vs = await cells.evaluateAll((els) => els.map((e) => e.getAttribute('data-verdict')));
   if (vs.filter((v) => v === 'pick').length !== 1 || vs.filter((v) => v === 'reject').length !== n - 1) throw new Error(`got ${vs}`);
+  await ctx.close();
+});
+
+await check('smoke-bursts-keep-and-next', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.keyboard.press('n');
+  await p.waitForTimeout(400);
+  const first = await p.locator('.view-file').textContent();
+  const cells = p.locator('.burst-cell');
+  const n = await cells.count();
+  if (n < 2) throw new Error(`expected a Stack, got ${n} frames`);
+  const ids = await cells.evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+  // Enter keeps the focused (AI best) frame and moves on; the rest stay Unflagged by default.
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(200);
+  if ((await p.locator('.view-file').textContent()) === first) throw new Error('Enter did not move to the next Stack');
+  await p.keyboard.press('ArrowUp');
+  await p.waitForTimeout(200);
+  const vs = await Promise.all(ids.map((id) => p.getByTestId(id).getAttribute('data-verdict')));
+  if (vs[0] !== 'pick' || vs.slice(1).some((v) => v === 'pick')) throw new Error(`expected only the best frame kept, got ${vs}`);
+  if ((await p.getByTestId('bursts-progress').getAttribute('title'))?.startsWith('0 ')) throw new Error('progress did not move');
+  // Rejected as the Rest: two Picks of your own, Enter rejects the others.
+  await p.getByRole('radio', { name: /Reject the frames/ }).click();
+  await p.keyboard.press('ArrowDown');
+  await p.waitForTimeout(200);
+  const ids2 = await p.locator('.burst-cell').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+  await p.keyboard.press('p');
+  await p.keyboard.press('ArrowRight');
+  await p.keyboard.press('p');
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(150);
+  await p.keyboard.press('ArrowUp');
+  await p.waitForTimeout(200);
+  const vs2 = await Promise.all(ids2.map((id) => p.getByTestId(id).getAttribute('data-verdict')));
+  if (vs2.filter((v) => v === 'pick').length !== 2 || vs2.filter((v) => v === 'reject').length !== ids2.length - 2) throw new Error(`got ${vs2}`);
   await ctx.close();
 });
 
@@ -506,6 +587,20 @@ await check('smoke-queue-drag-reorders', async () => {
   await p.screenshot({ path: `${out}15-queue-reorder.png` });
   await p.waitForTimeout(3300); // a poll must not undo it
   if ((await labels())[0] !== before[2]) throw new Error('the next poll put the old order back');
+  await ctx.close();
+});
+
+await check('smoke-meter-shows-ai-usage', async () => {
+  const { p, ctx } = await page('#/cull');
+  const line = p.locator('.sidebar [data-testid="meter"]');
+  const text = await line.innerText();
+  if (!/AI [\d.]+% · GPU [\d.]+%/.test(text)) throw new Error(`meter line reads "${text}"`);
+  await p.screenshot({ path: `${out}16-meter-line.png`, clip: { x: 0, y: 900 - 150, width: 260, height: 150 } });
+  await line.click();
+  await p.getByTestId('meter-panel').waitFor();
+  const model = await p.getByTestId('meter-local_model').innerText();
+  if (!/GB/.test(model)) throw new Error(`local model row reads "${model}"`);
+  await p.screenshot({ path: `${out}16-meter-panel.png` });
   await ctx.close();
 });
 

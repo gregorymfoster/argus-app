@@ -2,7 +2,8 @@
 // `analyze_photo` tool. The one place screens read Facts: a new Analyzer shows up here
 // without new plumbing. Cached per Photo for the session.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { usePoll } from './poll';
 import { call } from './backend';
 import { LIVE, liveShootId } from './live';
 import { PHOTOS } from './dummy';
@@ -98,20 +99,7 @@ function demoFlags(): Map<string, EyeFlags> {
  * shots), so nothing is rejected on them.
  */
 export function useEyeFlags(): (id: string) => EyeFlags | null {
-  const [flags, setFlags] = useState<Map<string, EyeFlags>>(() => (LIVE ? new Map() : demoFlags()));
-  useEffect(() => {
-    if (!LIVE) return;
-    let on = true;
-    const load = () =>
-      call<{ id: number; closed: boolean; soft: boolean }[]>('eye_flags', { shoot_id: liveShootId() || undefined })
-        .then((rows) => on && setFlags(new Map(rows.map((r) => [String(r.id), { closed: r.closed, soft: r.soft }]))))
-        .catch(() => {});
-    void load();
-    const t = setInterval(load, 15000);
-    return () => {
-      on = false;
-      clearInterval(t);
-    };
-  }, []);
-  return (id) => flags.get(id) ?? null;
+  const rows = usePoll<{ id: number; closed: boolean; soft: boolean }[]>(LIVE ? 'eye_flags' : null, { shoot_id: liveShootId() || undefined }, 15000);
+  const flags = useMemo(() => (LIVE ? new Map((rows ?? []).map((r) => [String(r.id), { closed: r.closed, soft: r.soft }])) : demoFlags()), [rows]);
+  return useCallback((id: string) => flags.get(id) ?? null, [flags]);
 }

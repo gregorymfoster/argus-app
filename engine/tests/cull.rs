@@ -97,11 +97,12 @@ fn cull_writes_ai_verdicts_and_stacks_but_keeps_person_flags() {
             r.stacks,
             r.kept_person_verdicts
         ),
-        (1, 1, 1, 1, 1)
+        (0, 1, 2, 1, 1)
     );
 
     let photos = lib.list_photos(&PhotoFilter::default()).unwrap();
-    assert_eq!(photos[1].verdict, Verdict::Pick);
+    assert_eq!(photos[0].verdict, Verdict::Reject);
+    assert_eq!(photos[1].verdict, Verdict::Unflagged, "the AI never picks");
     assert_eq!(photos[1].verdict_by, Some(Author::Ai));
     assert_eq!(photos[1].reason.as_deref(), Some("best of 3"));
     assert_eq!(photos[3].verdict, Verdict::Pick, "the person's flag wins");
@@ -118,6 +119,40 @@ fn cull_writes_ai_verdicts_and_stacks_but_keeps_person_flags() {
 }
 
 #[test]
+fn ai_cull_is_cautious_it_never_picks_and_rejects_only_one_star_frames() {
+    let (_tmp, mut lib, shoot) = library_with(4);
+    let fake = Fake(CullResult {
+        summary: String::new(),
+        photos: vec![
+            rated(
+                photo(1, Verdict::Pick, "great moment", None, None),
+                5,
+                Some(1),
+            ),
+            rated(
+                photo(2, Verdict::Reject, "missed focus", None, None),
+                1,
+                None,
+            ),
+            rated(
+                photo(3, Verdict::Reject, "weaker of 2", None, None),
+                2,
+                None,
+            ),
+            rated(photo(4, Verdict::Unflagged, "fine", None, None), 3, None),
+        ],
+    });
+    let r = cull_shoot(&mut lib, shoot, &fake).unwrap();
+    assert_eq!((r.picks, r.rejects, r.unflagged), (0, 1, 3));
+    let photos = lib.list_photos(&PhotoFilter::default()).unwrap();
+    let verdicts: Vec<_> = photos.iter().map(|p| p.verdict).collect();
+    use Verdict::*;
+    assert_eq!(verdicts, [Unflagged, Reject, Unflagged, Unflagged]);
+    assert_eq!(photos[0].stars, 5, "the stars still carry the AI's taste");
+    assert_eq!(photos[2].reason.as_deref(), Some("weaker of 2"));
+}
+
+#[test]
 fn cull_skips_made_up_and_missing_photo_numbers() {
     let (_tmp, mut lib, shoot) = library_with(2);
     let sheet = ContactSheet::build(&lib, shoot).unwrap();
@@ -129,7 +164,7 @@ fn cull_skips_made_up_and_missing_photo_numbers() {
         ],
     };
     let r = apply(&mut lib, &sheet, &sloppy).unwrap();
-    assert_eq!((r.picks, r.ignored, r.missing), (1, 1, 1));
+    assert_eq!((r.unflagged, r.ignored, r.missing), (1, 1, 1));
 }
 
 #[test]
@@ -473,7 +508,7 @@ fn photos_a_reply_leaves_out_are_asked_about_again() {
     let r = cull_shoot(&mut lib, shoot, &forgetful).unwrap();
     // One request for the Shoot, then one for the two it skipped.
     assert_eq!(*forgetful.0.borrow(), vec![5, 2]);
-    assert_eq!((r.missing, r.rated, r.picks), (0, 5, 5));
+    assert_eq!((r.missing, r.rated, r.unflagged), (0, 5, 5));
     // The second reply's Stack stays apart from the first's.
     assert_eq!(r.stacks, 2);
 }
@@ -565,7 +600,7 @@ fn ollama_streams_its_reply_and_progress_moves_photo_by_photo() {
         seen.lock().unwrap().push(p)
     })
     .unwrap();
-    assert_eq!(r.picks, 3);
+    assert_eq!(r.unflagged, 3);
     let seen = seen.into_inner().unwrap();
     let photos: Vec<usize> = seen.iter().map(|p| p.photos).collect();
     for n in 1..=3 {

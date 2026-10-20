@@ -172,3 +172,17 @@
 .export-toast { display: flex; flex-direction: column; gap: 6px; min-width: 240px; }
 .export-toast .bar { height: 3px; border-radius: 2px; background: rgb(255 255 255 / 0.1); overflow: hidden; }
 .export-toast .bar > div { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+
+/* Burst culling (screens/Bursts.tsx): every frame of one Stack, Survey-style. */
+.burst-progress { width: 90px; height: 3px; border-radius: 2px; background: var(--fill); overflow: hidden; flex: none; }
+.burst-progress > span { display: block; height: 100%; background: var(--accent); transition: width 240ms ease; }
+.burst-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 10px; background: var(--canvas); }
+.burst-grid { flex: 1 1 auto; min-height: 0; display: grid; gap: 10px; align-content: center; justify-items: center; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); container-type: size; overflow-y: auto; }
+.burst-cell { margin: 0; min-width: 0; width: min(100%, calc(max(100cqh / var(--rows, 1) - 36px, 90px) * 1.5)); display: flex; flex-direction: column; gap: 5px; cursor: default; }
+.burst-cell > .photo { width: 100%; aspect-ratio: 3/2; border-radius: 4px; overflow: hidden; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08); transition: box-shadow 120ms ease, opacity 120ms ease; }
+.burst-cell.kept > .photo { box-shadow: 0 0 0 1.5px var(--pick); }
+.burst-cell.focus > .photo { box-shadow: 0 0 0 2px rgb(255 255 255 / 0.9); }
+.burst-cell.faded > .photo { opacity: 0.4; }
+.burst-cell figcaption { display: flex; align-items: center; gap: 6px; height: 20px; font-size: 11px; color: var(--text-3); min-width: 0; }
+.burst-cell figcaption .grow { flex: 1 1 0; }
+.burst-empty { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-size: 12px; color: var(--text-2); background: var(--canvas); padding: 0 24px; text-align: center; }

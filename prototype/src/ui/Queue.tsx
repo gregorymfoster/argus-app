@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowUpToLine, BatteryMedium, Check, Coffee, GripVertical, Image, Pause, Play, RotateCcw, ScanEye, Sparkles, X } from 'lucide-react';
 import { call } from '../data/backend';
+import { whileShown } from '../data/poll';
 import { toastFailure } from '@/lib/utils';
 import { LIVE } from '../data/live';
 import { plain, useQueue, type QueueStatus } from '../data/suggestions';
@@ -195,8 +196,7 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
   useEffect(() => {
     if (!open) return;
     refresh();
-    const t = setInterval(refresh, 3000);
-    return () => clearInterval(t);
+    return whileShown(refresh, 3000);
   }, [open]);
   const set = (args: Record<string, unknown>) => (LIVE ? call('set_queue', args).then(() => bump((n) => n + 1), toastFailure('Couldn’t change Background work')) : Promise.resolve());
   const cancel = (id: number) => (LIVE ? call('cancel_job', { job_id: id }).then(refresh) : undefined);

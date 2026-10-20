@@ -151,7 +151,9 @@ pub fn landmarks(fact: &Fact) -> Vec<Vec<[f32; 2]>> {
     let per = 478 * 4;
     b.chunks_exact(per)
         .map(|face| {
-            face.chunks_exact(4)
+            face.as_chunks::<4>()
+                .0
+                .iter()
                 .map(|p| {
                     let x = u16::from_le_bytes([p[0], p[1]]) as f32 / 65535.0;
                     let y = u16::from_le_bytes([p[2], p[3]]) as f32 / 65535.0;

@@ -12,7 +12,7 @@ The order that makes sense is harness variants now, then small learned models on
 
 A variant is a JSON file that swaps parts of the harness without a rebuild (`engine/src/variant.rs`). Every field is optional and anything left out keeps the built-in value:
 
-`name`, `notes`, `fresh` (the fresh Suggestions prompt, `{count}` filled in), `review` (review-round prompt, `{before}` filled in), `settings` (the settings reference appended to both), `takes` (a list of `{name, brief, start}`, where `start` holds moves on top of Auto in the same paths the model uses, e.g. `local.sky.exposure`), `rounds`, `keep_brightness`, `adaptive`, and `cull` (the cull system prompt).
+`name`, `notes`, `fresh` (the fresh Suggestions prompt, `{count}` filled in), `review` (review-round prompt, `{before}` filled in), `settings` (the settings reference appended to both), `takes` (a list of `{name, brief, start}`, where `start` holds moves on top of Auto in the same paths the model uses, e.g. `local.sky.exposure`), `rounds`, `keep_brightness`, `adaptive`, `style` (moves added to every fresh take in place of the Style profile learned from the usage log, `{}` for none; bench Libraries have no usage log, so it is empty there unless set) and `cull` (the cull system prompt).
 
 `ARGUS_VARIANT=<file>` applies it to any `argus` process, and `bench/score.py --variant <file>` sets that for the run, labels the run with the variant's name and stores the whole file in the run's `meta.variant`, so the report and later readers see exactly what ran. Unknown fields are refused and a bad file fails the job, so an experiment never quietly runs the default. Examples live in `bench/variants/`; copy the built-in prompt out of `engine/src/suggest.rs` when you want to edit it.
 
@@ -24,6 +24,8 @@ python3 bench/score.py --only edit --suggest --provider claude-code --variant be
 
 ## Where to run what
 
+A Qwen run's report is too big to bring across from the Mac; stage its score.py result (out/bench/<time>.json) instead and `python3 bench/rerender.py <result> <time>` re-renders every take from its Recipe on the bench RAWs, ready for `report.py add`.
+
 Cloud sessions run `--provider claude-code` freely (about 20-30 s per call, a session limit after roughly ten full runs). Qwen runs need the Mac, which the main thread owns: batch several variants into one overnight request so one build scores them back to back.
 
 dE to Greg's edits rewards timid edits, so treat it as a gut check. Greg's blind picks on the Edit Bench Review page are the judge (the `bench-report` skill).
@@ -31,6 +33,10 @@ dE to Greg's edits rewards timid edits, so treat it as a gut check. Greg's blind
 ## Screening a variant between Greg's taps
 
 `python3 bench/judge.py runs out/bench/<time>/report/run.json <baseline run id>` puts each take of the variant run against the same-named take of the baseline (Natural vs Natural) on every photo, in both orders, and prints the judge's win rate with a 95% range per take. The judge is Claude (sonnet by default) calibrated on Greg's blind picks: about 70% agreement, where dE to his edit agrees 41% (the `bench-report` skill). Only a variant the judge prefers needs to go on the Edit Bench Review page for his taps. Baseline ids are in `/mnt/project-files/argus-bench/report/runs/index.json`; each call is `claude -p`, about 10 s, cached in `runs/judge.json`.
+
+## Fake cull rejects
+
+`python3 bench/cull_degrade.py [--provider claude-code] [--shoot DATE]` is a floor check for a cull variant. Greg's rejects were deleted, so the cull bench never sees a plainly bad frame; this gives a few of his picks per bench Shoot a damaged twin (focus blur, shake, 2 EV under, a crop that cuts off the top) with the same capture time, culls the Shoot, and counts twins the AI picked, put in Best Photos, or starred at or above their original. A good cull picks none. Passing says little about taste; failing is a plain bug. Its Shoots go to `out/cull-degrade/`, the result to `out/bench/cull-degrade-<time>.json`.
 
 ## Not yet
 

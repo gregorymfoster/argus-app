@@ -202,12 +202,12 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
         <span>Edit</span>
         <span className="grow" />
         <Tip label="Set light and colour from this Photo, like Lightroom's Auto" keys="⇧A">
-          <Button size="sm" variant="outline" onClick={onAuto} data-testid="auto">
+          <Button size="sm" variant="ghost" onClick={onAuto} data-testid="auto">
             <Wand2 size={12} /> Auto
           </Button>
         </Tip>
         <Tip label="Black and white" keys="V">
-          <Button size="sm" variant={bw ? 'default' : 'outline'} onClick={toggleBw} aria-pressed={bw}>
+          <Button size="sm" variant={bw ? 'default' : 'ghost'} onClick={toggleBw} aria-pressed={bw}>
             <Contrast size={12} /> B&amp;W
           </Button>
         </Tip>

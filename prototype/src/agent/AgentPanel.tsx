@@ -284,7 +284,7 @@ export async function liveCullChat(prompt: string, dispatch: React.Dispatch<Acti
       msgId: `agent-${at}`,
       patch: {
         steps: [{ label: `Culled and rated the whole Shoot ·${secs}s`, ms: 0, done: true }],
-        text: `${r.summary} ${r.picks} Picks, ${r.rejects} Rejects, ${r.unflagged} left unflagged, ${r.stacks} Stacks.${r.stars?.[5] ? ` ${r.stars[5]} rated five stars.` : ''}${r.best?.length ? ` ${r.best.length} Best Photos.` : ''}${r.kept_person_verdicts || r.kept_person_ratings ? ' I left your own flags and stars alone.' : ''}`,
+        text: `${r.summary} ${r.picks ? `${r.picks} Picks, ` : ''}${r.rejects} Rejects, ${r.unflagged} left unflagged, ${r.stacks} Stacks.${r.stars?.[5] ? ` ${r.stars[5]} rated five stars.` : ''}${r.best?.length ? ` ${r.best.length} Best Photos.` : ''}${r.kept_person_verdicts || r.kept_person_ratings ? ' I left your own flags and stars alone.' : ''}`,
       },
     });
     setTimeout(() => location.reload(), 2500);

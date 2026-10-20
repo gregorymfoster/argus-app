@@ -13,7 +13,7 @@ mkdirSync(out, { recursive: true });
 const server = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5197, strictPort: true }, logLevel: 'error' });
 await server.listen();
 const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
-const SCREENS = { import: '#/import', grid: '?demo=culled#/cull', loupe: '?demo=culled#/loupe/p5', compare: '?demo=culled#/compare/p4,p5', edit: '?demo=culled#/edit/p15', look: '?demo=culled#/look' };
+const SCREENS = { import: '#/import', grid: '?demo=culled#/cull', loupe: '?demo=culled#/loupe/p5', compare: '?demo=culled#/compare/p4,p5', stacks: '?demo=culled#/bursts', edit: '?demo=culled#/edit/p15', look: '?demo=culled#/look' };
 const failures = [];
 try {
   for (const w of WIDTHS)

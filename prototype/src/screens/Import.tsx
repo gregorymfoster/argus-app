@@ -18,6 +18,7 @@ import { usePref } from '../store/variants';
 import { bytes, libraryInfo, tidy } from '../data/libraries';
 import { LIVE, PROVIDERS, chosenProvider, estimateImport, formatShootName, importSeconds, type ImportEstimate, findCards, liveImport, scanFolder, suggestName, thumbnail, type Card, type NameSuggestion, type Scan, type ScannedPhoto } from '../data/live';
 import { pickFolder } from '../data/backend';
+import { whileShown } from '../data/poll';
 
 const AI_NAME_OFF = 'AI naming is off in Settings';
 
@@ -140,10 +141,10 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
         })
         .catch(() => live && setCards([]));
     look();
-    const t = setInterval(look, 3000);
+    const stop = whileShown(look, 3000);
     return () => {
       live = false;
-      clearInterval(t);
+      stop();
     };
   }, [open, folder, choose]);
 
@@ -532,7 +533,7 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
                 </span>
               )
             )}
-            <Button onClick={() => go({ name: 'cull' })} disabled={busy} data-testid="import-cancel">
+            <Button variant="ghost" onClick={() => go({ name: 'cull' })} disabled={busy} data-testid="import-cancel">
               Cancel <Kbd>esc</Kbd>
             </Button>
             <Button variant="default" onClick={run} disabled={!canImport} data-testid="import-start">

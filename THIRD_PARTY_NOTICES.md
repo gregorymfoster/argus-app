@@ -25,3 +25,8 @@ The Rust crates are listed in `Cargo.lock` and `app/Cargo.lock`, the JavaScript 
 
 - [rawler](https://github.com/dnglab/dnglab) (RAW decoding) is LGPL-2.1. Argus links it statically. Its source is public, and Argus's own source here lets anyone rebuild the app against a modified rawler, which is what the LGPL asks for.
 - webpki-roots (TLS root certificates) is CDLA-Permissive-2.0.
+
+## Fonts
+
+- [Nordwand Mono](https://github.com/tywr/Nordwand-Mono) 1.3.1 by Tanguy Vivier, Argus's monospace for file names, EXIF and numbers, is under the SIL Open Font License 1.1. The WOFF2 files and the licence text are in `prototype/src/fonts/nordwand-mono/`.
+- Geist and Geist Mono (Vercel), the fallback UI fonts, are under the SIL Open Font License 1.1 and come from the `@fontsource-variable` packages.

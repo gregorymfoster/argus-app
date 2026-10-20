@@ -39,6 +39,7 @@ pub const TOOLS: &[&str] = &[
     "set_rating",
     "best_photos",
     "list_stacks",
+    "stack_bursts",
     "read_recipe",
     "edit_recipe",
     "white_balance",
@@ -683,16 +684,29 @@ impl OllamaChat {
             }
             messages.push(msg);
         }
+        let mut options = self.o.options();
+        options["num_predict"] = json!(max_output_tokens());
         json!({
             "model": self.o.model,
             "stream": false,
             "format": self.format,
             "keep_alive": "30m",
             "think": self.think,
-            "options": self.o.options(),
+            "options": options,
             "messages": messages
         })
     }
+}
+
+/// Most output tokens one Ollama turn may produce. A step is a few hundred tokens of JSON,
+/// but Qwen sometimes loops: one Suggestions turn ran 63k tokens for 40 minutes holding the
+/// model lock (2026-10-19). `num_predict` is a per-request option, so it doesn't reload
+/// the model. ARGUS_OLLAMA_MAX_TOKENS overrides.
+fn max_output_tokens() -> u32 {
+    std::env::var("ARGUS_OLLAMA_MAX_TOKENS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8192)
 }
 
 /// One line on stderr per model request: where its time went. Ollama reports durations in ns.
@@ -715,6 +729,44 @@ pub(crate) fn log_timing(model: &str, resp: &Value, wall: Duration) {
             0.0
         },
         resp["message"]["thinking"].as_str().map_or(0, str::len),
+    );
+    let prompt_s = s("prompt_eval_duration");
+    crate::debug_log::event(
+        "ollama",
+        serde_json::json!({
+            "model": model,
+            "who": crate::model_lock::who(),
+            "wall_s": wall.as_secs_f64(),
+            "load_s": s("load_duration"),
+            "prompt_tokens": n("prompt_eval_count"),
+            "prompt_s": prompt_s,
+            "prompt_tok_s": if prompt_s > 0.0 { n("prompt_eval_count") as f64 / prompt_s } else { 0.0 },
+            "output_tokens": n("eval_count"),
+            "output_s": gen,
+            "output_tok_s": if gen > 0.0 { n("eval_count") as f64 / gen } else { 0.0 },
+            "thinking_chars": resp["message"]["thinking"].as_str().map_or(0, str::len),
+            "done_reason": resp["done_reason"],
+        }),
+    );
+}
+
+/// One `claude -p` run in the Debug log: what it took and cost, from its JSON output.
+pub(crate) fn log_claude(model: &str, out: &std::process::Output, wall: Duration) {
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    crate::debug_log::event(
+        "claude",
+        serde_json::json!({
+            "model": model,
+            "who": crate::model_lock::who(),
+            "wall_s": wall.as_secs_f64(),
+            "exit": out.status.code(),
+            "ok": out.status.success() && v["is_error"] != true,
+            "duration_api_ms": v["duration_api_ms"],
+            "turns": v["num_turns"],
+            "cost_usd": v["total_cost_usd"],
+            "usage": v["usage"],
+            "stderr": String::from_utf8_lossy(&out.stderr).chars().take(500).collect::<String>(),
+        }),
     );
 }
 
@@ -745,6 +797,13 @@ impl Chat for OllamaChat {
             r => r?,
         };
         log_timing(&self.o.model, &resp, start.elapsed());
+        if resp["done_reason"] == "length" {
+            return Err(Error(format!(
+                "{} ran past {} output tokens without finishing its answer",
+                self.o.model,
+                max_output_tokens()
+            )));
+        }
         Ok(resp["message"]["content"]
             .as_str()
             .unwrap_or_default()
@@ -875,12 +934,14 @@ impl Chat for ClaudeCodeChat {
         if let Some(id) = session.as_deref() {
             cmd.args(["--resume", id]);
         }
+        let t = std::time::Instant::now();
         let out = cmd.output().map_err(|e| {
             Error(format!(
                 "can't run `{}` (is Claude Code installed?): {e}",
                 self.cc.bin
             ))
         })?;
+        log_claude(&self.cc.model, &out, t.elapsed());
         let stdout = String::from_utf8_lossy(&out.stdout);
         let v: Value = serde_json::from_str(&stdout).map_err(|_| {
             Error(format!(
@@ -954,6 +1015,16 @@ mod tests {
         assert_eq!(
             b["think"], false,
             "no thinking trace before a short JSON step"
+        );
+        assert!(
+            b["options"]["num_predict"].as_u64().is_some_and(|n| n > 0),
+            "a looping model can't hold the model lock for long"
+        );
+        assert!(
+            Ollama::from_env().load_body()["options"]
+                .get("num_predict")
+                .is_none(),
+            "the cap is per request, not part of the model load"
         );
     }
 }

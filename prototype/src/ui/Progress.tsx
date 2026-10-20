@@ -3,7 +3,7 @@
 // such a step usually takes. Reuse these anywhere the app waits.
 
 import { useEffect, useRef, useState } from 'react';
-import { call } from '../data/backend';
+import { usePoll } from '../data/poll';
 
 export interface EngineTask {
   kind: string;
@@ -51,25 +51,8 @@ export function ProgressBar({ label, done, total, eta: left, testId }: { label: 
 
 /** The engine's running task of this kind (`progress` command), polled while `active`. */
 export function useEngineTask(kind: string, active: boolean): EngineTask | null {
-  const [task, setTask] = useState<EngineTask | null>(null);
-  useEffect(() => {
-    if (!active) {
-      setTask(null);
-      return;
-    }
-    let live = true;
-    const poll = () =>
-      call<{ tasks: EngineTask[] }>('progress')
-        .then((r) => live && setTask(r.tasks.find((t) => t.kind === kind) ?? null))
-        .catch(() => {});
-    poll();
-    const t = setInterval(poll, 400);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, [kind, active]);
-  return task;
+  const r = usePoll<{ tasks: EngineTask[] }>(active ? 'progress' : null, {}, 400);
+  return (active && r?.tasks.find((t) => t.kind === kind)) || null;
 }
 
 /**

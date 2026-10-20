@@ -4,3 +4,4 @@ Tests that also fail on `main`, so a thread that sees them knows they aren't its
 
 - 2026-10-18, main at 71720ff: `app-e2e` "Esc closes Import" (Esc leaves the Import dialog open under WebDriver). Owner: the Argus desktop app shell thread.
 - 2026-10-18, main at d8dc7a7: `library_safety::killing_a_writer_mid_write_loses_nothing_it_committed` is flaky under load ("round 1: the writer never got going"); passed alone and on a retried `just check`. Owner: none yet.
+- 2026-10-20, main at 4194cfc: prototype `shots.mjs` smoke-suggestions-preview-accept-undo ("accepting should set exposure 0.65, got 0.35"). Owner: none yet.

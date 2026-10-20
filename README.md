@@ -12,7 +12,15 @@ A Mac with Apple Silicon. The default local model wants about 32 GB of memory to
 
 ## Install
 
-Download the latest `.dmg` from [argus-releases](https://github.com/gregorymfoster/argus-releases/releases/latest), open it and drag Argus into Applications.
+One command in Terminal installs Argus, [Ollama](https://ollama.com) and the default local model, and opens the app:
+
+```sh
+curl -fsSL https://github.com/gregorymfoster/argus-releases/releases/latest/download/install.sh | bash
+```
+
+It checks your Mac first (Apple Silicon, macOS 13 or later, enough memory and disk for the model), shows what it will do and asks once before the big model download. It never asks for your password, verifies the download's checksum and skips anything already installed, so running it again is safe. Add flags after `bash -s --`: `--dry-run` shows the plan and changes nothing, `--yes` skips the question, `--no-model` leaves the model out and `--no-ollama` installs only the app (for people using their Claude plan). Piping a script from the internet into your shell means trusting whoever wrote it, so read [install.sh](scripts/release/install.sh) first if you like.
+
+To do it by hand instead, download the latest `.dmg` from [argus-releases](https://github.com/gregorymfoster/argus-releases/releases/latest), open it and drag Argus into Applications.
 
 Argus isn't notarized by Apple (there's no paid developer account behind it, see [ADR 0004](docs/adr/0004-unsigned-direct-download-with-auto-update.md)), so macOS blocks it the first time. Open it once and dismiss the warning. Then go to System Settings > Privacy & Security, scroll down to the message about Argus and click Open Anyway. On macOS 15 and later the old right-click > Open trick no longer skips this step.
 

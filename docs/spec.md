@@ -10,7 +10,7 @@ AI could do most of this work, but Lightroom wasn't built to let it. Its edits a
 
 ## Solution
 
-Argus is a Mac app built so that AI is a first-class editor. Point it at a folder or a memory card and it imports the batch. The AI looks at the whole Shoot before judging any one frame. It flags every Photo the way Lightroom does (Pick, Reject, or left Unflagged when it's a close call), gives each a reason, and groups bursts into Stacks. Greg confirms the cull in one quick pass.
+Argus is a Mac app built so that AI is a first-class editor. Point it at a folder or a memory card and it imports the batch. The AI looks at the whole Shoot before judging any one frame. It rates every Photo with stars, rejects only the plainly broken frames (missed focus, motion blur, closed eyes, ruined exposure), gives each a reason, and groups bursts into Stacks. Greg still does the cull himself, sorted by those stars, and picks the keepers (2026-10-20: no model picked his keepers well enough to trust with Picks).
 
 It then applies one Look across the keepers, chosen with the whole Shoot in view so the set stays consistent, with per-photo Corrections for exposure, white balance and light on faces, and natural retouching so people look their best. For a special shot, he opens it and talks to it: "brighten her face, cool the sky." Argus builds Masks and local adjustments, and every change appears on ordinary sliders he can nudge by hand.
 
@@ -34,7 +34,7 @@ The AI can be a local open-source model through Ollama, Claude or OpenAI on Greg
 
 ### Cull
 
-9. As a photographer, I want the AI to suggest a Verdict for every Photo, so that culling 100 photos becomes a review instead of a slog.
+9. As a photographer, I want the AI to rate every Photo and set aside the broken ones, so that culling 100 photos starts from a sorted Shoot instead of a slog.
 10. As a photographer, I want a short reason with each Verdict ("eyes closed", "missed focus", "best of 6"), so that I can trust or overrule it quickly.
 11. As a photographer, I want near-identical shots grouped into Stacks, so that I can keep the best frame of a burst without comparing them all by hand.
 12. As a photographer, I want the AI to rank the frames inside a Stack, so that the strongest one is on top.

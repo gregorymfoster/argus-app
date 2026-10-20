@@ -97,17 +97,31 @@ prev=$(git describe --tags --abbrev=0 --match 'v*' "$SHA^" 2>/dev/null || true)
 {
   echo "Built from $SOURCE_REPO@${SHA:0:7}."
   echo
-  echo "First install: open the .dmg, drag Argus to Applications, then approve it once in System Settings > Privacy & Security > Open Anyway. Later versions install themselves."
+  echo "Install with one command in Terminal (installs Argus, Ollama and the local AI model; it asks once before the big download):"
+  echo
+  echo '```sh'
+  echo "curl -fsSL https://github.com/$RELEASE_REPO/releases/latest/download/install.sh | bash"
+  echo '```'
+  echo
+  echo "Or by hand: open the .dmg, drag Argus to Applications, then approve it once in System Settings > Privacy & Security > Open Anyway. Later versions install themselves."
   if [ -n "$prev" ]; then echo; echo "Changes since $prev:"; git log --format='- %s' "$prev..$SHA" | head -n 50; fi
 } > "$OUT/notes.md"
 echo "$SHA" > "$OUT/built-from"
+scripts/release/stamp-install.sh "$VERSION" "$OUT/$name.dmg" "$SHA" > "$OUT/install.sh"
 ls -la "$OUT"
 fi
 if [ "$MODE" = --build-only ]; then echo "Built $TAG in $OUT (app: app/target/release/bundle/macos/Argus.app); publish with --publish-only"; exit 0; fi
 
+# The one-command installer, stamped with this release's .dmg, checksum and default model, so
+# it installs exactly what this release ships. Made here too for builds older than it.
+if [ ! -f "$OUT/install.sh" ]; then
+  scripts/release/stamp-install.sh "$VERSION" "$OUT/$name.dmg" "$SHA" > "$OUT/install.sh.tmp"
+  mv "$OUT/install.sh.tmp" "$OUT/install.sh"
+fi
+
 step "Publishing $TAG to $RELEASE_REPO"
 gh release create "$TAG" --repo "$RELEASE_REPO" --title "Argus $VERSION" --notes-file "$OUT/notes.md" \
-  "$OUT/$name.dmg" "$OUT/$name.app.tar.gz" "$OUT/latest.json"
+  "$OUT/$name.dmg" "$OUT/$name.app.tar.gz" "$OUT/latest.json" "$OUT/install.sh"
 # Tag the source through the API, so this needs no git push credentials.
 gh api "repos/$SOURCE_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null \
   || echo "warning: couldn't tag $SOURCE_REPO at $TAG; the release is published anyway"

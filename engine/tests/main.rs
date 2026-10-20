@@ -41,6 +41,7 @@ mod remove;
 mod render_fixture;
 mod shoots;
 mod storage;
+mod style;
 mod tools;
 mod undo_looks;
 mod usage;

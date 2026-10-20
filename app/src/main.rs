@@ -184,6 +184,11 @@ fn main() {
         })
         .setup(move |app| {
             // The release's version (set in its Tauri config), not the crate's 0.0.1.
+            if cfg!(target_os = "macos") || std::env::var_os("ARGUS_LOG_DIR").is_some() {
+                if let Some(dir) = argus_engine::logs::default_dir() {
+                    argus_engine::logs::start_debug(&dir, "app");
+                }
+            }
             argus_engine::logs::note(&format!("Argus {} started", app.package_info().version));
             // The daily Library backup (ADR 0009), off the UI thread.
             if let Some(lib) = backup_root.clone() {

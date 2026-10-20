@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Sum up Argus's Debug log (engine/src/debug_log.rs) for speed tuning and bug hunts.
+
+    scripts/debug-log                 the last 24 h from ~/Library/Logs/Argus
+    scripts/debug-log --hours 2       a shorter window
+    scripts/debug-log --dir out/logs  another folder (ARGUS_LOG_DIR)
+    scripts/debug-log --errors        only what failed
+
+Reads debug.jsonl and its rotated debug.N.jsonl. Prints, per Queue job kind, how many ran,
+how long they took and what the AI used; model speed per model; the slowest commands; and
+the latest failures. For anything finer, `jq` reads the same lines.
+"""
+
+import argparse
+import glob
+import json
+import os
+import statistics
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+
+def load(folder, hours):
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows = []
+    for path in sorted(glob.glob(os.path.join(folder, "debug*.jsonl"))):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                    t = datetime.fromisoformat(r["t"].replace("Z", "+00:00"))
+                except (ValueError, KeyError):
+                    continue
+                if t >= since:
+                    r["_t"] = t
+                    rows.append(r)
+    rows.sort(key=lambda r: r["_t"])
+    return rows
+
+
+def stats(xs):
+    xs = [x for x in xs if isinstance(x, (int, float))]
+    if not xs:
+        return "-"
+    return f"mean {statistics.mean(xs):.1f}  p50 {statistics.median(xs):.1f}  max {max(xs):.1f}"
+
+
+def ai_used(r, key):
+    u = r.get("used") or {}
+    return sum((u.get(g) or {}).get(key, 0) for g in ("local_model", "claude"))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dir", default=os.environ.get("ARGUS_LOG_DIR") or os.path.expanduser("~/Library/Logs/Argus"))
+    ap.add_argument("--hours", type=float, default=24)
+    ap.add_argument("--errors", action="store_true")
+    a = ap.parse_args()
+    rows = load(a.dir, a.hours)
+    print(f"{len(rows)} events in the last {a.hours:g} h from {a.dir}")
+    if not rows:
+        return
+    failed = [r for r in rows if r.get("ok") is False or (r["kind"] == "note" and "fail" in r.get("msg", ""))]
+    if not a.errors:
+        starts = [r for r in rows if r["kind"] == "start"]
+        if starts:
+            print(f"\nStarts: {len(starts)} ({', '.join(sorted({s['proc'] for s in starts}))})")
+
+        jobs = defaultdict(list)
+        for r in rows:
+            if r["kind"] == "job":
+                jobs[r.get("job_kind", "?")].append(r)
+        if jobs:
+            print("\nQueue jobs (seconds; AI energy in J, CPU and GPU in s)")
+            for kind, rs in sorted(jobs.items()):
+                bad = sum(1 for r in rs if not r.get("ok"))
+                print(f"  {kind:<16} {len(rs):>4} run, {bad} failed")
+                print(f"    time    {stats([r['duration_ms'] / 1000 for r in rs])}")
+                print(f"    energy  {stats([ai_used(r, 'energy_j') for r in rs])}")
+                print(f"    cpu     {stats([ai_used(r, 'cpu_s') for r in rs])}")
+                print(f"    gpu     {stats([ai_used(r, 'gpu_s') for r in rs])}")
+
+        models = defaultdict(list)
+        for r in rows:
+            if r["kind"] == "ollama":
+                models[("ollama", r.get("model"))].append(r)
+            elif r["kind"] == "claude":
+                models[("claude", r.get("model"))].append(r)
+        if models:
+            print("\nModel requests")
+            for (kind, model), rs in sorted(models.items(), key=lambda kv: str(kv[0])):
+                print(f"  {kind} {model}: {len(rs)}")
+                print(f"    wall s        {stats([r.get('wall_s') for r in rs])}")
+                if kind == "ollama":
+                    print(f"    load s        {stats([r.get('load_s') for r in rs])}")
+                    print(f"    prompt tok/s  {stats([r.get('prompt_tok_s') for r in rs])}")
+                    print(f"    output tok/s  {stats([r.get('output_tok_s') for r in rs])}")
+                    print(f"    output tok    {stats([r.get('output_tokens') for r in rs])}")
+                else:
+                    cost = sum(r.get("cost_usd") or 0 for r in rs)
+                    print(f"    cost          ${cost:.2f} (plan usage, not billed)")
+
+        waits = [r for r in rows if r["kind"] == "model_wait"]
+        if waits:
+            print(f"\nWaited for the model {len(waits)} times: {stats([r.get('waited_s') for r in waits])} s")
+
+        cmds = defaultdict(list)
+        for r in rows:
+            if r["kind"] == "command":
+                cmds[r.get("command")].append(r.get("duration_ms", 0))
+        if cmds:
+            print("\nSlowest commands (ms)")
+            for name, ms in sorted(cmds.items(), key=lambda kv: -max(kv[1]))[:12]:
+                print(f"  {name:<22} {len(ms):>5} calls  {stats(ms)}")
+
+        res = [r for r in rows if r["kind"] == "resources" and r.get("busy")]
+        if res:
+            lm = [((r.get("now") or {}).get("local_model") or {}) for r in res]
+            print("\nLocal model while busy")
+            print(f"  cpu %   {stats([x.get('cpu_pct') for x in lm])}")
+            print(f"  gpu %   {stats([x.get('gpu_pct') for x in lm])}")
+            print(f"  watts   {stats([x.get('watts') for x in lm])}")
+            print(f"  memory  {stats([(x.get('mem_bytes') or 0) / 1e9 for x in lm])} GB")
+
+    print(f"\nFailures: {len(failed)}")
+    for r in failed[-15:]:
+        what = r.get("command") or r.get("job_kind") or r["kind"]
+        msg = r.get("error") or r.get("msg") or ""
+        print(f"  {r['_t'].astimezone():%Y-%m-%d %H:%M:%S %Z} {r['proc']}: {what}: {str(msg)[:160]}")
+
+
+if __name__ == "__main__":
+    main()

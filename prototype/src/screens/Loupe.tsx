@@ -15,6 +15,8 @@ import { useSuggestionImage, useSuggestions } from '../data/suggestions';
 import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
 import { Histogram } from '../ui/Histogram';
+import { useSort } from '../ui/Sort';
+import { sortPhotos } from '../domain/sort';
 import { Agent } from '../agent/AgentPanel';
 import { eyeFlagsOf, useEyeFlags, usePhotoFacts, type FaceFacts } from '../data/facts';
 import { EyeBadges } from '../ui/EyeBadges';
@@ -45,7 +47,9 @@ export function LoupeScreen({ id }: { id: string }) {
   const [before, setBefore] = useState(false);
   const [tab, setTab] = useState<'info' | 'agent'>('info');
   const p = PHOTO_BY_ID[id] ?? PHOTOS[0];
-  const order = PHOTOS.slice(0, state.imported).map((x) => x.id);
+  // The grid's sort order, Stacks kept together.
+  const [sort] = useSort();
+  const order = sortPhotos(PHOTOS.slice(0, state.imported), sort, { stars: (x) => starsOf(state, x).stars, verdict: (x) => verdictOf(state, x) }).map((x) => x.id);
   const pos = order.indexOf(p.id);
   const nextKey = order.slice(pos + 1, pos + 4).join(',');
   useEffect(() => focusPhoto(p.id, nextKey ? nextKey.split(',') : []), [p.id, nextKey]);
@@ -195,7 +199,7 @@ export function LoupeScreen({ id }: { id: string }) {
                   <div className="side-thumbs">
                     {stack.map((s) => (
                       <button key={s.id} className={s.id === p.id ? 'on' : ''} onClick={() => go({ name: 'loupe', id: s.id })} aria-label={s.file}>
-                        <PhotoView photo={s} recipe={state.recipes[s.id]} look={state.look} edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
+                        <PhotoView photo={s} size="tile" recipe={state.recipes[s.id]} look={state.look} edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
                       </button>
                     ))}
                   </div>

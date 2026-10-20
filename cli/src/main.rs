@@ -212,13 +212,17 @@ enum Cmd {
         #[arg(long)]
         compute: Option<Compute>,
     },
-    /// Work through the background queue (Suggestions, "apply to the rest", culls): every
-    /// queued job with --once, else keep watching for new ones until stopped.
+    /// Work through the background queue (Suggestions, "apply to the rest", culls) by the
+    /// app's rules: on battery, while the Mac runs hot or before overnight, held jobs wait.
+    /// With --once, stop when nothing more may run now, else keep watching until stopped.
     Work {
         #[arg(long)]
         library: PathBuf,
         #[arg(long)]
         once: bool,
+        /// Run every queued job now, ignoring the holds (benches and scripts).
+        #[arg(long)]
+        drain: bool,
         /// Override the queue's Compute level for this run.
         #[arg(long)]
         compute: Option<Compute>,
@@ -565,20 +569,48 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Work {
             library,
             once,
+            drain,
             compute,
         } => {
-            use argus_engine::jobs;
+            use argus_engine::jobs::{self, Gate};
             let tools = Tools::new(&library);
             let lib = Library::open(&library)?;
             lib.requeue_stale_jobs()?;
+            let pause = || std::thread::sleep(std::time::Duration::from_secs(2));
             loop {
-                let c = compute.unwrap_or_else(|| {
-                    jobs::effective_compute(&jobs::config(&lib).unwrap_or_default())
-                });
-                match jobs::run_next(&tools, c)? {
+                let cfg = jobs::config(&lib).unwrap_or_default();
+                let (c, min, held) = if drain {
+                    (jobs::effective_compute(&cfg), i64::MIN, &[][..])
+                } else {
+                    match jobs::gate(&lib, &cfg) {
+                        Gate::Run {
+                            compute,
+                            min_priority,
+                            held,
+                        } => (compute, min_priority, held),
+                        Gate::Wait(why) if once => {
+                            eprintln!("argus work: {why}; nothing started (--drain runs anyway)");
+                            break;
+                        }
+                        Gate::Wait(_) => {
+                            pause();
+                            continue;
+                        }
+                    }
+                };
+                match jobs::run_next_holding(&tools, compute.unwrap_or(c), min, held)? {
                     Some(job) => println!("{}", serde_json::to_string(&job)?),
-                    None if once => break,
-                    None => std::thread::sleep(std::time::Duration::from_secs(2)),
+                    None if once => {
+                        let left = lib.queue_summary()?.queued;
+                        if left > 0 {
+                            eprintln!(
+                                "argus work: {left} queued jobs wait for overnight, the charger \
+                                 or Run now, as in the app (--drain runs them now)"
+                            );
+                        }
+                        break;
+                    }
+                    None => pause(),
                 }
             }
         }
@@ -700,7 +732,27 @@ fn serde_line(file: &std::path::Path, w: usize, h: usize, t: &[(&str, f64)]) -> 
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    // Long-running commands keep a Debug log and Resource meter beside the app's
+    // (~/Library/Logs/Argus on a Mac; elsewhere only when ARGUS_LOG_DIR says where).
+    let long = matches!(
+        cli.cmd,
+        Cmd::Serve { .. }
+            | Cmd::Mcp { .. }
+            | Cmd::Cull { .. }
+            | Cmd::Agent { .. }
+            | Cmd::Work { .. }
+            | Cmd::Tool { .. }
+            | Cmd::Import { .. }
+            | Cmd::Previews { .. }
+    );
+    if long && (cfg!(target_os = "macos") || std::env::var_os("ARGUS_LOG_DIR").is_some()) {
+        if let Some(dir) = argus_engine::logs::default_dir() {
+            let cmd = std::env::args().nth(1).unwrap_or_default();
+            argus_engine::logs::start_debug(&dir, &format!("argus {cmd}"));
+        }
+    }
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

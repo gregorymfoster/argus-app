@@ -3,8 +3,9 @@
 // saves it as a new Version. With dummy data they're made up here so the screen can be
 // designed without a Library.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { call } from './backend';
+import { refreshPolls, usePoll, whileShown } from './poll';
 import { LIVE, chosenProvider, liveShootId } from './live';
 import { PHOTOS, PHOTO_BY_ID } from './dummy';
 import type { Recipe, Suggestion } from '../domain/types';
@@ -84,37 +85,26 @@ function dummyList(photoId: string): Suggestion[] {
 }
 
 const changed = (photoId: string) => window.dispatchEvent(new CustomEvent('argus:suggestions', { detail: photoId }));
+// Whoever changed Suggestions says so; the polls ask again at once.
+if (LIVE) window.addEventListener('argus:suggestions', () => refreshPolls('list_suggestions'));
 
 /** A Photo's open Suggestions, best first: fresh takes, then ones matched to a Hero Photo. */
 export function useSuggestions(photoId: string): { list: Suggestion[]; loading: boolean } {
-  const [list, setList] = useState<Suggestion[]>(() => (LIVE ? [] : dummyList(photoId)));
-  const [loading, setLoading] = useState(LIVE);
+  // New takes land while the Queue works.
+  const rows = usePoll<EngineSuggestion[]>(LIVE ? 'list_suggestions' : null, { photo_id: Number(photoId) }, 5000);
+  // Dummy data changes in place; `argus:suggestions` says when.
+  const [bump, setBump] = useState(0);
   useEffect(() => {
-    let on = true;
-    const load = async () => {
-      if (!LIVE) return setList(dummyList(photoId));
-      try {
-        const rows = await call<EngineSuggestion[]>('list_suggestions', { photo_id: Number(photoId) });
-        if (on) setList(rows.map(fromEngine).sort((a, b) => Number(a.referenceId != null) - Number(b.referenceId != null) || a.rank - b.rank));
-      } catch (e) {
-        console.error('list_suggestions failed', e);
-      } finally {
-        if (on) setLoading(false);
-      }
-    };
-    void load();
-    const onChange = (e: Event) => (e as CustomEvent).detail === photoId && void load();
+    if (LIVE) return;
+    const onChange = (e: Event) => (e as CustomEvent).detail === photoId && setBump((n) => n + 1);
     window.addEventListener('argus:suggestions', onChange);
-    // New takes land while the Queue works.
-    const t = LIVE ? setInterval(load, 5000) : undefined;
-    return () => {
-      on = false;
-      window.removeEventListener('argus:suggestions', onChange);
-      if (t) clearInterval(t);
-    };
+    return () => window.removeEventListener('argus:suggestions', onChange);
   }, [photoId]);
-  return { list, loading };
+  const list = useMemo(() => (LIVE ? (rows ?? []).map(fromEngine).sort(byRank) : dummyList(photoId)), [rows, photoId, bump]);
+  return { list, loading: LIVE && rows === undefined };
 }
+
+const byRank = (a: Suggestion, b: Suggestion) => Number(a.referenceId != null) - Number(b.referenceId != null) || a.rank - b.rank;
 
 /** The image of a Suggestion applied to its Photo (live: rendered by the engine and saved). */
 export function useSuggestionImage(s: Suggestion | null, edge: number, amount = 1): string | null {
@@ -140,37 +130,22 @@ export function useSuggestionImage(s: Suggestion | null, edge: number, amount = 
 
 /** Every Photo's takes in the open Shoot, for the grid's badges and bulk accept. */
 export function useShootTakes(): Record<string, Suggestion[]> {
-  const [by, setBy] = useState<Record<string, Suggestion[]>>({});
+  const shoot = LIVE ? liveShootId() : null;
+  const rows = usePoll<EngineSuggestion[]>(LIVE && shoot != null ? 'list_suggestions' : null, { shoot_id: shoot || undefined }, 5000);
+  const [bump, setBump] = useState(0);
   useEffect(() => {
-    let on = true;
-    const load = async () => {
-      let list: Suggestion[];
-      if (LIVE) {
-        const shoot = liveShootId();
-        if (shoot == null) return;
-        try {
-          list = (await call<EngineSuggestion[]>('list_suggestions', { shoot_id: shoot || undefined })).map(fromEngine);
-        } catch (e) {
-          return console.error('list_suggestions failed', e);
-        }
-      } else {
-        list = PHOTOS.flatMap((p) => dummyList(p.id));
-      }
-      const next: Record<string, Suggestion[]> = {};
-      for (const s of list) (next[s.photoId] ??= []).push(s);
-      for (const k in next) next[k].sort((a, b) => Number(a.referenceId != null) - Number(b.referenceId != null) || a.rank - b.rank);
-      if (on) setBy(next);
-    };
-    void load();
-    window.addEventListener('argus:suggestions', load);
-    const t = LIVE ? setInterval(load, 5000) : undefined;
-    return () => {
-      on = false;
-      window.removeEventListener('argus:suggestions', load);
-      if (t) clearInterval(t);
-    };
+    if (LIVE) return;
+    const onChange = () => setBump((n) => n + 1);
+    window.addEventListener('argus:suggestions', onChange);
+    return () => window.removeEventListener('argus:suggestions', onChange);
   }, []);
-  return by;
+  return useMemo(() => {
+    const list = LIVE ? (rows ?? []).map(fromEngine) : PHOTOS.flatMap((p) => dummyList(p.id));
+    const next: Record<string, Suggestion[]> = {};
+    for (const s of list) (next[s.photoId] ??= []).push(s);
+    for (const k in next) next[k].sort(byRank);
+    return next;
+  }, [rows, bump]);
 }
 
 /** Accept several takes (one per Photo) as one batch. Live returns the batch for Undo. */
@@ -285,12 +260,12 @@ export function useTakesProgress(photoId: string): TakesJob | null {
       setJob(next);
     };
     void load();
-    const t = setInterval(load, LIVE ? 1500 : 500);
+    const stop = whileShown(load, LIVE ? 1500 : 500);
     const onAsk = (e: Event) => (e as CustomEvent).detail === photoId && void load();
     window.addEventListener('argus:takes-progress', onAsk);
     return () => {
       on = false;
-      clearInterval(t);
+      stop();
       window.removeEventListener('argus:takes-progress', onAsk);
     };
   }, [photoId]);
@@ -327,22 +302,7 @@ export async function applyToRest(hero: string, heroRecipe: Recipe): Promise<num
 
 /** The background Queue, for the progress chip (live only; null with dummy data). */
 export function useQueue(): QueueStatus | null {
-  const [q, setQ] = useState<QueueStatus | null>(null);
-  useEffect(() => {
-    if (!LIVE) return;
-    let on = true;
-    const load = () =>
-      call<QueueStatus>('progress')
-        .then((r) => on && setQ(r))
-        .catch(() => on && setQ(null));
-    void load();
-    const t = setInterval(load, 3000);
-    return () => {
-      on = false;
-      clearInterval(t);
-    };
-  }, []);
-  return q;
+  return usePoll<QueueStatus>(LIVE ? 'progress' : null, {}, 3000) ?? null;
 }
 
 /** "~38 min", "~2 h", or null. */

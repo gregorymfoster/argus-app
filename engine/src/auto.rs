@@ -208,7 +208,7 @@ impl Stats {
         let mut hist = [0u32; 256];
         let (mut sum, mut sq, mut chroma) = (0.0, 0.0, 0.0);
         let (mut mid, mut mid_n) = ([0.0f64; 3], 0u32);
-        let px = img.data.chunks_exact(3);
+        let px = img.data.as_chunks::<3>().0;
         let n = px.len() as u32;
         for p in px {
             let y = (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 255.0;

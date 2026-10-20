@@ -68,6 +68,14 @@ _Avoid_: Feature, metadata, annotation
 The Library's append-only record of what happened to each Photo: where it started, every AI take, what the person kept, flagged and exported. Never uploaded; benches and learning read it (docs/usage-log.md).
 _Avoid_: Telemetry, analytics, history
 
+**Debug log**:
+The Mac's record of how Argus ran, for tuning and fixing it: every command, Queue job and model request with its timing, and what the AI used. JSON lines in `~/Library/Logs/Argus/debug.jsonl`, rotated, never uploaded. Unlike the Usage log it is about the app, not the Photos.
+_Avoid_: Telemetry, trace, analytics
+
+**Resource meter**:
+What the AI is taking from the Mac right now and since launch: CPU, memory, power and GPU for the Local model (Ollama), Claude and Argus itself. A line under Background work, with a panel.
+_Avoid_: Activity monitor, stats, usage widget
+
 **Backup**:
 A whole copy of a Library's database (Verdicts, Recipes, Looks), kept in the Library's `backups/` folder. Argus makes one a day and before every upgrade. Originals and previews are never in it.
 _Avoid_: Snapshot, archive
@@ -103,7 +111,7 @@ Sorting a batch of Photos into the ones worth keeping and the ones to drop. The 
 _Avoid_: Filter, triage, select
 
 **Verdict**:
-A Photo's cull outcome, as a Lightroom-style flag: Pick, Reject or Unflagged. The AI proposes one with a reason (leaving close calls Unflagged), and the person's choice overrides it.
+A Photo's cull outcome, as a Lightroom-style flag: Pick, Reject or Unflagged. The AI cull is cautious (Greg, 2026-10-20): it only proposes Reject, with a reason, for a plainly broken frame it rated 1 star, and leaves picking to the person, whose choice always overrides it.
 _Avoid_: Maybe, status
 
 **Rating**:
@@ -119,7 +127,7 @@ Cheap measurements of each Photo (sharpness within its Shoot, brightness, clippi
 _Avoid_: Scores, metrics
 
 **Stack**:
-A group of near-identical Photos (a burst or repeated shot) that get culled together, so only the best ones survive.
+A group of near-identical Photos (a burst or repeated shot) that get culled together, so only the best ones survive. Argus stacks bursts by itself (look-alike frames shot seconds apart, `engine::bursts`), and the AI cull joins its own Stacks to them. The Stacks view (N) shows one Stack at a time to keep its best frame or two.
 _Avoid_: Group, burst, cluster
 
 **Contact sheet**:
@@ -147,6 +155,10 @@ _Avoid_: Base edit, auto masks
 **Amount**:
 How strong a Suggestion is applied, 0-150%, as on a Lightroom preset: 0 is the Photo as it is, 100 the Suggestion, and every setting moves in proportion.
 _Avoid_: Strength, intensity, opacity
+
+**Style profile**:
+How the person usually finishes a take they kept, learned from the Usage log: the median change to each global slider on the Photos they exported from a kept take, shrunk while there are few. Fresh Suggestions add it on top of every take, so the AI drifts toward the person's own edits; it is empty until they have exported at least three.
+_Avoid_: Preset, taste model, personal Look
 
 **Review round**:
 One pass in which the AI looks at its own Suggestions rendered, with their light measured in numbers, and fixes each one's biggest remaining problem. Suggestions get one at the Full Compute level, none otherwise.

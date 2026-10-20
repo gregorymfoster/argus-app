@@ -42,5 +42,6 @@ target/
 # Spike fixtures and render outputs (kept out of git for now)
 fixtures/raw/
 fixtures/raw-*/
+fixtures/bench-raw/
 out/
 __pycache__/

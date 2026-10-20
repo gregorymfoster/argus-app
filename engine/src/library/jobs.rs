@@ -417,6 +417,17 @@ impl Library {
         rows.collect::<std::result::Result<_, _>>().map_err(db_err)
     }
 
+    /// Whether any job waits to run: the worker's cheap check on each idle round.
+    pub fn has_queued_jobs(&self) -> Result<bool> {
+        self.db
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM jobs WHERE status = 'queued')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(db_err)
+    }
+
     pub fn queue_summary(&self) -> Result<QueueSummary> {
         let count =
             |sql: &str| -> Result<i64> { self.db.query_row(sql, [], |r| r.get(0)).map_err(db_err) };

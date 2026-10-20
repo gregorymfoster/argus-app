@@ -163,7 +163,7 @@ impl Light {
 
 /// Measure a render's [`Light`]. One pass over the pixels.
 pub fn light(img: &crate::RgbImage) -> Light {
-    let px = img.data.chunks_exact(3);
+    let px = img.data.as_chunks::<3>().0;
     let n = px.len();
     if n == 0 {
         return Light::default();

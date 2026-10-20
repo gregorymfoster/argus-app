@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Award, Check, ChevronDown, Columns2, Copy, Download, Flag, Folder, Grid2x2, Grid3x3, SlidersHorizontal, Sparkles, Square, Star, Trash2, Wand2, X } from 'lucide-react';
@@ -23,6 +23,8 @@ import { eta } from '../ui/Progress';
 import { FlagButtons, VerdictChip } from '../ui/Flags';
 import { STAR_KEYS, Stars } from '../ui/Stars';
 import { ViewSwitch } from '../ui/ViewBar';
+import { SortMenu, toggleStars, useSort } from '../ui/Sort';
+import { sortPhotos } from '../domain/sort';
 import { aiName } from '../data/live';
 import { Kbd, MenuKeys, Seg, Tip, VERDICT_KEYS } from '../ui/kit';
 import { Button } from '@/components/ui/button';
@@ -35,6 +37,8 @@ type Filter = 'all' | Verdict | 'best';
 export const THUMB_MIN = 72;
 export const THUMB_MAX = 420;
 export const THUMB_DEFAULT = 132;
+/** Matches the engine's grid thumbnails (`THUMB_EDGE` in engine/src/commands.rs). */
+const THUMB_EDGE = 480;
 const clampThumb = (n: number) => Math.max(THUMB_MIN, Math.min(THUMB_MAX, n));
 
 interface TileProps {
@@ -61,8 +65,10 @@ interface TileProps {
   onToggleStack: () => void;
   onClick: (e: React.MouseEvent) => void;
   onSet: (v: Verdict) => void;
-  /** The right-click menu's actions on this Photo (and the selection). */
-  menu: TileMenu;
+  /** The right-click menu's actions on this Photo (and the selection), read when it opens. */
+  menu: () => TileMenu;
+  /** Small enough for the grid thumbnail (a tenth of the preview's pixels to decode). */
+  small?: boolean;
 }
 
 interface TileMenu {
@@ -78,14 +84,22 @@ interface TileMenu {
   selected: boolean;
 }
 
-function Tile({ p, v, you, stars, best, hero, takes, ai, eyes, onStars, selected, current, highlighted, stackSize, expanded, culling, onToggleStack, onClick, onSet, menu }: TileProps) {
+// A grid tile re-renders only when what it shows changed (a flag used to re-render every
+// tile on screen). Its handlers are ignored here: the screen routes them through its latest
+// state, so a tile that skipped a render never acts on an old selection.
+const sameTile = (a: TileProps, b: TileProps) =>
+  (Object.keys({ ...a, ...b }) as (keyof TileProps)[]).every((k) =>
+    typeof a[k] === 'function' ? typeof b[k] === 'function' : k === 'stars' ? a.stars.stars === b.stars.stars && a.stars.you === b.stars.you : Object.is(a[k], b[k]),
+  );
+
+const Tile = memo(function Tile({ p, v, you, stars, best, hero, takes, ai, eyes, onStars, selected, current, highlighted, stackSize, expanded, culling, onToggleStack, onClick, onSet, menu, small }: TileProps) {
   const cls = ['tile', hero && 'hero', selected && 'sel', current && 'cur', highlighted && 'hl', v === 'reject' && 'faded'].filter(Boolean).join(' ');
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <figure className={cls} onClick={onClick} onDoubleClick={() => go({ name: 'loupe', id: p.id })} data-testid={`tile-${p.id}`} data-verdict={v ?? ''}>
           <div className="ph">
-            <PhotoView photo={p} edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
+            <PhotoView photo={p} size={small ? 'tile' : 'thumb'} edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
             <VerdictChip v={v} you={you} />
             {stackSize > 1 && (
               <Tip label={expanded ? 'Collapse Stack' : 'Expand Stack'} keys="S">
@@ -134,53 +148,63 @@ function Tile({ p, v, you, stars, best, hero, takes, ai, eyes, onStars, selected
         </figure>
       </ContextMenuTrigger>
       <ContextMenuContent className="min-w-[280px]">
-        <ContextMenuItem onSelect={() => onSet('pick')}>
-          <Flag size={13} /> Pick <MenuKeys keys={['P']} />
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => onSet('reject')}>
-          <X size={13} /> Reject <MenuKeys keys={['X']} />
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => onSet('unflagged')}>
-          <span style={{ width: 13 }} /> Clear flag <MenuKeys keys={['U']} />
-        </ContextMenuItem>
-        <div className="menu-rate" role="group" aria-label="Rate">
-          <Star size={13} />
-          <span>Rate</span>
-          <span className="grow" />
-          <Stars n={stars.stars} you={stars.you} onSet={onStars} />
-        </div>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={menu.onAuto}>
-          <Wand2 size={13} /> Auto <MenuKeys keys={['⇧', 'A']} />
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => go({ name: 'edit', id: p.id })}>
-          <SlidersHorizontal size={13} /> Edit <MenuKeys keys={['D']} />
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={menu.onApplyToSelection} disabled={menu.others === 0}>
-          <Copy size={13} /> Apply this edit to {menu.others ? `${menu.others} selected` : 'selection'} <MenuKeys keys={['⌘', '⇧', 'A']} />
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={menu.onCompare} disabled={menu.others === 0 && !p.stackId}>
-          <Columns2 size={13} /> {menu.others === 0 && p.stackId ? 'Compare the Stack' : 'Compare with selection'} <MenuKeys keys={['C']} />
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={menu.onAsk}>
-          <Sparkles size={13} /> Ask Agent about this photo <MenuKeys keys={['⌘', 'L']} />
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem disabled={!LIVE} onSelect={() => revealInFinder({ photo_id: Number(p.id) }).catch((e) => toast(String(e).replace(/^Error: /, ''), { id: 'argus' }))}>
-          <Folder size={13} /> Show original in Finder <MenuKeys keys={['⌘', '⇧', 'R']} />
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={menu.onExport}>
-          <Download size={13} /> {menu.others > 0 && menu.selected ? `Export ${menu.others + 1} Photos…` : 'Export…'}
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void navigator.clipboard?.writeText(p.file).then(() => toast(`Copied ${p.file}`, { id: 'argus' }))}>
-          <span style={{ width: 13 }} /> Copy file name
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={menu.onRemove} data-testid="tile-remove">
-          <Trash2 size={13} /> {menu.others > 0 && menu.selected ? `Remove ${menu.others + 1} Photos from Library…` : 'Remove from Library…'} <MenuKeys keys={['⌫']} />
-        </ContextMenuItem>
+        <TileMenuItems p={p} stars={stars} onStars={onStars} onSet={onSet} menu={menu} />
       </ContextMenuContent>
     </ContextMenu>
+  );
+}, sameTile);
+
+/** The right-click menu, built when it opens so it reflects the selection then. */
+function TileMenuItems({ p, stars, onStars, onSet, menu: menuOf }: Pick<TileProps, 'p' | 'stars' | 'onStars' | 'onSet' | 'menu'>) {
+  const menu = menuOf();
+  return (
+    <>
+      <ContextMenuItem onSelect={() => onSet('pick')}>
+        <Flag size={13} /> Pick <MenuKeys keys={['P']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => onSet('reject')}>
+        <X size={13} /> Reject <MenuKeys keys={['X']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => onSet('unflagged')}>
+        <span style={{ width: 13 }} /> Clear flag <MenuKeys keys={['U']} />
+      </ContextMenuItem>
+      <div className="menu-rate" role="group" aria-label="Rate">
+        <Star size={13} />
+        <span>Rate</span>
+        <span className="grow" />
+        <Stars n={stars.stars} you={stars.you} onSet={onStars} />
+      </div>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={menu.onAuto}>
+        <Wand2 size={13} /> Auto <MenuKeys keys={['⇧', 'A']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => go({ name: 'edit', id: p.id })}>
+        <SlidersHorizontal size={13} /> Edit <MenuKeys keys={['D']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={menu.onApplyToSelection} disabled={menu.others === 0}>
+        <Copy size={13} /> Apply this edit to {menu.others ? `${menu.others} selected` : 'selection'} <MenuKeys keys={['⌘', '⇧', 'A']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={menu.onCompare} disabled={menu.others === 0 && !p.stackId}>
+        <Columns2 size={13} /> {menu.others === 0 && p.stackId ? 'Compare the Stack' : 'Compare with selection'} <MenuKeys keys={['C']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={menu.onAsk}>
+        <Sparkles size={13} /> Ask Agent about this photo <MenuKeys keys={['⌘', 'L']} />
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem disabled={!LIVE} onSelect={() => revealInFinder({ photo_id: Number(p.id) }).catch((e) => toast(String(e).replace(/^Error: /, ''), { id: 'argus' }))}>
+        <Folder size={13} /> Show original in Finder <MenuKeys keys={['⌘', '⇧', 'R']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={menu.onExport}>
+        <Download size={13} /> {menu.others > 0 && menu.selected ? `Export ${menu.others + 1} Photos…` : 'Export…'}
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => void navigator.clipboard?.writeText(p.file).then(() => toast(`Copied ${p.file}`, { id: 'argus' }))}>
+        <span style={{ width: 13 }} /> Copy file name
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={menu.onRemove} data-testid="tile-remove">
+        <Trash2 size={13} /> {menu.others > 0 && menu.selected ? `Remove ${menu.others + 1} Photos from Library…` : 'Remove from Library…'} <MenuKeys keys={['⌫']} />
+      </ContextMenuItem>
+    </>
   );
 }
 
@@ -193,6 +217,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const [minStars, setMinStars] = useState(0);
   // Lightroom has no AI filter; ours narrows to what the background AI has done or not yet.
   const [aiFilter, setAiFilter] = useState<'any' | 'ready' | 'waiting'>('any');
+  const [sort, setSort] = useSort();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [cur, setCur] = useState(0);
   const [sel, setSel] = useState<Set<string>>(new Set());
@@ -213,15 +238,30 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const eyesOf = useEyeFlags();
   const aiOf = (id: string) => aiStatus.of(id, openTakes(id) > 0);
   const aiOk = (p: Photo) => aiFilter === 'any' || (aiFilter === 'ready' ? openTakes(p.id) > 0 : aiOf(p.id) != null);
+  // A collapsed Stack shows the frame that was kept (its best Pick), else its best frame.
+  const cover = useMemo(() => {
+    const out: Record<string, string> = {};
+    const rank = (p: Photo) => (verdictOf(state, p.id) === 'pick' ? -100 : 0) + (p.stackRank ?? 99);
+    for (const p of all) if (p.stackId && (!out[p.stackId] || rank(p) < rank(PHOTO_BY_ID[out[p.stackId]]))) out[p.stackId] = p.id;
+    return out;
+  }, [all, state]);
+  const stackCount = Object.keys(cover).length;
   const visible = useMemo(() => {
-    if (filter === 'best') return bestPhotos.filter((p) => starsOf(state, p.id).stars >= minStars && aiOk(p));
-    return all.filter((p) => {
+    const facts = { stars: (id: string) => starsOf(state, id).stars, verdict: (id: string) => verdictOf(state, id) };
+    if (filter === 'best') {
+      const best = bestPhotos.filter((p) => starsOf(state, p.id).stars >= minStars && aiOk(p));
+      // Best Photos stay in rank order unless another sort is chosen.
+      return sort.key === 'capture' ? best : sortPhotos(best, sort, facts, false);
+    }
+    const shown = all.filter((p) => {
       if (minStars && starsOf(state, p.id).stars < minStars) return false;
       if (!aiOk(p)) return false;
-      if (!minStars && p.stackId && (p.stackRank ?? 0) > 0 && !expanded.has(p.stackId)) return false;
+      if (!minStars && p.stackId && cover[p.stackId] !== p.id && !expanded.has(p.stackId)) return false;
       return filter === 'all' || (verdictOf(state, p.id) ?? 'unflagged') === filter;
     });
-  }, [all, bestPhotos, expanded, filter, minStars, state, aiFilter, takes, aiStatus]);
+    // The star filter shows every frame of a Stack, so they sort one by one then.
+    return sortPhotos(shown, sort, facts, !minStars);
+  }, [all, bestPhotos, cover, expanded, filter, minStars, state, aiFilter, takes, aiStatus, sort]);
   const counts = useMemo(() => {
     const c = { all: all.length, pick: 0, reject: 0, unflagged: 0, best: bestPhotos.length };
     all.forEach((p) => {
@@ -259,6 +299,11 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     if (ids.length === 1) dispatch({ type: 'stars/set', id: ids[0], stars: n, by: 'you' });
     else dispatch({ type: 'batch', label: `${ids.length} to ${n} stars`, actions: ids.map((id) => ({ type: 'stars/set', id, stars: n, by: 'you' })) });
   };
+  const changeSort = (s: typeof sort) => {
+    setSort(s);
+    setCur(0);
+    setSel(new Set());
+  };
   const toggleStack = (id: string) =>
     setExpanded((x) => {
       const n = new Set(x);
@@ -288,6 +333,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const cols = Math.max(1, Math.floor((width - pad * 2 + gap) / (size + gap)));
   const tileW = (width - pad * 2 - gap * (cols - 1)) / cols;
   const rowH = tileW * (2 / 3) + 27 + gap;
+  const small = tileW * (window.devicePixelRatio || 1) <= THUMB_EDGE;
   const rows = Math.ceil(visible.length / cols);
   const virt = useVirtualizer({ count: rows, getScrollElement: () => gridRef.current, estimateSize: () => rowH, overscan: 3, paddingStart: pad, paddingEnd: pad });
   useEffect(() => virt.measure(), [rowH, virt]);
@@ -402,6 +448,10 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   useHotkeys(['space', 'enter', 'e'], () => current && go({ name: 'loupe', id: current.id }), { preventDefault: true }, [current]);
   useHotkeys('d', () => current && go({ name: 'edit', id: current.id }), [current]);
   useHotkeys('s', () => current?.stackId && toggleStack(current.stackId), [current]);
+  useHotkeys('shift+s', () => changeSort(toggleStars(sort)), [sort]);
+  // N (Lightroom's Survey key) culls the Shoot's bursts one Stack at a time, from the current Photo's.
+  const openBursts = () => (stackCount ? go({ name: 'bursts', id: current?.stackId }) : dispatch({ type: 'toast', text: 'No Stacks yet: bursts stack once Import has looked at the Photos, or after an AI cull' }));
+  useHotkeys('n', openBursts, [current, stackCount]);
   useHotkeys(
     'c',
     () => {
@@ -478,6 +528,16 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     } else setSel(new Set());
     setCur(i);
   };
+  // What the (memoised) tiles call: always this render's state and selection.
+  const tileActs = {
+    stars: (id: string, n: number) => setStars(sel.has(id) ? [...sel] : [id], n),
+    flag: (id: string, v: Verdict) => setVerdict(sel.has(id) ? [...sel] : [id], v),
+    click: (p: Photo, e: React.MouseEvent) => clickTile(visible.indexOf(p), p, e),
+    toggleStack,
+    menuFor,
+  };
+  const act = useRef(tileActs);
+  act.current = tileActs;
 
   return (
     <>
@@ -554,6 +614,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+          <SortMenu sort={sort} onChange={changeSort} rank={filter === 'best'} />
           <Tip label="Thumbnail size: pinch, or = and −">
             <div className="thumb-size" data-testid="thumb-size">
               <Grid3x3 size={12} />
@@ -562,17 +623,13 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             </div>
           </Tip>
           <Tip label={sel.size > 1 ? 'Lightroom-style Auto on the selected Photos' : 'Lightroom-style Auto on every Photo in the Shoot'} keys="⇧A">
-            <Button onClick={autoAll} disabled={!autoIds.length} data-testid="auto-all">
+            <Button variant="ghost" onClick={autoAll} disabled={!autoIds.length} data-testid="auto-all">
               <Wand2 size={13} /> <span className="mid-only">{sel.size > 1 ? `Auto ${sel.size}` : 'Auto all'}</span>
-              <span className="keys wide-only">
-                <kbd>⇧</kbd>
-                <kbd>A</kbd>
-              </span>
             </Button>
           </Tip>
-{!inCollection() && (
+          {!inCollection() && (
           <Tip label={culled ? 'Cull the whole Shoot again: Verdicts, stars, Stacks and Best Photos' : 'Cull the whole Shoot: Verdicts, stars, Stacks and Best Photos'}>
-            <Button onClick={onCull} disabled={!all.length || state.culling} data-testid="ai-cull">
+            <Button variant="ghost" onClick={onCull} disabled={!all.length || state.culling} data-testid="ai-cull">
               <Sparkles size={13} className="ai-icon" /> <span className="mid-only">{state.culling ? 'Culling…' : 'AI cull'}</span>
             </Button>
           </Tip>
@@ -594,7 +651,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
                 eyes={eyesOf(p.id)}
                 best={p.best}
                 hero={i === 0}
-                onStars={(n) => setStars(sel.has(p.id) ? [...sel] : [p.id], n)}
+                onStars={(n) => act.current.stars(p.id, n)}
                 selected={sel.has(p.id)}
                 current={i === cur}
                 highlighted={state.highlight.includes(p.id)}
@@ -602,9 +659,10 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
                 expanded={false}
                 culling={state.culling}
                 onToggleStack={() => {}}
-                onClick={(e) => clickTile(i, p, e)}
-                onSet={(v) => setVerdict(sel.has(p.id) ? [...sel] : [p.id], v)}
-                menu={menuFor(p)}
+                onClick={(e) => act.current.click(p, e)}
+                onSet={(v) => act.current.flag(p.id, v)}
+                menu={() => act.current.menuFor(p)}
+                small={small}
               />
             )}
           />
@@ -630,17 +688,18 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
                 ai={aiOf(p.id)}
                 eyes={eyesOf(p.id)}
                 best={culled ? p.best : undefined}
-                onStars={(n) => setStars(sel.has(p.id) ? [...sel] : [p.id], n)}
+                onStars={(n) => act.current.stars(p.id, n)}
                 selected={sel.has(p.id)}
                 current={i === cur}
                 highlighted={state.highlight.includes(p.id)}
-                stackSize={(p.stackRank ?? 0) === 0 && p.stackId ? STACK_BY_ID[p.stackId].photoIds.length : 0}
+                stackSize={p.stackId && cover[p.stackId] === p.id ? STACK_BY_ID[p.stackId].photoIds.length : 0}
                 expanded={!!p.stackId && expanded.has(p.stackId)}
                 culling={state.culling}
-                onToggleStack={() => toggleStack(p.stackId!)}
-                onClick={(e) => clickTile(i, p, e)}
-                onSet={(v) => setVerdict(sel.has(p.id) ? [...sel] : [p.id], v)}
-                menu={menuFor(p)}
+                onToggleStack={() => act.current.toggleStack(p.stackId!)}
+                onClick={(e) => act.current.click(p, e)}
+                onSet={(v) => act.current.flag(p.id, v)}
+                menu={() => act.current.menuFor(p)}
+                small={small}
               />
                   );
                 })}
@@ -677,6 +736,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             <span><Kbd>U</Kbd> Clear</span>
             <span><Kbd>1-5</Kbd> Stars</span>
             <span><Kbd>C</Kbd> Compare</span>
+            <span><Kbd>N</Kbd> Stacks</span>
             <span><Kbd>D</Kbd> Edit</span>
             <span><Kbd>⌘</Kbd><Kbd>Z</Kbd> Undo</span>
           </span>

@@ -195,16 +195,40 @@ try {
   await p.screenshot({ path: `${out}live-culled.png` });
   const culled = await api(`/api/photos?shoot_id=${shoot.id}`);
   check(mockCalls - callsBefore === 1, 'the Agent sent one Shoot-wide request to the model (Ollama by default)');
-  check(culled[0].verdict === 'pick' && culled[0].verdict_by === 'ai' && culled[0].reason === 'best of 2', 'AI Verdicts and reasons reached the Library');
+  check(culled[0].verdict === 'unflagged' && culled[0].verdict_by === 'ai' && culled[0].reason === 'best of 2', 'AI Verdicts and reasons reached the Library, and the cautious cull left picking to the person');
   check(photos.length < 2 || (culled[0].stack != null && culled[0].stack === culled[1].stack), 'the burst was stacked');
   await p.waitForTimeout(3000); // the panel reloads from the Library
   await p.waitForSelector('.tile');
   await p.screenshot({ path: `${out}live-after-cull.png` });
 
+  // Stacks view (N): Enter keeps the AI's best frame of the burst as your Pick, the rest
+  // stay as they were (Unflagged or the AI's Reject), and ⌘Z undoes it in the Library.
+  if (photos.length >= 2) {
+    await p.keyboard.press('n');
+    await p.waitForSelector('.burst-cell');
+    await p.waitForTimeout(600);
+    await p.screenshot({ path: `${out}live-bursts.png` });
+    const stack = culled.filter((x) => x.stack === culled[0].stack).sort((a, b) => a.stack_rank - b.stack_rank);
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(600);
+    const kept = (await api(`/api/photos?shoot_id=${shoot.id}`)).filter((x) => stack.some((y) => y.id === x.id));
+    const best = kept.find((x) => x.id === stack[0].id);
+    check(best.verdict === 'pick' && best.verdict_by === 'person' && kept.filter((x) => x.verdict === 'pick').length === 1, `Enter in the Stacks view kept the best frame of the burst (got ${kept.map((x) => `${x.verdict}/${x.verdict_by}`)})`);
+    await p.keyboard.press('ControlOrMeta+z');
+    await p.waitForTimeout(500);
+    check((await state(stack[0].id)).verdict_by === 'ai', '⌘Z undid keeping it');
+    await p.keyboard.press('Escape');
+    await p.waitForSelector('.tile');
+  }
+
   // Export the Picks to a folder chosen in the dialog (a prompt in a browser), with an
   // XMP-free JPEG preset, and check the files land named by Shoot.
   const exportDir = mkdtempSync(join(tmpdir(), 'argus-export-'));
-  const picks = culled.filter((x) => x.verdict === 'pick').length;
+  // The AI never picks (cautious cull), so the person picks the best frame for the rest.
+  await api('/api/flag', { method: 'POST', body: JSON.stringify({ ids: [culled[0].id], verdict: 'pick', author: 'person' }) });
+  await p.reload();
+  await p.waitForSelector('.tile');
+  const picks = (await api(`/api/photos?shoot_id=${shoot.id}`)).filter((x) => x.verdict === 'pick').length;
   await p.keyboard.press('ControlOrMeta+e');
   p.once('dialog', (d) => d.accept(exportDir));
   await p.getByRole('button', { name: 'Choose…' }).click();

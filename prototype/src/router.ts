@@ -5,6 +5,7 @@ export type Route =
   | { name: 'cull' }
   | { name: 'loupe'; id: string }
   | { name: 'compare'; ids: string[] }
+  | { name: 'bursts'; id?: string }
   | { name: 'look' }
   | { name: 'edit'; id: string };
 
@@ -12,13 +13,14 @@ export function parse(hash: string): Route {
   const [, name, arg] = hash.replace(/^#/, '').split('/');
   if ((name === 'loupe' || name === 'edit') && arg) return { name, id: arg };
   if (name === 'compare' && arg) return { name, ids: arg.split(',') };
+  if (name === 'bursts') return arg ? { name, id: arg } : { name };
   if (name === 'cull' || name === 'look' || name === 'import') return { name };
   return { name: 'import' };
 }
 
 export function href(r: Route) {
   if (r.name === 'compare') return `#/compare/${r.ids.join(',')}`;
-  return 'id' in r ? `#/${r.name}/${r.id}` : `#/${r.name}`;
+  return 'id' in r && r.id ? `#/${r.name}/${r.id}` : `#/${r.name}`;
 }
 
 export function go(r: Route) {

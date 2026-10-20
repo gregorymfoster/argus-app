@@ -51,8 +51,10 @@ impl Analyzer for Embedding {
 pub fn vector(fact: &Fact) -> Option<Vec<f32>> {
     let b = fact.blob.as_deref().filter(|b| b.len() == DIMS * 4)?;
     Some(
-        b.chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        b.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect(),
     )
 }

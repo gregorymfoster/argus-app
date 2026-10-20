@@ -303,10 +303,14 @@ try {
   check(culled.find((p) => p.id === first).verdict_by === 'person', 'the person\'s own flags were kept');
   await sleep(3500); // the UI reloads from the Library 2.5 s after a cull
   await waitFor('.tile img');
-  // The model stacked two Photos, so the second hides under its Stack until expanded.
+  // The model stacked two Photos (and Argus joins look-alike frames, which these flat test
+  // images are), so every Stack shows one tile until expanded.
   const tiles = await js(`return [...document.querySelectorAll('[data-testid^=tile-]')].map((t) => t.dataset.verdict)`);
-  check(tiles.length === 5 && tiles.filter((v) => v === 'reject').length === 4,
-    `the grid shows the AI's Verdicts with the Stack collapsed (${tiles.join(' ')})`);
+  const inShoot = culled.filter((p) => p.shoot_id === culled.find((x) => x.id === first).shoot_id);
+  const stacked = new Set(inShoot.filter((p) => p.stack != null).map((p) => p.stack));
+  const collapsedTiles = inShoot.filter((p) => p.stack == null).length + stacked.size;
+  check(stacked.size > 0 && tiles.length === collapsedTiles && collapsedTiles < inShoot.length && tiles.includes('pick'),
+    `the grid shows the AI's Verdicts with the Stack collapsed (${tiles.join(' ')}; Library: ${inShoot.map((p) => `${p.verdict}/${p.stack}`).join(' ')})`);
   await shot('ai-cull');
   const chat = await js(`return document.querySelector('.agent-body')?.textContent ?? ''`);
   check(chat.includes('cull this shoot') && chat.includes('Mock cull.'), 'the Agent conversation survives the reload after a cull');

@@ -354,10 +354,27 @@ pub fn run_next_holding(
     } else {
         compute
     };
+    let used_before = crate::meter::totals();
+    let span = crate::debug_log::span(
+        "job",
+        serde_json::json!({
+            "job_id": job.id,
+            "job_kind": job.kind,
+            "label": job.label,
+            "priority": job.priority,
+            "compute": format!("{compute:?}").to_lowercase(),
+            "args": job.args,
+        }),
+    );
     let outcome = execute(tools, &job, compute);
     if let Err(e) = &outcome {
         crate::logs::note(&format!("job {} ({}) failed: {e}", job.id, job.label));
     }
+    span.end(serde_json::json!({
+        "ok": outcome.is_ok(),
+        "error": outcome.as_ref().err().map(|e| e.0.clone()),
+        "used": crate::meter::totals().since(&used_before).to_json(),
+    }));
     let lib = Library::open(tools.library())?;
     match &outcome {
         Ok(v) => lib.finish_job(job.id, Ok(v))?,
@@ -366,7 +383,7 @@ pub fn run_next_holding(
     Ok(Some(lib.job(job.id)?))
 }
 
-/// Run every queued job (tests and `argus work --once`). Returns how many ran.
+/// Run every queued job, whatever the queue's holds (tests and `argus work --once --drain`). Returns how many ran.
 pub fn drain(tools: &Tools, compute: Compute) -> Result<usize> {
     let mut n = 0;
     while run_next(tools, compute)?.is_some() {
@@ -465,7 +482,21 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             crate::analyzers::facts_with(&lib, &photos, &ids, Some(compute), &|done, total| {
                 let _ = progress.job_progress(id, done as i64, total as i64);
             })?;
-            Ok(json!({ "photos": photos.len(), "analyzers": ids }))
+            // Stack the bursts now, so the grid shows them before any cull. A Shoot that
+            // already has Stacks (a cull's, or the person's) keeps them.
+            let mut lib = lib;
+            let mut stacked = 0;
+            let shoots: std::collections::BTreeSet<_> = photos.iter().map(|p| p.shoot_id).collect();
+            for shoot in shoots {
+                let all = lib.list_photos(&crate::library::PhotoFilter {
+                    shoot: Some(shoot),
+                    verdict: None,
+                })?;
+                if all.iter().all(|p| p.stack.is_none()) {
+                    stacked += crate::bursts::stack_shoot(&mut lib, shoot, false)?.len();
+                }
+            }
+            Ok(json!({ "photos": photos.len(), "analyzers": ids, "stacks": stacked }))
         }
         other => Err(Error(format!("unknown job kind {other:?}"))),
     }
@@ -757,6 +788,44 @@ fn rest(c: Compute) -> Duration {
 }
 
 /// A background thread working through the queue until dropped.
+/// Whether the queue may start a job now and, if so, how it picks one. The app's worker and
+/// `argus work` both go by it, so a shell run keeps the app's holds (battery, heat, idle and
+/// overnight waits, pause).
+pub enum Gate {
+    /// Start nothing: why.
+    Wait(&'static str),
+    Run {
+        compute: Compute,
+        /// On battery or with the Mac running hot, only the open Photo's work.
+        min_priority: i64,
+        /// Kinds passed over now ([`held_kinds`]).
+        held: &'static [&'static str],
+    },
+}
+
+pub fn gate(lib: &Library, cfg: &QueueConfig) -> Gate {
+    if cfg.paused {
+        return Gate::Wait("the queue is paused");
+    }
+    // An Agent request or a cull (here or in another Argus process, such as `argus cull`)
+    // has the model; start nothing new until it's done.
+    if crate::compute::interactive() || crate::compute::foreground() {
+        return Gate::Wait("the model is busy");
+    }
+    let min_priority = if held_on_battery(cfg, power::on_battery()) || power::thermal_serious() {
+        PRIORITY_FOCUS
+    } else {
+        i64::MIN
+    };
+    let why_full = boost(cfg);
+    let backlog = model_backlog(lib).unwrap_or(usize::MAX);
+    Gate::Run {
+        compute: why_full.map_or(cfg.compute, |_| Compute::Full),
+        min_priority,
+        held: held_kinds(cfg, why_full, backlog),
+    }
+}
+
 pub struct Worker {
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -774,10 +843,16 @@ impl Worker {
         let handle = std::thread::Builder::new()
             .name("argus-queue".into())
             .spawn(move || {
+                // Parked between rounds; `stop` unparks it, so an idle queue wakes once per
+                // round instead of five times a second.
                 let sleep = |d: Duration| {
                     let end = std::time::Instant::now() + d;
-                    while !flag.load(Ordering::Relaxed) && std::time::Instant::now() < end {
-                        std::thread::sleep(Duration::from_millis(200));
+                    while !flag.load(Ordering::Relaxed) {
+                        let left = end.saturating_duration_since(std::time::Instant::now());
+                        if left.is_zero() {
+                            break;
+                        }
+                        std::thread::park_timeout(left);
                     }
                 };
                 let mut open: Option<(PathBuf, Tools)> = None;
@@ -794,61 +869,51 @@ impl Worker {
                         open = Some((library.clone(), make(library.clone())));
                     }
                     let tools = &open.as_ref().expect("set above").1;
-                    let cfg = Library::open(&library)
-                        .and_then(|l| config(&l))
-                        .unwrap_or_default();
-                    // An Agent request or a cull (here or in another Argus process, such
-                    // as `argus cull`) has the model; start nothing new until it's done.
-                    if cfg.paused || crate::compute::interactive() || crate::compute::foreground() {
+                    let Ok(lib) = Library::open(&library) else {
                         sleep(Duration::from_secs(2));
                         continue;
-                    }
-                    let battery = power::on_battery();
-                    if !battery && cfg.battery_override {
+                    };
+                    let cfg = config(&lib).unwrap_or_default();
+                    if cfg.battery_override && !power::on_battery() {
                         // Plugged in again: the next unplug waits for the charger as usual.
-                        if let Ok(l) = Library::open(&library) {
+                        let _ = set_config(
+                            &lib,
+                            &QueueConfig {
+                                battery_override: false,
+                                ..cfg
+                            },
+                        );
+                    }
+                    // Nothing queued (the usual idle state): no power, heat or model checks.
+                    if !lib.has_queued_jobs().unwrap_or(true) {
+                        // "Run now" lasts until the queue is empty.
+                        if cfg.go_ahead && lib.queue_summary().is_ok_and(|q| q.running.is_none()) {
                             let _ = set_config(
-                                &l,
+                                &lib,
                                 &QueueConfig {
-                                    battery_override: false,
+                                    go_ahead: false,
                                     ..cfg
                                 },
                             );
                         }
+                        drop(lib);
+                        sleep(Duration::from_secs(2));
+                        continue;
                     }
-                    // On battery or with the Mac running hot, only the open Photo's work.
-                    let min = if held_on_battery(&cfg, battery) || power::thermal_serious() {
-                        PRIORITY_FOCUS
-                    } else {
-                        i64::MIN
+                    let Gate::Run {
+                        compute,
+                        min_priority,
+                        held,
+                    } = gate(&lib, &cfg)
+                    else {
+                        drop(lib);
+                        sleep(Duration::from_secs(2));
+                        continue;
                     };
-                    let why_full = boost(&cfg);
-                    let backlog = Library::open(&library)
-                        .and_then(|l| model_backlog(&l))
-                        .unwrap_or(usize::MAX);
-                    let held = held_kinds(&cfg, why_full, backlog);
-                    let compute = why_full.map_or(cfg.compute, |_| Compute::Full);
-                    match run_next_holding(tools, compute, min, held) {
+                    drop(lib);
+                    match run_next_holding(tools, compute, min_priority, held) {
                         Ok(Some(_)) => sleep(rest(compute)),
-                        Ok(None) => {
-                            // "Run now" lasts until the queue is empty.
-                            if cfg.go_ahead {
-                                if let Ok(l) = Library::open(&library) {
-                                    if l.queue_summary()
-                                        .is_ok_and(|q| q.queued == 0 && q.running.is_none())
-                                    {
-                                        let _ = set_config(
-                                            &l,
-                                            &QueueConfig {
-                                                go_ahead: false,
-                                                ..cfg
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                            sleep(Duration::from_secs(2))
-                        }
+                        Ok(None) => sleep(Duration::from_secs(2)),
                         Err(e) => {
                             crate::logs::note(&format!("argus queue: {e}"));
                             sleep(Duration::from_secs(10));
@@ -867,6 +932,7 @@ impl Worker {
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
+            h.thread().unpark();
             let _ = h.join();
         }
     }
@@ -875,6 +941,9 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = &self.handle {
+            h.thread().unpark();
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 # Usage log
 
-Argus records what happens to each Photo in the Library's `usage_events` table, so benches and a future "learn my edits" can run on Greg's real use (ADR 0014). It stays in the Library and is never uploaded. Settings › General turns it off, shows counts, exports it and clears it. The same is the `usage_log` tool (`{"recording": false}`, `{"clear": true}`, `{"photo_id": 7}` for one Photo's events and History).
+Argus records what happens to each Photo in the Library's `usage_events` table, so benches and the Style profile can run on Greg's real use (ADR 0014). It stays in the Library and is never uploaded. Settings › General turns it off, shows counts, exports it and clears it. The same is the `usage_log` tool (`{"recording": false}`, `{"clear": true}`, `{"photo_id": 7}` for one Photo's events and History).
 
 ## Events
 
@@ -23,6 +23,10 @@ Auto has no event of its own: it is a `recipe` event by `ai` whose label starts 
 ## History
 
 `engine::usage::history` folds one Photo's events into: `start`, `takes` (Suggestions, matches, Agent edits and Autos, each with `status` open, dismissed, accepted or applied), `kept` (index of the applied take nearest the exported Recipe, if nearer than the start), `final_recipe`, `export`, `moved` (each slider the person changed from the kept take, or the start, to the final Recipe, by dotted path) and `moved_total` (summed absolute change, mixed units, a rough size), `ai_verdict`/`ai_stars` (the AI's first) and `person_verdict`/`person_stars` (the person's last).
+
+## Style profile
+
+`engine::style` reads every exported History with a kept take as a correction (`moved`, keyed by the take's name) and learns the Style profile from the latest 200: for each global slider (exposure, contrast, highlights, shadows, whites, blacks, temp, tint, vibrance, saturation, clarity, texture, dehaze) the median change, where an unmoved slider counts as 0, so a slider moved on fewer than half the Photos stays out. Moves are scaled by n / (n + 4) and dropped below a small floor, and nothing is learned under 3 corrections. A take name with 5 or more corrections of its own gets its own moves. Fresh Suggestions add the moves to each take after the model's settings (matched ones don't: their reference is already the person's edit), and the prompt says so. The `style_profile` tool shows it, or learns from a `corrections` list; a variant's `style` pins it (`{}` turns it off). `bench/style_loo.py` measures it leave-one-out on the edit bench.
 
 ## Bench export
 

@@ -15,16 +15,17 @@ dest="${1:?usage: scripts/public-export DIR}"
 PRIVATE=(
   fixtures/bench
   fixtures/golden
-  bench/cull_pairs.py bench/degrade.py bench/extract.py bench/fit_recipe.py bench/harvest.py
-  bench/judge.py bench/lrcat.py bench/report.html bench/report.py bench/score.py bench/variants
   .claude/skills/bench-report
 )
+# All of bench/ but the speed baseline, so a new bench script stays private by default.
+KEEP_IN_BENCH=speed-baseline.json
 
 sha=$(git rev-parse --short HEAD)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 git archive HEAD | tar -x -C "$tmp"
 for p in "${PRIVATE[@]}"; do rm -rf "${tmp:?}/$p"; done
+find "$tmp/bench" -mindepth 1 -maxdepth 1 -not -name "$KEEP_IN_BENCH" -exec rm -rf {} +
 
 # Leak check: no photos outside the app icons, no personal paths or addresses.
 leaks=$(cd "$tmp" && find . -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.arw' \

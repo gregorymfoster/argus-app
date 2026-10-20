@@ -83,7 +83,13 @@ fn measure(out: &[u8], target: &[u8], target_lab: Option<&[[f32; 3]]>) -> Err {
     let n = out.len() / 3;
     let mut sum = [0u64; 3];
     let mut de = 0f64;
-    for (i, (a, b)) in out.chunks_exact(3).zip(target.chunks_exact(3)).enumerate() {
+    for (i, (a, b)) in out
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(target.as_chunks::<3>().0)
+        .enumerate()
+    {
         for c in 0..3 {
             sum[c] += a[c].abs_diff(b[c]) as u64;
         }
@@ -244,7 +250,9 @@ fn load_fixture(raw_path: &Path) -> Result<Fixture, Box<dyn std::error::Error>> 
         .map(|&v| (argus_engine::pipeline::srgb_encode(v) * 255.0 + 0.5) as u8)
         .collect();
     let sub_lab = sub_jpg
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|p| srgb_to_lab([p[0], p[1], p[2]]))
         .collect();
     Ok(Fixture {
@@ -507,7 +515,13 @@ pub fn run(
 fn diag(fxs: &[Fixture]) {
     for f in fxs {
         let mut bins = vec![(0f64, 0f64, 0f64, [0f64; 3]); 16];
-        for (l, j) in f.sub_lin.chunks_exact(3).zip(f.sub_jpg.chunks_exact(3)) {
+        for (l, j) in f
+            .sub_lin
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(f.sub_jpg.as_chunks::<3>().0)
+        {
             let y = 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
             let e = argus_engine::pipeline::srgb_encode(y);
             let b = ((e * 16.0) as usize).min(15);

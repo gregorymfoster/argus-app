@@ -29,6 +29,9 @@ pub struct Variant {
     pub keep_brightness: Option<bool>,
     /// Takes start with the Adaptive layer of presence and Masks (default true).
     pub adaptive: Option<bool>,
+    /// Replaces the style profile learned from the usage log: moves added to every fresh
+    /// take after the model's settings, e.g. {"exposure": 0.3}. {} turns it off.
+    pub style: Option<BTreeMap<String, f64>>,
     /// Replaces the cull system prompt.
     pub cull: Option<String>,
 }

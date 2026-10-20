@@ -169,6 +169,38 @@ fn library_file_stays_inside_previews() {
 }
 
 #[test]
+fn the_grid_gets_small_thumbnails_kept_until_the_preview_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_jpeg(&dir.path().join("previews/ab/abc.jpg"), 2048, 1365, 1);
+    let thumb = library_file(dir.path(), "/previews/thumbs/ab/abc.jpg").unwrap();
+    assert_eq!(thumb, dir.path().join("previews/thumbs/ab/abc.jpg"));
+    let img = image::open(&thumb).unwrap();
+    assert_eq!((img.width(), img.height()), (480, 320));
+    let made = std::fs::metadata(&thumb).unwrap().modified().unwrap();
+    library_file(dir.path(), "previews/thumbs/ab/abc.jpg").unwrap();
+    assert_eq!(
+        std::fs::metadata(&thumb).unwrap().modified().unwrap(),
+        made,
+        "kept, not remade"
+    );
+
+    // A new preview (Argus's render, or a rebuild at another size) makes a new thumbnail.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write_jpeg(&dir.path().join("previews/ab/abc.jpg"), 1000, 1500, 2);
+    library_file(dir.path(), "previews/thumbs/ab/abc.jpg").unwrap();
+    let img = image::open(&thumb).unwrap();
+    assert_eq!((img.width(), img.height()), (320, 480));
+    // Nothing to make one from: no thumbnail, and nothing outside the previews folder.
+    assert!(!library_file(dir.path(), "previews/thumbs/cd/none.jpg")
+        .unwrap()
+        .exists());
+    assert_eq!(
+        library_file(dir.path(), "previews/thumbs/../../library.db"),
+        None
+    );
+}
+
+#[test]
 fn a_replaced_camera_preview_falls_back_to_the_render() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("previews/ab")).unwrap();

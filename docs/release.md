@@ -20,6 +20,10 @@ The script refuses to publish a version that isn't newer than the current releas
 
 A release build keeps the Mac busy for several minutes, so Claude runs it when Greg says go or overnight, following the Remote Control rules in CLAUDE.md (time limits and progress notes).
 
+## The one-command installer
+
+Each release also carries `install.sh`, so friends can install with `curl -fsSL https://github.com/gregorymfoster/argus-releases/releases/latest/download/install.sh | bash` (Greg, 2026-10-20). It installs Argus.app from that release's `.dmg` (checksum verified, quarantine cleared on Argus.app only), installs Ollama from ollama.com if it's missing, starts it and pulls the default model, after checking Apple Silicon, macOS 13+, memory (it skips the default model under 32 GB) and free disk. It asks one Y/n before the model download (`--yes` skips it, `--dry-run` changes nothing), never uses sudo, and falls back to `~/Applications` when `/Applications` isn't writable. The source in `scripts/release/install.sh` has placeholders; `local.sh` fills them through `stamp-install.sh` (version, `.dmg` name and SHA-256, and `DEFAULT_OLLAMA_MODEL` from `engine/src/cull.rs` at the built commit) and uploads the result. `scripts/release/install.test.sh` runs it against fake macOS commands; it's part of `just check` in the cloud and skips on the Mac. It's written for macOS's own bash 3.2.
+
 ## One-time setup (done 2026-10-18)
 
 ```sh
@@ -36,6 +40,6 @@ Back up the key and its password somewhere safe. If they're lost, every installe
 
 ## What's checked where
 
-`node --test scripts/release/latest-json.test.mjs` covers the `latest.json` format. The build itself can only be checked on macOS, so the release script's own final check (the published `latest.json` version) and installing the `.dmg` are the test.
+`node --test scripts/release/latest-json.test.mjs` covers the `latest.json` format, and `scripts/release/install.test.sh` the installer. The build itself can only be checked on macOS, so the release script's own final check (the published `latest.json` version) and installing the `.dmg` are the test.
 
 Release-only config (version, public key, update URL, ad-hoc signing, updater bundles) is merged over `app/tauri.conf.json` at build time, so dev builds don't need the key and never update themselves.

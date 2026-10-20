@@ -22,6 +22,7 @@ import { ImportDialog } from './screens/Import';
 import { CullScreen } from './screens/Cull';
 import { LoupeScreen } from './screens/Loupe';
 import { CompareScreen } from './screens/Compare';
+import { BurstsScreen } from './screens/Bursts';
 import { LookScreen } from './screens/Look';
 import { EditScreen } from './screens/Edit';
 import { SettingsDialog, openSettings } from './settings/Settings';
@@ -192,6 +193,9 @@ export function App() {
       break;
     case 'compare':
       body = <CompareScreen ids={route.ids} />;
+      break;
+    case 'bursts':
+      body = <BurstsScreen start={route.id} />;
       break;
     case 'look':
       body = <LookScreen onExport={() => setExporting(true)} />;

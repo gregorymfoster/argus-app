@@ -1,7 +1,7 @@
 //! The Facts table: rows the Analyzers write and read (ADR 0013). Only
 //! [`crate::analyzers`] calls these; everyone else asks it for Facts.
 
-use super::{db_err, time, Library, PhotoId, CACHE_DIR};
+use super::{db_err, time, Library, PhotoId, ShootId, CACHE_DIR};
 use crate::Result;
 use rusqlite::{params, OptionalExtension};
 use std::path::PathBuf;
@@ -59,6 +59,39 @@ impl Library {
             value,
             blob,
         }))
+    }
+
+    /// One Analyzer's stored values for every Photo of a Shoot (or of the Library) in one
+    /// query, for screens that badge a whole grid. Blobs are left out.
+    pub(crate) fn fact_values(
+        &self,
+        analyzer: &str,
+        shoot: Option<ShootId>,
+    ) -> Result<Vec<(PhotoId, u32, serde_json::Value)>> {
+        let mut q = self
+            .db
+            .prepare_cached(
+                "SELECT f.photo_id, f.version, f.value FROM facts f JOIN photos p ON p.id = f.photo_id
+                 WHERE f.analyzer = ?1 AND (?2 IS NULL OR p.shoot_id = ?2) ORDER BY f.photo_id",
+            )
+            .map_err(db_err)?;
+        let rows = q
+            .query_map(params![analyzer, shoot], |r| {
+                Ok((
+                    r.get::<_, PhotoId>(0)?,
+                    r.get::<_, u32>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, version, value) = row.map_err(db_err)?;
+            if let Ok(value) = serde_json::from_str(&value) {
+                out.push((id, version, value));
+            }
+        }
+        Ok(out)
     }
 
     pub(crate) fn put_fact(&self, photo: PhotoId, analyzer: &str, row: &FactRow) -> Result<()> {
