@@ -127,8 +127,12 @@ The cull's first stage: the model looks at every Photo of the Shoot and says onl
 _Avoid_: QC, quality check
 
 **Taste**:
-The cull's second stage, how likely the person is to keep a frame that passed the Technical check. It comes from Facts, not the model (today the main faces: smiles, and anyone who looks off), and sets the stars, the best frame of each Stack and the Best Photos (`engine::taste`).
+The cull's second stage, how likely the person is to keep a frame that passed the Technical check. It comes from Facts, not the model (the main faces: smiles, and anyone who looks off; plus the Taste head once the person has flagged enough), and sets the stars, the best frame of each Stack and the Best Photos (`engine::taste`).
 _Avoid_: Aesthetics, quality score
+
+**Taste head**:
+What the person's own Picks and Rejects teach Taste: the direction in the image embedding from the frames they reject to the frames they pick, learned afresh at every cull from their flags on other Shoots and on the Shoot itself. It speaks once there are five Picks and five Rejects; the AI's own flags never count (`engine::taste::Head`).
+_Avoid_: Taste model, aesthetic model, classifier
 
 **Signals**:
 Cheap measurements of each Photo (sharpness within its Shoot, brightness, clipping) that the AI reads beside the image. Hints for its judgment, never a Verdict on their own.

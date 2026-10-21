@@ -157,6 +157,13 @@ enum Cmd {
         file: PathBuf,
         #[arg(long, default_value_t = 48)]
         tiles: usize,
+        /// Where the model runs: auto (Core ML on the Mac, else the CPU), cpu or coreml.
+        #[arg(long, default_value = "auto")]
+        backend: String,
+        /// Also run the crop on the CPU, the reference, and report its time and how far the
+        /// two results differ (checks the Core ML model on a Mac).
+        #[arg(long)]
+        compare: bool,
         /// CPU share: gentle, balanced or full. Default: $ARGUS_COMPUTE or gentle.
         #[arg(long)]
         compute: Option<Compute>,
@@ -437,11 +444,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Denoise {
             file,
             tiles,
+            backend,
+            compare,
             compute,
             out,
         } => denoise_time(
             &file,
             tiles,
+            &backend,
+            compare,
             compute.unwrap_or_else(Compute::from_env),
             &out,
         )?,
@@ -790,10 +801,19 @@ fn main() -> ExitCode {
 fn denoise_time(
     file: &Path,
     tiles: usize,
+    backend: &str,
+    compare: bool,
     compute: Compute,
     out: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use argus_engine::{denoise, pipeline};
+    use argus_engine::denoise::{self, Backend};
+    use argus_engine::pipeline;
+    let backend = match backend {
+        "auto" => Backend::best(),
+        "cpu" => Backend::Cpu,
+        "coreml" => Backend::CoreMl,
+        other => return Err(format!("--backend {other}: auto, cpu or coreml").into()),
+    };
     let raw = decode(file)?;
     let (w, h) = raw.crop_size();
     let full = pipeline::demosaic_bilinear(&pipeline::normalize_white_balance(&raw), w, h, raw.cfa);
@@ -810,14 +830,34 @@ fn denoise_time(
         crop.extend_from_slice(&full[(y * w + x0) * 3..(y * w + x0 + cw) * 3]);
     }
     drop(full);
-    let started = std::time::Instant::now();
     let pool = compute.cpu_pool()?;
-    let den = pool.install(|| {
-        denoise::denoise(&crop, cw, ch, &|done, total| {
-            println!("::progress {done}/{total} tiles")
+    let run = |backend: Backend| {
+        let started = std::time::Instant::now();
+        pool.install(|| {
+            denoise::denoise_on(backend, &crop, cw, ch, &|done, total| {
+                println!("::progress {done}/{total} tiles ({})", backend.name())
+            })
         })
-    })?;
-    let secs = started.elapsed().as_secs_f64();
+        .map(|den| (den, started.elapsed().as_secs_f64()))
+    };
+    let (den, secs) = run(backend)?;
+    // The CPU result is the reference: how far this backend's base strays from it, in
+    // linear 0..1 values (an 8-bit sRGB step in the mid-tones is about 0.002).
+    let vs_cpu = if compare && backend != Backend::Cpu {
+        let (cpu, cpu_secs) = run(Backend::Cpu)?;
+        let diffs: Vec<f32> = den.iter().zip(&cpu).map(|(a, b)| (a - b).abs()).collect();
+        let mut sorted = diffs.clone();
+        sorted.sort_by(f32::total_cmp);
+        serde_json::json!({
+            "cpu_seconds": (cpu_secs * 10.0).round() / 10.0,
+            "speedup": (cpu_secs / secs * 10.0).round() / 10.0,
+            "mean_diff": diffs.iter().map(|&d| d as f64).sum::<f64>() / diffs.len().max(1) as f64,
+            "p999_diff": sorted.get(sorted.len() * 999 / 1000).copied().unwrap_or(0.0),
+            "max_diff": sorted.last().copied().unwrap_or(0.0),
+        })
+    } else {
+        serde_json::Value::Null
+    };
     let per_tile = secs / denoise::tiles(cw, ch) as f64;
     std::fs::create_dir_all(out)?;
     let stem = file
@@ -852,8 +892,11 @@ fn denoise_time(
             "tiles": denoise::tiles(cw, ch),
             "seconds": (secs * 10.0).round() / 10.0,
             "seconds_per_tile": (per_tile * 1000.0).round() / 1000.0,
+            "backend": backend.name(),
+            "units": std::env::var("ARGUS_COREML_UNITS").unwrap_or_else(|_| "all".into()),
             "threads": pool.current_num_threads(),
             "compute": format!("{compute:?}").to_lowercase(),
+            "vs_cpu": vs_cpu,
             "whole_frame_tiles": denoise::tiles(w, h),
             "whole_frame_minutes": (per_tile * denoise::tiles(w, h) as f64 / 6.0).round() / 10.0,
         })

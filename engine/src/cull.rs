@@ -139,7 +139,8 @@ pub struct SheetPhoto {
     pub sharpness_pct: u8,
     /// What the other specialist models add ("2 faces, all eyes open, faces sharp").
     pub facts: String,
-    /// How likely the person keeps it, from its faces ([`crate::taste::score`]).
+    /// How likely the person keeps it, from its faces and the person's own flags
+    /// ([`crate::taste::scores`]); only the order within the Shoot means anything.
     pub taste: f32,
     /// Which burst it belongs to (a run of look-alike frames shot seconds apart), if any.
     pub burst: Option<usize>,
@@ -191,7 +192,7 @@ impl ContactSheet {
         })?;
         let facts = analyzers::facts_for(lib, &photos, CULL_FACTS)?;
         let alike = alike_previous(&facts);
-        let taste: Vec<f32> = facts.iter().map(crate::taste::score).collect();
+        let taste = crate::taste::scores(lib, shoot, &facts)?;
         let frames: Vec<crate::bursts::Frame> = photos
             .iter()
             .zip(&facts)

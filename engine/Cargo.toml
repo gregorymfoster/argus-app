@@ -27,6 +27,12 @@ jpeg-encoder = { version = "0.7.1", features = ["simd"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "tiff"] }
 tract-onnx = "0.23"
 
+# Core ML for AI Denoise on the Mac (ADR 0015).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSString", "NSURL", "NSValue", "NSObject"] }
+objc2-core-ml = { version = "0.3", default-features = false, features = ["std", "MLModel", "MLModelConfiguration", "MLModel_MLModelCompilation", "MLMultiArray", "MLFeatureValue", "MLFeatureProvider", "MLDictionaryFeatureProvider", "MLArrayBatchProvider", "MLBatchProvider"] }
+
 [dev-dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }
 jpeg-encoder = "0.7.1"

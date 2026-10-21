@@ -50,25 +50,21 @@ def shrink_masks(m):
     return n
 
 
-if sys.argv[1] == "--shrink":
-    m = onnx.load(sys.argv[2])
-    print("masks split:", shrink_masks(m))
-    onnx.checker.check_model(m)
-    onnx.save(m, sys.argv[3])
-    sys.exit(0)
+def load_net(src, weights, mask_value=None):
+    """The upstream SCUNet with the changes above, weights loaded, in eval mode. With
+    `mask_value`, masked attention scores get that finite value instead of -inf."""
+    import torch
+    from torch import nn  # noqa: F401 (used by the patched network code)
 
-import torch
-
-src, weights, out = sys.argv[1:4]
-code = open(src).read()
-code = code.replace("from thop import profile", "")
-code = code.replace(
-    "from timm.models.layers import trunc_normal_, DropPath",
-    "from torch.nn.init import trunc_normal_\nDropPath = lambda *a, **k: nn.Identity()",
-)
-start = code.index("        attn_mask = torch.zeros(h, w, p, p, p, p")
-end = code.index("        return attn_mask\n", code.index("rearrange(attn_mask"))
-code = code[:start] + '''        m = np.zeros((h, w, p, p, p, p), dtype=bool)
+    code = open(src).read()
+    code = code.replace("from thop import profile", "")
+    code = code.replace(
+        "from timm.models.layers import trunc_normal_, DropPath",
+        "from torch.nn.init import trunc_normal_\nDropPath = lambda *a, **k: nn.Identity()",
+    )
+    start = code.index("        attn_mask = torch.zeros(h, w, p, p, p, p")
+    end = code.index("        return attn_mask\n", code.index("rearrange(attn_mask"))
+    code = code[:start] + '''        m = np.zeros((h, w, p, p, p, p), dtype=bool)
         if self.type != 'W':
             s = p - shift
             m[-1, :, :s, :, s:, :] = True
@@ -77,32 +73,48 @@ code = code[:start] + '''        m = np.zeros((h, w, p, p, p, p), dtype=bool)
             m[:, -1, :, s:, :, :s] = True
         attn_mask = torch.from_numpy(m.reshape(1, 1, h * w, p * p, p * p))
 ''' + code[end:]
-mod = types.ModuleType("network_scunet")
-exec(compile(code, src, "exec"), mod.__dict__)
+    if mask_value is not None:
+        code = code.replace('float("-inf")', repr(float(mask_value)))
+    mod = types.ModuleType("network_scunet")
+    exec(compile(code, src, "exec"), mod.__dict__)
 
-net = mod.SCUNet(in_nc=3, config=[4, 4, 4, 4, 4, 4, 4], dim=64)
-net.load_state_dict(torch.load(weights, map_location="cpu", weights_only=True), strict=True)
-net.eval()
-tmp = out + ".f32"
-torch.onnx.export(net, torch.rand(1, 3, 256, 256), tmp, opset_version=17,
-                  input_names=["input"], output_names=["output"], dynamo=False)
+    net = mod.SCUNet(in_nc=3, config=[4, 4, 4, 4, 4, 4, 4], dim=64)
+    net.load_state_dict(torch.load(weights, map_location="cpu", weights_only=True), strict=True)
+    net.eval()
+    return net
 
-m = onnx.load(tmp)
-g = m.graph
-inits, casts = [], []
-for init in g.initializer:
-    a = numpy_helper.to_array(init)
-    if a.dtype == np.float32 and a.size >= 64:
-        h = numpy_helper.from_array(a.astype(np.float16), init.name + "_f16")
-        inits.append(h)
-        casts.append(helper.make_node("Cast", [h.name], [init.name], to=TensorProto.FLOAT))
-    else:
-        inits.append(init)
-del g.initializer[:]
-g.initializer.extend(inits)
-nodes = casts + list(g.node)
-del g.node[:]
-g.node.extend(nodes)
-print("masks split:", shrink_masks(m))
-onnx.checker.check_model(m)
-onnx.save(m, out)
+
+if __name__ == "__main__":
+    if sys.argv[1] == "--shrink":
+        m = onnx.load(sys.argv[2])
+        print("masks split:", shrink_masks(m))
+        onnx.checker.check_model(m)
+        onnx.save(m, sys.argv[3])
+        sys.exit(0)
+
+    src, weights, out = sys.argv[1:4]
+    import torch
+    net = load_net(src, weights)
+    tmp = out + ".f32"
+    torch.onnx.export(net, torch.rand(1, 3, 256, 256), tmp, opset_version=17,
+                      input_names=["input"], output_names=["output"], dynamo=False)
+
+    m = onnx.load(tmp)
+    g = m.graph
+    inits, casts = [], []
+    for init in g.initializer:
+        a = numpy_helper.to_array(init)
+        if a.dtype == np.float32 and a.size >= 64:
+            h = numpy_helper.from_array(a.astype(np.float16), init.name + "_f16")
+            inits.append(h)
+            casts.append(helper.make_node("Cast", [h.name], [init.name], to=TensorProto.FLOAT))
+        else:
+            inits.append(init)
+    del g.initializer[:]
+    g.initializer.extend(inits)
+    nodes = casts + list(g.node)
+    del g.node[:]
+    g.node.extend(nodes)
+    print("masks split:", shrink_masks(m))
+    onnx.checker.check_model(m)
+    onnx.save(m, out)

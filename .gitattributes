@@ -1,1 +1,3 @@
 *.onnx binary
+*.mlmodel binary
+*.mlpackage/** binary

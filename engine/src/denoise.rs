@@ -9,8 +9,9 @@
 //! Denoise were off. RAW Photos only, as in Lightroom.
 //!
 //! The model is SCUNet's blind real-noise model (`scunet_color_real_psnr`, Apache-2.0, see
-//! `engine/models/manifest.json`), run through tract like every other model (ADR 0013) in
-//! overlapping tiles. It was trained on sRGB images, so the linear camera RGB of stage 3 is
+//! `engine/models/manifest.json`), run in overlapping tiles: through Core ML on the Mac (GPU
+//! and Neural Engine, ADR 0015), and through tract on the CPU like every other model (ADR
+//! 0013) elsewhere, when Core ML fails, or with `ARGUS_DENOISE_BACKEND=cpu` ([`Backend`]). It was trained on sRGB images, so the linear camera RGB of stage 3 is
 //! brightened to use the range and sRGB-encoded on the way in, and decoded on the way out.
 
 use crate::analyzers::runtime::{floats, ndarray, Lazy, Tensor};
@@ -35,6 +36,115 @@ static MODEL: Lazy = Lazy::new(
     include_bytes!("../models/scunet_color_real_f16.onnx"),
     &[1, 3, TILE, TILE],
 );
+
+/// Tiles per Core ML call (`predictionsFromBatch`), so the GPU stays fed between tiles. The
+/// model itself takes one tile: a version converted at a batch of 8 hung in Metal on the Mac
+/// (2026-10-21).
+const COREML_BATCH: usize = 8;
+
+/// The same network converted for Core ML by `scripts/models/scunet_coreml.py`.
+#[cfg(target_os = "macos")]
+static COREML: crate::coreml::Lazy = crate::coreml::Lazy::new(
+    &[
+        (
+            "Manifest.json",
+            include_bytes!("../models/scunet_color_real.mlpackage/Manifest.json"),
+        ),
+        (
+            "Data/com.apple.CoreML/model.mlmodel",
+            include_bytes!(
+                "../models/scunet_color_real.mlpackage/Data/com.apple.CoreML/model.mlmodel"
+            ),
+        ),
+        (
+            "Data/com.apple.CoreML/weights/weight.bin",
+            include_bytes!(
+                "../models/scunet_color_real.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+            ),
+        ),
+    ],
+    &[1, 3, TILE, TILE],
+    "input",
+    "output",
+);
+
+/// Where the model runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// tract on the CPU: every platform, the reference the tests check.
+    Cpu,
+    /// Core ML on the Mac's GPU and Neural Engine (ADR 0015).
+    CoreMl,
+}
+
+impl Backend {
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Cpu => "cpu",
+            Backend::CoreMl => "coreml",
+        }
+    }
+
+    /// Core ML when it loads (macOS only), else the CPU. `ARGUS_DENOISE_BACKEND=cpu` forces
+    /// the CPU.
+    pub fn best() -> Backend {
+        if std::env::var("ARGUS_DENOISE_BACKEND").as_deref() == Ok("cpu") {
+            return Backend::Cpu;
+        }
+        #[cfg(target_os = "macos")]
+        if COREML.get().is_ok_and(|m| m.usable()) {
+            return Backend::CoreMl;
+        }
+        Backend::Cpu
+    }
+
+    /// Make sure the model loads here, so a failure shows before the first tile.
+    fn load(self) -> Result<()> {
+        match self {
+            Backend::Cpu => MODEL.get().map(|_| ()),
+            #[cfg(target_os = "macos")]
+            Backend::CoreMl => COREML.get().map(|_| ()),
+            #[cfg(not(target_os = "macos"))]
+            Backend::CoreMl => Err(Error("Core ML runs only on macOS".into())),
+        }
+    }
+
+    /// Planar `3xTILExTILE` tiles through the model, outputs in the same order.
+    fn run(self, tiles: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>> {
+        let outs = match self {
+            Backend::Cpu => tiles
+                .into_par_iter()
+                .map(|input| {
+                    let input = ndarray::Array4::from_shape_vec((1, 3, TILE, TILE), input)
+                        .map_err(|e| Error(format!("denoise tile: {e}")))?;
+                    let out = MODEL.run(Tensor::from(input))?;
+                    Ok(floats(&out[0])?.to_vec())
+                })
+                .collect::<Result<Vec<_>>>()?,
+            Backend::CoreMl => {
+                let mut outs = Vec::with_capacity(tiles.len());
+                for chunk in tiles.chunks(COREML_BATCH) {
+                    outs.extend(self.predict_batch(chunk.to_vec())?);
+                }
+                outs
+            }
+        };
+        if outs.iter().any(|v| v.len() != 3 * TILE * TILE) {
+            return Err(Error("denoise model gave a tile of the wrong size".into()));
+        }
+        Ok(outs)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn predict_batch(self, batch: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>> {
+        COREML.get()?.predict(batch)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn predict_batch(self, _batch: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>> {
+        Err(Error("Core ML runs only on macOS".into()))
+    }
+}
 
 /// The Recipe's Denoise Amount as a blend weight, 0 (off) to 1. See [`weight`].
 pub fn amount(recipe: &Recipe) -> f32 {
@@ -225,9 +335,35 @@ pub fn tiles(w: usize, h: usize) -> usize {
     starts(w).len() * starts(h).len()
 }
 
-/// Denoise interleaved linear RGB (`w * h * 3`, 0..1). `progress(done, total)` is called
-/// after each row of tiles.
+/// Denoise interleaved linear RGB (`w * h * 3`, 0..1) on the [`Backend::best`] runtime.
+/// `progress(done, total)` is called before the first tile and after each row of tiles.
 pub fn denoise(
+    rgb: &[f32],
+    w: usize,
+    h: usize,
+    progress: &dyn Fn(usize, usize),
+) -> Result<Vec<f32>> {
+    let backend = Backend::best();
+    match denoise_on(backend, rgb, w, h, progress) {
+        Err(e) if backend != Backend::Cpu => {
+            crate::debug_log::event(
+                "denoise_fallback",
+                serde_json::json!({ "backend": backend.name(), "error": e.0 }),
+            );
+            eprintln!(
+                "denoise: {} failed ({}), using the CPU",
+                backend.name(),
+                e.0
+            );
+            denoise_on(Backend::Cpu, rgb, w, h, progress)
+        }
+        done => done,
+    }
+}
+
+/// [`denoise`] on a chosen runtime (`argus denoise --compare` runs both).
+pub fn denoise_on(
+    backend: Backend,
     rgb: &[f32],
     w: usize,
     h: usize,
@@ -242,7 +378,7 @@ pub fn denoise(
     if std::env::var_os("ARGUS_DENOISE_FAKE").is_some() {
         return Ok(fake(rgb, w, h));
     }
-    MODEL.get()?;
+    backend.load()?;
     let gain = gain(rgb);
     let xs = starts(w);
     let ys = starts(h);
@@ -251,10 +387,11 @@ pub fn denoise(
     let mut acc = vec![0f32; w * h * 3];
     let mut weight = vec![0f32; w * h];
     for (row, &y0) in ys.iter().enumerate() {
-        let tiles: Vec<Vec<f32>> = xs
+        let inputs = xs
             .par_iter()
-            .map(|&x0| run_tile(rgb, w, h, x0, y0, gain))
-            .collect::<Result<_>>()?;
+            .map(|&x0| tile_input(rgb, w, h, x0, y0, gain))
+            .collect();
+        let tiles = backend.run(inputs)?;
         for (&x0, out) in xs.iter().zip(&tiles) {
             for ty in 0..TILE {
                 let Some(y) = inside(y0 + ty, h) else {
@@ -372,18 +509,19 @@ fn gain(rgb: &[f32]) -> f32 {
     (0.9 / p.max(1e-4)).clamp(1.0, 16.0)
 }
 
-/// One tile through the model: planar 0..1 sRGB out, `3 * TILE * TILE`.
-fn run_tile(rgb: &[f32], w: usize, h: usize, x0: usize, y0: usize, gain: f32) -> Result<Vec<f32>> {
-    let input = ndarray::Array4::from_shape_fn((1, 3, TILE, TILE), |(_, c, y, x)| {
-        let p = mirror(y0 + y, h) * w + mirror(x0 + x, w);
-        srgb_encode((rgb[p * 3 + c] * gain).clamp(0.0, 1.0))
-    });
-    let out = MODEL.run(Tensor::from(input))?;
-    let v = floats(&out[0])?;
-    if v.len() != 3 * TILE * TILE {
-        return Err(Error(format!("denoise model gave {} values", v.len())));
+/// The model's input for the tile at padded `(x0, y0)`: planar 0..1 sRGB, `3 * TILE * TILE`.
+fn tile_input(rgb: &[f32], w: usize, h: usize, x0: usize, y0: usize, gain: f32) -> Vec<f32> {
+    let mut input = Vec::with_capacity(3 * TILE * TILE);
+    for c in 0..3 {
+        for y in 0..TILE {
+            let row = mirror(y0 + y, h) * w;
+            for x in 0..TILE {
+                let p = row + mirror(x0 + x, w);
+                input.push(srgb_encode((rgb[p * 3 + c] * gain).clamp(0.0, 1.0)));
+            }
+        }
     }
-    Ok(v.to_vec())
+    input
 }
 
 #[cfg(test)]

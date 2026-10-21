@@ -283,7 +283,31 @@ fn every_model_is_in_the_manifest_with_an_allowed_licence() {
                 "{name} is not in engine/models/manifest.json"
             );
         }
+        // A Core ML package (ADR 0015): every file in it.
+        if name.ends_with(".mlpackage") {
+            for file in files_under(&dir, &dir.join(&name)) {
+                assert!(
+                    models.iter().any(|m| m["file"] == file.as_str()),
+                    "{file} is not in engine/models/manifest.json"
+                );
+            }
+        }
     }
+}
+
+/// Paths of the files under `folder`, relative to `root`, with `/` separators.
+fn files_under(root: &Path, folder: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(folder).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(files_under(root, &path));
+        } else {
+            let rel = path.strip_prefix(root).unwrap();
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    out
 }
 
 fn sha256(b: &[u8]) -> String {

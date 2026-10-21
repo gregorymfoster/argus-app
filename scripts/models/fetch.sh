@@ -8,7 +8,8 @@
 # - deeplabv3_mnv2_ade20k: TensorFlow DeepLab v3, MobileNetV2 on ADE20K (Apache 2.0). A
 #   frozen TF graph, cut to the normalised input and the logits, then converted to ONNX.
 # - scunet_color_real_f16: SCUNet's blind real-noise model (Apache 2.0) for AI Denoise,
-#   exported from PyTorch by scunet_onnx.py (fp16 weights).
+#   exported from PyTorch by scunet_onnx.py (fp16 weights), and as a Core ML package by
+#   scunet_coreml.py for the Mac's GPU path.
 set -euo pipefail
 out="$(cd "$(dirname "$0")/../../engine/models" && pwd)"
 work="$(mktemp -d)"
@@ -61,3 +62,9 @@ python3 -m venv "$work/torch"
 "$work/torch/bin/pip" install -q torch onnx einops numpy
 "$work/torch/bin/python" "$(dirname "$0")/scunet_onnx.py" "$work/network_scunet.py" "$work/scunet.pth" \
   "$out/scunet_color_real_f16.onnx"
+# The same network for Core ML on the Mac (ADR 0015). coremltools 9 converts from torch 2.7;
+# it checks the traced network against the ONNX model above before writing.
+"$work/torch/bin/pip" install -q "torch==2.7.0" coremltools==9.0 onnxruntime
+rm -rf "$out/scunet_color_real.mlpackage"
+"$work/torch/bin/python" "$(dirname "$0")/scunet_coreml.py" "$work/network_scunet.py" "$work/scunet.pth" \
+  "$out/scunet_color_real.mlpackage" "$out/scunet_color_real_f16.onnx"

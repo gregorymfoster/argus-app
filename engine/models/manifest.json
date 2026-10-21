@@ -70,6 +70,36 @@
       "bytes": 39133390,
       "sha256": "ff610364856b4cabee714ce0e6005a484ea6dd108f689acb94bb04450b204095",
       "embedded": true
+    },
+    {
+      "file": "scunet_color_real.mlpackage/Manifest.json",
+      "analyzer": "denoise",
+      "what": "SCUNet for AI Denoise on the Mac through Core ML (ADR 0015): Core ML package manifest of the same network and weights as scunet_color_real_f16.onnx, converted by scripts/models/scunet_coreml.py",
+      "source": "https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth",
+      "license": "Apache-2.0",
+      "bytes": 617,
+      "sha256": "ce6d7c5b0e79a5b61c9d36c22ced6ec3972588df4100c49a874be851eba39996",
+      "embedded": true
+    },
+    {
+      "file": "scunet_color_real.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "analyzer": "denoise",
+      "what": "SCUNet for AI Denoise on the Mac through Core ML (ADR 0015): Core ML program of the same network and weights as scunet_color_real_f16.onnx, converted by scripts/models/scunet_coreml.py",
+      "source": "https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth",
+      "license": "Apache-2.0",
+      "bytes": 6197351,
+      "sha256": "53101153f1997b476c1d18334a76d18ea281e8cdafe5388657c9d27923adc0c8",
+      "embedded": true
+    },
+    {
+      "file": "scunet_color_real.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "analyzer": "denoise",
+      "what": "SCUNet for AI Denoise on the Mac through Core ML (ADR 0015): fp16 weights of the same network and weights as scunet_color_real_f16.onnx, converted by scripts/models/scunet_coreml.py",
+      "source": "https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth",
+      "license": "Apache-2.0",
+      "bytes": 35928384,
+      "sha256": "87d97c134963b416a999d962b748f09cb86f07fa0f2d2df8e4af22ca7a7e478c",
+      "embedded": true
     }
   ]
 }

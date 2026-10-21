@@ -3,18 +3,26 @@
 //! which a local model calls reliably; whether a sound frame is one the person keeps is taste,
 //! where Qwen ranked Greg's keepers at chance (Greg 2026-10-20, docs/research/cull-taste.md).
 //!
-//! Taste here is the faces: on his clean 2026-10-10 card, how much the main faces smile and
-//! whether any looks off ([`eyes::awkward`]) ranked his keepers at AUC .65, where Qwen's stars
-//! scored .54 and Claude Opus's .66. Sharpness and exposure didn't rank keepers at all; they
-//! are technical, so they stay with the model's stage. A frame without a readable face scores
-//! [`NO_FACES`], so a Shoot with no people gets level stars rather than invented ones.
+//! Taste here is the faces, and the person's own flags once there are enough of them. On his
+//! clean 2026-10-10 card, how much the main faces smile and whether any looks off
+//! ([`eyes::awkward`]) ranked his keepers at AUC .65, where Qwen's stars scored .54 and Claude
+//! Opus's .66. Sharpness and exposure didn't rank keepers at all; they are technical, so they
+//! stay with the model's stage. A frame without a readable face scores [`NO_FACES`], so a
+//! Shoot with no people and no flags to learn from gets level stars rather than invented ones.
+//!
+//! The [`Head`] learns from every Pick and Reject the person made themselves: the direction in
+//! the image embedding from what they reject to what they pick. Trained on his four other bench
+//! Shoots, it lifted the faces' AUC on 2026-10-10 from .65 to .69 and his share of the Best
+//! Photos from 38% to 77%; trained on the first 80 frames he flagged of the card itself, .74
+//! (`bench/taste_head.py`, docs/research/taste-head.md).
 //!
 //! Each stage fills only what the one before left empty, so a model asked for the whole cull
 //! (a harness variant's own prompt, [`crate::cull::Taste::Model`]) keeps its own stars.
 
-use crate::analyzers::{eyes, Facts};
+use crate::analyzers::{embedding, eyes, Fact, Facts};
 use crate::cull::{ContactSheet, CullPhoto, CullResult};
-use crate::library::Verdict;
+use crate::library::{Author, Library, PhotoFilter, ShootId, Verdict};
+use crate::Result;
 use std::collections::HashMap;
 
 /// Taste of a frame with no main face: between a frame where someone looks off and one where
@@ -33,6 +41,169 @@ pub fn score(facts: &Facts) -> f32 {
     let smile = main.iter().map(|r| eyes::smile(r)).sum::<f32>() / n;
     let off = main.iter().filter(|r| !eyes::awkward(r).is_empty()).count() as f32 / n;
     smile - off
+}
+
+/// Each frame's taste for a cull of `shoot` (`facts` in its Photos' order, with "eyes" and
+/// "embedding"): the faces' [`score`], or, once the person has flagged enough to learn from,
+/// the faces and the [`Head`] given equal weight.
+pub fn scores(lib: &Library, shoot: ShootId, facts: &[Facts]) -> Result<Vec<f32>> {
+    let faces: Vec<f32> = facts.iter().map(score).collect();
+    let Some(head) = Head::learn(&flags(lib)?, shoot) else {
+        return Ok(faces);
+    };
+    let vectors: Vec<Option<Vec<f32>>> = facts
+        .iter()
+        .map(|f| f.get("embedding").and_then(embedding::vector))
+        .collect();
+    let mean = mean(vectors.iter().flatten());
+    let learned: Vec<f32> = vectors
+        .iter()
+        .map(|v| {
+            v.as_ref()
+                .map_or(f32::NAN, |v| head.score(&centred(v, &mean)))
+        })
+        .collect();
+    Ok(blend(&faces, &learned))
+}
+
+/// Two tastes in equal measure: each as standard scores within the Shoot, summed. A taste that
+/// is level across the Shoot (no faces anywhere) adds nothing; a frame one can't score (NaN, no
+/// embedding) sits at that taste's middle.
+pub fn blend(a: &[f32], b: &[f32]) -> Vec<f32> {
+    let (za, zb) = (standard(a), standard(b));
+    za.iter().zip(&zb).map(|(x, y)| x + y).collect()
+}
+
+fn standard(xs: &[f32]) -> Vec<f32> {
+    let known: Vec<f32> = xs.iter().copied().filter(|x| x.is_finite()).collect();
+    let n = known.len().max(1) as f32;
+    let m = known.iter().sum::<f32>() / n;
+    let sd = (known.iter().map(|x| (x - m).powi(2)).sum::<f32>() / n).sqrt();
+    xs.iter()
+        .map(|&x| {
+            if x.is_finite() && sd > 1e-6 {
+                (x - m) / sd
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+/// Fewest Picks and fewest Rejects a set of the person's flags needs before the [`Head`] reads
+/// anything into it.
+pub const MIN_FLAGS: usize = 5;
+
+/// One Photo the person flagged themselves: its embedding less its Shoot's mean (a keeper is
+/// one that stands out from the rest of its card, not a kind of card), and whether they picked it.
+#[derive(Debug, Clone)]
+pub struct Flag {
+    pub shoot: ShootId,
+    pub vector: Vec<f32>,
+    pub pick: bool,
+}
+
+/// What the person's own flags say about taste: the direction in the image embedding from what
+/// they reject to what they pick. Their flags on other Shoots and on the Shoot being culled each
+/// give one direction of unit length, summed, so years of history don't drown out the frames
+/// they just flagged on this card. Retraining is an average, so it costs nothing to redo every
+/// cull. A nearest-centroid head ranked as well as a logistic one on the bench and needs no
+/// tuning (docs/research/taste-head.md).
+#[derive(Debug, Clone)]
+pub struct Head {
+    direction: Vec<f32>,
+}
+
+impl Head {
+    /// The head for a cull of `shoot`, or None when neither the other Shoots nor this one hold
+    /// [`MIN_FLAGS`] Picks and Rejects.
+    pub fn learn(flags: &[Flag], shoot: ShootId) -> Option<Head> {
+        let parts = [
+            direction(flags.iter().filter(|f| f.shoot != shoot)),
+            direction(flags.iter().filter(|f| f.shoot == shoot)),
+        ];
+        let mut parts = parts.into_iter().flatten();
+        let mut sum = parts.next()?;
+        for p in parts {
+            sum.iter_mut().zip(&p).for_each(|(s, x)| *s += x);
+        }
+        Some(Head { direction: sum })
+    }
+
+    /// How much a frame (its embedding less its Shoot's mean) looks like a keeper; only the
+    /// order within a Shoot means anything.
+    pub fn score(&self, centred: &[f32]) -> f32 {
+        embedding::similarity(&self.direction, centred)
+    }
+}
+
+/// Mean of the Picks less mean of the Rejects, unit length.
+fn direction<'a>(flags: impl Iterator<Item = &'a Flag> + Clone) -> Option<Vec<f32>> {
+    let picks = flags.clone().filter(|f| f.pick).map(|f| &f.vector);
+    let rejects = flags.filter(|f| !f.pick).map(|f| &f.vector);
+    if picks.clone().count() < MIN_FLAGS || rejects.clone().count() < MIN_FLAGS {
+        return None;
+    }
+    let (p, r) = (mean(picks), mean(rejects));
+    let d: Vec<f32> = p.iter().zip(&r).map(|(a, b)| a - b).collect();
+    let norm = d.iter().map(|x| x * x).sum::<f32>().sqrt();
+    (norm > 1e-9).then(|| d.iter().map(|x| x / norm).collect())
+}
+
+fn mean<'a>(vs: impl Iterator<Item = &'a Vec<f32>>) -> Vec<f32> {
+    let mut sum = vec![0.0; embedding::DIMS];
+    let mut n = 0.0;
+    for v in vs {
+        sum.iter_mut().zip(v).for_each(|(s, x)| *s += x);
+        n += 1.0;
+    }
+    sum.iter().map(|s| s / f32::max(n, 1.0)).collect()
+}
+
+fn centred(v: &[f32], mean: &[f32]) -> Vec<f32> {
+    v.iter().zip(mean).map(|(a, b)| a - b).collect()
+}
+
+/// Every Pick and Reject the person made themselves (never the AI's), on Photos whose embedding
+/// is already stored, each centred on its Shoot's mean embedding.
+pub fn flags(lib: &Library) -> Result<Vec<Flag>> {
+    let photos = lib.list_photos(&PhotoFilter::default())?;
+    let flagged = |p: &crate::library::Photo| {
+        p.verdict_by == Some(Author::Person) && p.verdict != Verdict::Unflagged
+    };
+    let shoots: std::collections::HashSet<ShootId> = photos
+        .iter()
+        .filter(|p| flagged(p))
+        .map(|p| p.shoot_id)
+        .collect();
+    let mut by_shoot: HashMap<ShootId, Vec<(&crate::library::Photo, Vec<f32>)>> = HashMap::new();
+    for p in photos.iter().filter(|p| shoots.contains(&p.shoot_id)) {
+        let Some(row) = lib.fact(p.id, "embedding")? else {
+            continue;
+        };
+        let fact = Fact {
+            value: row.value,
+            blob: row.blob,
+        };
+        if let Some(v) = embedding::vector(&fact) {
+            by_shoot.entry(p.shoot_id).or_default().push((p, v));
+        }
+    }
+    let mut out = Vec::new();
+    for (shoot, frames) in by_shoot {
+        let m = mean(frames.iter().map(|(_, v)| v));
+        out.extend(
+            frames
+                .iter()
+                .filter(|(p, _)| flagged(p))
+                .map(|(p, v)| Flag {
+                    shoot,
+                    vector: centred(v, &m),
+                    pick: p.verdict == Verdict::Pick,
+                }),
+        );
+    }
+    Ok(out)
 }
 
 /// A frame this much darker than the median of the frames shot within [`NEAR_S`] of it is a

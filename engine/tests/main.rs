@@ -47,6 +47,7 @@ mod shoots;
 mod spots;
 mod storage;
 mod style;
+mod taste;
 mod tools;
 mod undo_looks;
 mod usage;

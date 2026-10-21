@@ -22,6 +22,8 @@ pub mod bursts;
 pub mod color;
 pub mod commands;
 pub mod compute;
+#[cfg(target_os = "macos")]
+pub mod coreml;
 pub mod cull;
 pub mod debug_log;
 pub mod denoise;
