@@ -368,6 +368,7 @@ fn sheet_photo(n: usize, at: &str) -> SheetPhoto {
         facts: String::new(),
         taste: 0.0,
         burst: None,
+        tilt: None,
     }
 }
 
@@ -976,6 +977,28 @@ fn the_taste_stage_rates_what_the_technical_stage_kept_by_its_faces() {
         .collect();
     best.sort();
     assert_eq!(best, vec![(1, 19), (2, 18)]);
+}
+
+#[test]
+fn inside_a_burst_the_most_upright_heads_come_first() {
+    // One burst of four: frame 3 tastes best, but frame 2's heads sit level; frame 4 has no
+    // face found, so it counts as the burst's average lean and taste places it.
+    let mut sheet = sheet_of(&[
+        (0.1, Some(0)),
+        (0.2, Some(0)),
+        (0.9, Some(0)),
+        (0.5, Some(0)),
+    ]);
+    for (p, tilt) in sheet
+        .photos
+        .iter_mut()
+        .zip([Some(25.0), Some(2.0), Some(10.0), None])
+    {
+        p.tilt = tilt;
+    }
+    let r = argus_engine::taste::rate(&sheet, technical(4, &[]));
+    let rank = |n: usize| r.photos.iter().find(|c| c.n == n).unwrap().rank.unwrap();
+    assert_eq!((rank(2), rank(3), rank(4), rank(1)), (1, 2, 3, 4));
 }
 
 #[test]

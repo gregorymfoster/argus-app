@@ -3,6 +3,7 @@ use argus_engine::library::{Author, ImportOptions, Library, PhotoFilter, Verdict
 use argus_engine::recipe::Recipe;
 use argus_engine::tools::Tools;
 use argus_engine::{decode, develop, embedded_preview, jpeg_dimensions, DevelopOptions, RgbImage};
+mod edit_fit;
 mod fit;
 mod mcp;
 mod serve;
@@ -91,6 +92,14 @@ enum Cmd {
     /// Extract the camera's largest embedded JPEG unchanged.
     Preview {
         file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Dev tool for bench/edit_head.py: per-case features, Auto, a fitted Recipe and dE of
+    /// given Recipes against the person's own edits (see cli/src/edit_fit.rs).
+    EditFit {
+        /// Job JSON: {"cases": [{"id", "raw", "target"}], "fit": bool, "recipes": {...}, "save_dir"}
+        job: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
@@ -379,6 +388,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 file.display().to_string(),
                 jpg.len()
             );
+        }
+        Cmd::EditFit { job, out } => {
+            let job: edit_fit::Job = serde_json::from_str(&std::fs::read_to_string(job)?)?;
+            let rows = edit_fit::run(job);
+            std::fs::write(&out, serde_json::to_string(&rows)?)?;
         }
         Cmd::FitLook {
             raw_dir,

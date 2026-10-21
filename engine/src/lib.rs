@@ -27,6 +27,7 @@ pub mod coreml;
 pub mod cull;
 pub mod debug_log;
 pub mod denoise;
+pub mod edit_head;
 pub mod effects;
 pub mod exemplars;
 pub mod export;

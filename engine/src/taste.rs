@@ -206,6 +206,32 @@ pub fn flags(lib: &Library) -> Result<Vec<Flag>> {
     Ok(out)
 }
 
+/// How far the heads in a frame lean, in degrees: the mean slope of each face's line between
+/// its eyes, in the preview's normalised coordinates (so on a 3:2 frame a few degrees off the
+/// true roll, the same way for every frame of a burst). None when no face was found.
+///
+/// Inside a burst, the frame whose heads sit most upright was Greg's keeper in 70% of 76
+/// keep-versus-drop pairs on his clean 2026-10-10 card (56% on the older bench Shoots), where
+/// the faces' expression, eye sharpness and the frame's sharpness were all at chance
+/// (docs/research/taste-head.md). A tilted head is usually a head in motion.
+pub fn tilt(facts: &Facts) -> Option<f32> {
+    let faces = facts.get("faces").map(crate::analyzers::faces::read)?;
+    if faces.is_empty() {
+        return None;
+    }
+    let n = faces.len() as f32;
+    Some(
+        faces
+            .iter()
+            .map(|f| {
+                let [l, r] = f.eyes;
+                (r[1] - l[1]).atan2(r[0] - l[0]).to_degrees().abs()
+            })
+            .sum::<f32>()
+            / n,
+    )
+}
+
 /// A frame this much darker than the median of the frames shot within [`NEAR_S`] of it is a
 /// misjudged exposure of the same moment: 2 EV under is well below this, while on Greg's cards
 /// only 4 of 661 frames fall under it, none of them keepers. The Technical check leaves such a
@@ -301,7 +327,15 @@ pub fn rate(sheet: &ContactSheet, mut result: CullResult) -> CullResult {
             }
         }
         for (b, mut frames) in bursts {
-            frames.sort_by(order);
+            // Inside a burst, the most upright heads first ([`tilt`]); a frame whose faces
+            // weren't found counts as the burst's average, so taste decides between those.
+            let tilts: Vec<f32> = frames
+                .iter()
+                .filter_map(|c| by_n.get(&c.n).and_then(|p| p.tilt))
+                .collect();
+            let usual = tilts.iter().sum::<f32>() / tilts.len().max(1) as f32;
+            let lean = |c: &CullPhoto| by_n.get(&c.n).and_then(|p| p.tilt).unwrap_or(usual);
+            frames.sort_by(|a, b| lean(a).total_cmp(&lean(b)).then_with(|| order(a, b)));
             for (rank, c) in frames.into_iter().enumerate() {
                 c.stack = Some(b as u32 + 1);
                 c.rank = Some(rank as u32 + 1);

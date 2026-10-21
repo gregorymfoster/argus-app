@@ -83,6 +83,9 @@ pub struct Params {
     pub vibrance_target: f64,
     pub vibrance_gain: f64,
     pub vibrance_max: f64,
+    /// RAWs get the Edit head's offset on top (crate::edit_head): the person's own style,
+    /// learned from their finished edits. Off until the review page says it beats Auto.
+    pub edit_head: bool,
 }
 
 impl Default for Params {
@@ -107,6 +110,7 @@ impl Default for Params {
             vibrance_target: 0.22,
             vibrance_gain: 120.0,
             vibrance_max: 25.0,
+            edit_head: false,
         }
     }
 }
@@ -251,6 +255,10 @@ pub fn auto_adjust_with(
         .round();
 
     a.exposure = solve(&a)?;
+    if raw && k.edit_head {
+        let head = crate::edit_head::offset(&render(&Adjust::default())?, &a);
+        a = a.plus(&head);
+    }
     Ok(a)
 }
 
@@ -432,6 +440,34 @@ mod tests {
         );
         // What the Look can't know is still fixed.
         assert!(a.temp > 5.0, "{a:?}");
+    }
+
+    #[test]
+    fn edit_head_adds_the_persons_style_on_a_raw_only() {
+        let img = scene(0.9, [1.0; 3]);
+        let render = |a: &Adjust| Ok(develop_rgb8(&img, &applied(&Recipe::default(), a)));
+        let on = Params {
+            edit_head: true,
+            ..Params::default()
+        };
+        let plain = auto_adjust_with(render, true, &Params::default()).unwrap();
+        let head = auto_adjust_with(render, true, &on).unwrap();
+        // Greg's finished edits run punchier and warmer than Auto (docs/research/edit-head.md).
+        assert!(
+            head.contrast > plain.contrast + 15.0,
+            "{plain:?} -> {head:?}"
+        );
+        assert!(head.temp > plain.temp + 5.0, "{plain:?} -> {head:?}");
+        let expect = plain.plus(&crate::edit_head::offset(
+            &render(&Adjust::default()).unwrap(),
+            &plain,
+        ));
+        assert_eq!(head, expect);
+        // A JPEG is not what the head learned from: Auto as before.
+        assert_eq!(
+            auto_adjust_with(render, false, &on).unwrap(),
+            auto_adjust_with(render, false, &Params::default()).unwrap()
+        );
     }
 
     #[test]

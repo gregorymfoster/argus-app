@@ -21,13 +21,20 @@ import { PresetsPanel } from '../ui/Presets';
 import { EditPanel, GLOBAL, LIGHT, PRESENCE, WB } from '../ui/EditPanel';
 import { MaskingPanel } from '../ui/MaskingPanel';
 import { MaskHandles } from '../ui/MaskHandles';
-import { PickOverlay, type Picked } from '../ui/EditSections';
+import { COLOR_NOISE, DEFRINGE, DENOISE, EFFECTS, GRAIN, LENS, NOISE, PickOverlay, SHARPEN, VIGNETTE, type Picked } from '../ui/EditSections';
 import { CropOverlay, CropPanel, FULL } from '../ui/CropPanel';
 import { HEAL_BRUSH, HealOverlay, HealPanel, SPOT_R, newSpotId, spotsOf, type HealBrush } from '../ui/HealPanel';
 import { Button } from '@/components/ui/button';
 import { longEdge, useNeed, useZoomPan } from '../ui/zoomPan';
 import { Navigator, ZoomReadout } from '../ui/Navigator';
 import { useSettingsKeys } from '../ui/PasteSettings';
+
+// Every slider's panel name, so a take's diff says "Clarity" and "Vignette midpoint", not the Recipe key.
+const SLIDERS = [...GLOBAL, ...EFFECTS, ...VIGNETTE, ...GRAIN, ...DENOISE, ...SHARPEN, ...NOISE, ...COLOR_NOISE, ...DEFRINGE, ...LENS];
+const labelOf = (k: string) => {
+  const d = SLIDERS.find((d) => d.key === k);
+  return d ? (d.name ?? d.label) : k;
+};
 
 /** What a take changes against the current Recipe, for the panel: [label, was, now]. */
 function takeDiff(cur: Recipe, take: Recipe): [string, string, string][] {
@@ -42,14 +49,14 @@ function takeDiff(cur: Recipe, take: Recipe): [string, string, string][] {
       continue;
     }
     const [x, y] = [(a as number | undefined) ?? 0, (b as number | undefined) ?? 0];
-    if (Math.abs(x - y) > 1e-6) rows.push([GLOBAL.find((d) => d.key === k)?.label ?? String(k), fmt(k, x), fmt(k, y)]);
+    if (Math.abs(x - y) > 1e-6) rows.push([labelOf(k), fmt(k, x), fmt(k, y)]);
   }
   // The take's own Masks (sky held, subject lifted): one row each, with what they do.
   for (const l of take.local) {
     if (cur.local.some((c) => c.id === l.id && JSON.stringify(c.adjust) === JSON.stringify(l.adjust))) continue;
     const what = Object.entries(l.adjust)
       .filter(([, v]) => typeof v === 'number' && v !== 0)
-      .map(([k, v]) => `${GLOBAL.find((d) => d.key === k)?.label ?? k} ${fmt(k as NumKey, v as number)}`)
+      .map(([k, v]) => `${labelOf(k)} ${fmt(k as NumKey, v as number)}`)
       .join(', ');
     rows.push([l.name || `${l.mask.kind} Mask`, cur.local.some((c) => c.id === l.id) ? 'changed' : 'none', what || 'set']);
   }

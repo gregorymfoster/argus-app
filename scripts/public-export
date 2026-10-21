@@ -28,10 +28,16 @@ git archive HEAD | tar -x -C "$tmp"
 for p in "${PRIVATE[@]}"; do rm -rf "${tmp:?}/$p"; done
 find "$tmp/bench" -mindepth 1 -maxdepth 1 -not -name "$KEEP_IN_BENCH" -exec rm -rf {} +
 
-# Leak check: no photos outside the app icons, no personal paths or addresses.
+# Leak check: no photos outside the app icons and the README's media, no personal paths or addresses.
+# docs/media/ holds README screenshots of the public-domain sample card only: each file there must be
+# named on CREDITS.md's "Files:" line, so a photo dropped in by mistake still fails.
 leaks=$(cd "$tmp" && find . -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.arw' \
   -o -iname '*.dng' -o -iname '*.heic' -o -iname '*.tif*' -o -iname '*.webp' -o -iname '*.db' -o -iname '*.mcat' \) \
-  -not -path './app/icons/*' | sort)
+  -not -path './app/icons/*' -not -path './docs/media/*' | sort)
+credited=$(grep -m1 '^Files:' "$tmp/docs/media/CREDITS.md" 2>/dev/null | tr ' ,' '\n\n' || true)
+for f in $(cd "$tmp" && find docs/media -type f -not -name CREDITS.md 2>/dev/null); do
+  grep -qxF "$(basename "$f")" <<<"$credited" || leaks="$leaks $f"
+done
 words=$(grep -rlE --exclude=public-export 'gregorymfoster@gmail|GoogleDrive-|/Users/gregfoster|lrlibrary' "$tmp" | sed "s|$tmp/||" | sort || true)
 if [ -n "$leaks$words" ]; then
   echo "public-export: private files or text left in the tree, add them to PRIVATE or scrub them:" >&2

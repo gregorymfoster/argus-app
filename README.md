@@ -1,10 +1,36 @@
 # Argus
 
-Argus is a photo editor for the Mac that does the boring half of Lightroom for you. Import a card, and a model looks at the whole Shoot at once: it flags the keepers, rejects the blurry and blinking frames, groups bursts into Stacks and picks the best of each. Then it offers two or three finished edits per Photo (Natural, Punchy, Moody) that you accept, dial down or ignore. You can also just ask it things, like "fix the lighting on this one" or "make the whole shoot consistent", and undo anything it did in one step.
+![Argus after an AI cull: a Shoot of 34 photos with star ratings and Stacks, and the Agent panel on the right](docs/media/grid.webp)
+
+Argus is a photo editor for the Mac that does the boring half of Lightroom for you. Import a card, and a model looks at the whole Shoot at once: it rejects the blurry and blinking frames, stars the rest, groups bursts into Stacks and picks the best of each. Then it offers two or three finished edits per Photo (Natural, Punchy, Bright) that you accept, dial down or ignore. You can also just ask it things, like "fix the lighting on this one" or "make the whole shoot consistent", and undo anything it did in one step.
 
 It runs on your own Mac with a local model, so your photos never leave the machine unless you choose otherwise. There are no API keys and no accounts. Your originals are never written to.
 
 It's early. Expect rough edges, and please tell Greg when you hit one.
+
+## A look around
+
+**Import a card.** Plug in a memory card and Argus finds it. Before anything copies, it tells you how many photos are new, how much room they need and roughly how long it'll take. It names the Shoot from what's in the pictures (you can type over it), and the grid fills while the copy runs.
+
+![Importing a card: Argus finds 34 new photos, names the Shoot 2026-10-12_Coast-Trip and fills the grid as they copy](docs/media/import.webp)
+
+**Let it cull.** The model looks at the whole Shoot in one pass. It only rejects frames that are plainly broken, then stars everything else, so the decision about what's good stays with you, using P, X and U like in Lightroom. Bursts fold into Stacks with the best frame marked. Press N and you walk through them one Stack at a time.
+
+![A Stack of three near-identical frames of a hiker, with the best one marked](docs/media/stacks.webp)
+
+**Pick an edit instead of building one.** Each Photo gets a few finished Suggestions with names like Natural, Punchy and Bright. Tab through them, set the Amount and press Enter. Hold backslash to see the original. Nothing changes until you accept one.
+
+![Tabbing through Natural, Punchy and Bright on a harbour at dusk, accepting Bright, then holding backslash for the before](docs/media/takes.webp)
+
+**Or do it yourself.** The Edit panel has the Lightroom sliders you already know, plus Masks for sky and subject, spot heal, AI Denoise for RAW files and 57 built-in Presets that preview on the photo as you hover. Argus also ranks which Presets suit each Shoot.
+
+![The Presets panel open on the harbour photo, with groups for Portrait, Landscape, Film and more](docs/media/presets.webp)
+
+**Ask for what you want.** The Agent sits next to the photo. Type "fix the lighting on this one" and it moves the same sliders you would, says what it changed and why, and leaves an Undo button right there. It works on a whole Shoot too, if you ask it to make everything consistent.
+
+![The Agent brightened a dark candlelit room and explains it raised Exposure and Shadows and pulled Highlights back so the windows don't clip](docs/media/agent.webp)
+
+The photos in these shots are public-domain pictures from Wikimedia Commons ([credits](docs/media/CREDITS.md)).
 
 ## What you need
 

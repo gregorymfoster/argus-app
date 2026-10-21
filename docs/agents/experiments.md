@@ -57,3 +57,7 @@ Greg's "super edit" (2026-10-20): many subroutines bundled into one edit. Per Ph
 ## Not yet
 
 The Agent's prompt (`agent.rs` GUIDE) and the matched-Suggestion prompt aren't in variants yet. There is no cache of model replies, so re-scoring a run re-pays every call.
+
+## Edit heads from Greg's finished edits
+
+`bench/edit_head.py` (features, eval, page) fits the Basic sliders that best reproduce each of Greg's bench edits with `argus edit-fit` (`cli/src/edit_fit.rs`, hundreds of in-process renders per RAW), then scores rules and small heads that predict the offset from Auto on capture days they never saw. Results and caveats: `docs/research/edit-head.md`.

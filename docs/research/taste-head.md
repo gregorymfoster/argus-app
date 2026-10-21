@@ -65,3 +65,50 @@ Neither idea beats chance on the clean card, so neither went into the engine. Re
 "Smile minus blink" running backwards (.38, 27 to 46) fits what we already knew: Greg keeps laughs where the eyes squeeze shut, and inside a burst the laughing frame is often the blinkiest one.
 
 The likely limit is the fixtures. At 640 px, faces in group shots are a few dozen pixels wide, and the eye focus and blendshapes are read from that. The 1600 px copies of 2026-10-10 live on Greg's Mac (`out/cull-hd2`); `cull_features.py --photos hd --edge 1600` then `burst_signals.py` there would settle whether these signals are noise or just unreadable at this size. It is light (no model), about five minutes.
+
+## Burst heuristics, round 2 (2026-10-21)
+
+Greg asked for more heuristics. Everything here is free from stored Facts and was scored the same way (`bench/burst_signals.py`, older Shoots / 2026-10-10, share of keep-versus-drop pairs):
+
+| heuristic | older Shoots | 2026-10-10 |
+|---|---|---|
+| worst face in the group (smile minus looks off) | .50 | .62 (44 to 25) |
+| peak motion (frame that differs most from its neighbours) | .54 | .60 (41 to 26) |
+| later in the burst | .25 | .58 |
+| middle of the burst | .54 | .57 |
+| facing the camera | .47 | .55 |
+| looking at the camera (gaze) | .51 | .41 |
+| most typical frame of the burst | .51 | .46 |
+| worst face's eyes open | .56 | .50 |
+| no face cut off by the frame edge | too few pairs | too few pairs |
+
+Nothing passes the rule set in advance (pick on the older Shoots, then beat chance on the clean card). The worst-face rule is the best on 2026-10-10 but flat on the older Shoots. Peak motion is the only one above .5 on both, and only weakly (86 to 63 pairs combined, and pairs inside one burst aren't independent). Burst position flips sign between the old Shoots and the new one, so it is about how bursts were exported, not about Greg.
+
+Whole-Shoot "scene interest" (how many frames of a scene he shot, how unlike the rest a frame is) scored .60 to .61 alone on 2026-10-10, but added to the faces and Taste head it moved 2026-10-10 by under a point and cost 2025-03-22 six. Left out.
+
+Worst face and peak motion are the two to recheck on the 1600 px copies, where group faces are readable.
+
+## Round 3: measured on the pictures (2026-10-21)
+
+Greg asked for more. `bench/burst_image.py` measures the bench JPEGs themselves (sharpness inside the face box and the person around it, colourfulness, contrast, how level the frame is), adds face geometry from the stored face boxes (face size, placement near a third, how far heads lean) and blendshapes (a cheek-raised genuine smile, mouth at rest, relaxed brows), and timing (the pause before and after a frame). Same scoring: inside bursts, older Shoots first, then 2026-10-10.
+
+| heuristic | bursts, older Shoots (109) | bursts, 2026-10-10 (76) |
+|---|---|---|
+| heads upright (eye line level) | .56 | **.70 (53 to 23)** |
+| biggest face in the burst | .51 | .61 |
+| face near a third | .44 | .58 |
+| subject sharpness | .70 | .49 |
+| face sharpness | .61 | .41 |
+| contrast | .60 | .47 |
+| colourfulness | .67 | .38 |
+| level frame | .47 | .45 |
+| mouth at rest / brows relaxed | .50 / .46 | .51 / .48 |
+| pause after / before the frame | .07 / .89 | .55 / .52 |
+
+**Heads upright** is the first burst signal that passes: above chance on the older Shoots and well above on the clean card (sign test p < .01 on 2026-10-10, which survives the roughly 30 rules tried across the three rounds). A tilted head is usually a head mid-motion. It is now how `taste::rate` orders the frames of a burst (`taste::tilt`, from the YuNet face boxes already stored); a frame with no face found counts as the burst's average and taste decides the rest. Added to the whole-Shoot ranking it didn't help (2026-10-10 AUC .685 to .674), so it stays a burst-only signal.
+
+The older Shoots disagree with the clean card on everything tonal and on sharpness, which is the edit leak again: those previews carry Greg's develop, and he edits his picks. The timing rows are another artefact of how those Shoots were exported (a keeper sits after a pause 89% of the time there, 52% on the clean card). Burst size per frame and faces in frame had too few pairs to say anything; the cheek-raise smile never fired at 640 px.
+
+## The 1600 px check (2026-10-21, evening)
+
+The Mac thread reran rounds 1 and 3 on the 1600 px copies of 2026-10-10 (79 burst pairs; no older-Shoots column, since those are 640 px previews). **Heads upright held: 58 to 21 (.73).** Everything about sharpness got worse, not better. Eye sharpness went to .30 (22 to 54), eye focus as stored to .39, eyes open to .35, face sharpness to .38, and frame sharpness to .39. So inside a burst Greg tends to keep the frame with *softer* eyes and more blink, which fits laughter and movement over a frozen, posed instant. These signals point the wrong way consistently, but turning them around into a rule would be fitting one card, so they stay out until another clean Shoot agrees. (The numpy divide-by-zero warnings on the Mac come from the matrix multiply in `burst_image.py`, most likely the spurious warnings numpy's matmul raises on macOS's Accelerate backend; every number in the table came out finite.)

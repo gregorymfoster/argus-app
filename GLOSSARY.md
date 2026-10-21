@@ -172,6 +172,10 @@ _Avoid_: Strength, intensity, opacity
 How the person usually finishes a take they kept, learned from the Usage log: the median change to each global slider on the Photos they exported from a kept take, shrunk while there are few. Fresh Suggestions add it on top of every take, so the AI drifts toward the person's own edits; it is empty until they have exported at least three.
 _Avoid_: Preset, taste model, personal Look
 
+**Edit head**:
+How the person finishes their own edits, as a step on top of Auto: a small regression from cheap facts about the unedited Photo (brightness, clipping, colour cast, skin and sky) and Auto's own sliders to the offset their finished edits have from Auto. Trained on Greg's finished bench edits (`bench/edit_head.py`); it moves the Basic sliders of a RAW only, and only when a variant turns it on (`auto.edit_head`, `engine::edit_head`). The Style profile is its constant cousin, learned from kept takes.
+_Avoid_: Edit model, style model, auto style
+
 **Review round**:
 One pass in which the AI looks at its own Suggestions rendered, with their light measured in numbers, and fixes each one's biggest remaining problem. Suggestions get one at the Full Compute level, none otherwise.
 _Avoid_: Iteration, self-critique, refine step

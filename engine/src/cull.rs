@@ -144,6 +144,9 @@ pub struct SheetPhoto {
     pub taste: f32,
     /// Which burst it belongs to (a run of look-alike frames shot seconds apart), if any.
     pub burst: Option<usize>,
+    /// How far its faces' heads lean, in degrees ([`crate::taste::tilt`]); None without faces.
+    /// Orders the frames of a burst.
+    pub tilt: Option<f32>,
 }
 
 impl SheetPhoto {
@@ -250,6 +253,7 @@ impl ContactSheet {
                     sharpness_pct: 50,
                     taste: taste[i],
                     burst: burst_of.get(&p.id).copied(),
+                    tilt: crate::taste::tilt(f),
                     facts: [
                         analyzers::caption(&rest),
                         alike[i].clone(),
@@ -311,6 +315,7 @@ impl ContactSheet {
                     facts: p.facts.clone(),
                     taste: p.taste,
                     burst: p.burst,
+                    tilt: p.tilt,
                 }
             })
             .collect();
