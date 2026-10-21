@@ -35,9 +35,8 @@ export function UpdateButton() {
       <TooltipTrigger asChild>
         <button className="update-button" onClick={() => void restartToUpdate()} data-testid="update-restart">
           <ArrowUpCircle size={13} />
-          Restart to update
-          <span className="grow" />
-          <span className="mono faint">{s.version}</span>
+          <span className="update-label">Restart to update</span>
+          <span className="update-version mono faint">{s.version}</span>
         </button>
       </TooltipTrigger>
       <TooltipContent side="right" className="max-w-[300px]">

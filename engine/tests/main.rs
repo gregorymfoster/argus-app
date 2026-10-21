@@ -28,6 +28,7 @@ mod analyzers;
 mod commands;
 mod compute;
 mod cull;
+mod exemplars;
 mod export;
 mod golden;
 mod jobs;

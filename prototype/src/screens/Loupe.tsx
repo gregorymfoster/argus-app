@@ -149,7 +149,7 @@ export function LoupeScreen({ id }: { id: string }) {
         </div>
         <aside className="side info-side" aria-label="Info">
           <div className="side-tabs">
-            <Seg label="Panel" value={tab} onChange={setTab} items={[{ value: 'info', label: 'Info' }, { value: 'agent', label: 'Agent' }]} />
+            <Seg quiet label="Panel" value={tab} onChange={setTab} items={[{ value: 'info', label: 'Info' }, { value: 'agent', label: 'Agent' }]} />
           </div>
           {tab === 'agent' ? (
             <Agent embed ctx={`edit:${p.id}`} chips={[p.file]} placeholder="Ask about or fix this Photo" selected={p} />

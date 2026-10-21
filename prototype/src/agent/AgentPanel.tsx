@@ -93,7 +93,7 @@ const CULL_STEP = 'Looking at the whole Shoot';
 /** The running cull's bar: Photos the model has answered for so far, and an ETA. */
 function CullBar() {
   const task = useEngineTask('cull', true);
-  if (!task) return <ProgressBar label="Model looking at the photos" testId="cull-progress" />;
+  if (!task) return <ProgressBar label="Reading the photos" testId="cull-progress" />;
   // Queued behind another model user: say on whom, with no bar or ETA that pretends to move.
   if (task.waiting) return <ProgressBar label={`Waiting: ${plain(task.waiting)}`} testId="cull-progress" />;
   return <ProgressBar label={task.label} done={task.done} total={task.total || undefined} eta={task.eta_s} testId="cull-progress" />;

@@ -61,7 +61,7 @@ export function BackToGrid() {
   return (
     <>
       <Button variant="ghost" size="sm" onClick={() => go({ name: 'cull' })}>
-        <ArrowLeft size={13} /> Grid <Kbd>G</Kbd>
+        <ArrowLeft size={13} /> Grid <Kbd quiet>G</Kbd>
       </Button>
       <span className="vsep" />
     </>
@@ -76,7 +76,7 @@ export function Hints({ items }: { items: [keys: string, label: string][] }) {
         <span key={label} className="hint">
           {i > 0 && <span className="dot">·</span>}
           {keys.split(' ').map((k) => (
-            <Kbd key={k}>{k}</Kbd>
+            <Kbd key={k} quiet>{k}</Kbd>
           ))}
           <span>{label}</span>
         </span>

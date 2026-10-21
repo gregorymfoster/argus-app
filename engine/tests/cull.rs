@@ -366,6 +366,8 @@ fn sheet_photo(n: usize, at: &str) -> SheetPhoto {
         signals: Signals::default(),
         sharpness_pct: 50,
         facts: String::new(),
+        taste: 0.0,
+        burst: None,
     }
 }
 
@@ -457,6 +459,12 @@ fn large_shoots_cull_in_chunks_then_pick_best_photos_across_them() {
     assert_eq!((last.done, last.total), (4, 4));
     // In Photos: 7 in the chunks plus the final pass's 3 candidates.
     assert_eq!((last.photos, last.photos_total), (10, 10));
+    // The bar counts the Shoot's 7 Photos, whatever the passes add up to.
+    assert_eq!(last.bar(), (7, 7));
+    assert!(seen
+        .iter()
+        .any(|p| p.stage() == "Reading the photos, part 2 of 3"));
+    assert!(seen.iter().any(|p| p.stage() == "Choosing Best Photos"));
     assert!(
         seen.windows(2).all(|w| w[0].photos <= w[1].photos),
         "never goes back"
@@ -469,6 +477,39 @@ fn large_shoots_cull_in_chunks_then_pick_best_photos_across_them() {
     let photos = lib.list_photos(&PhotoFilter::default()).unwrap();
     let first_best = photos.iter().find(|p| p.best == Some(1)).unwrap();
     assert!(ids[3..].contains(&first_best.id), "{:?}", r.best);
+}
+
+/// Chunks put their first two Photos up as Best Photos; the final pass names only one.
+struct Stingy;
+impl Provider for Stingy {
+    fn cull(&self, sheet: &ContactSheet) -> argus_engine::Result<CullResult> {
+        let last_pass = sheet
+            .context
+            .as_deref()
+            .is_some_and(|c| c.contains("candidates"));
+        Ok(CullResult {
+            summary: String::new(),
+            photos: sheet
+                .photos
+                .iter()
+                .map(|p| {
+                    let best = if last_pass {
+                        (p.n == 1).then_some(1)
+                    } else {
+                        (p.n <= 2).then_some(p.n as u32)
+                    };
+                    rated(photo(p.n, Verdict::Unflagged, "", None, None), 4, best)
+                })
+                .collect(),
+        })
+    }
+}
+
+#[test]
+fn chunked_culls_keep_about_one_best_photo_in_ten_of_the_whole_shoot() {
+    let (_tmp, mut lib, shoot) = library_with(40);
+    let r = cull_shoot_with(&mut lib, shoot, &Stingy, 10, &|_| {}).unwrap();
+    assert_eq!(r.best.len(), 4, "{:?}", r.best);
 }
 
 #[test]
@@ -647,7 +688,48 @@ fn a_silent_request_still_sends_a_heartbeat() {
     let waiting = seen.iter().filter(|p| p.done == 0).count();
     // One report as the request starts, then heartbeats while it is silent.
     assert!(waiting >= 4, "{waiting} reports while waiting: {seen:?}");
-    assert_eq!(seen[0].stage(), "Model looking at the photos");
+    assert_eq!(seen[0].stage(), "Reading the photos");
+}
+
+/// Reads like a local model: silent for a while, at a known pace per Photo.
+struct Reader;
+impl Provider for Reader {
+    fn cull(&self, sheet: &ContactSheet) -> argus_engine::Result<CullResult> {
+        Slow.cull(sheet)
+    }
+    fn read_pace(&self) -> Option<f64> {
+        Some(0.02)
+    }
+}
+
+#[test]
+fn the_bar_moves_while_the_model_reads_the_sheet() {
+    std::env::set_var("ARGUS_CULL_HEARTBEAT_MS", "50");
+    let (_tmp, mut lib, shoot) = library_with(10);
+    let seen = std::sync::Mutex::new(vec![]);
+    cull_shoot_with(&mut lib, shoot, &Reader, 100, &|p| {
+        seen.lock().unwrap().push(p)
+    })
+    .unwrap();
+    let seen = seen.into_inner().unwrap();
+    let reading: Vec<_> = seen
+        .iter()
+        .filter(|p| p.done == 0 && p.tokens == 0)
+        .collect();
+    // Moves before the model says a word, in the Shoot's Photos, but never claims the
+    // whole sheet read (or half the work done) before the model replies.
+    assert!(reading.iter().any(|p| p.bar().0 > 0), "{seen:?}");
+    assert!(
+        reading.iter().all(|p| p.read <= 9 && p.bar().0 < 5),
+        "{seen:?}"
+    );
+    assert!(reading.iter().all(|p| p.bar().1 == 10));
+    assert!(reading.iter().all(|p| p.stage() == "Reading the photos"));
+    assert!(
+        seen.windows(2).all(|w| w[0].bar().0 <= w[1].bar().0),
+        "never goes back"
+    );
+    assert_eq!(seen.last().unwrap().bar(), (10, 10));
 }
 
 /// A fake Ollama that reads one request, then sends `head` (raw HTTP, maybe a partial
@@ -798,5 +880,198 @@ fn a_cull_waits_its_turn_behind_another_argus_process_and_says_so() {
     assert!(
         std::fs::read_dir(dir.path()).unwrap().next().is_none(),
         "own marker removed"
+    );
+}
+
+#[test]
+fn a_group_shot_gets_close_ups_of_its_faces_and_a_caption_for_each() {
+    if !crate::has_bench() {
+        return;
+    }
+    // Greg's 2026-10-10 card: six friends on a boat deck, faces about 7% of the frame.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("2026-10-10_boat");
+    std::fs::create_dir_all(&src).unwrap();
+    let group = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/bench/cull/2026-10-10/photos/DSC07782.jpg");
+    std::fs::copy(&group, src.join("DSC07782.jpg")).unwrap();
+    let mut lib = Library::open(&tmp.path().join("lib")).unwrap();
+    let shoot = lib
+        .import(&src, &ImportOptions::default())
+        .unwrap()
+        .shoot_id
+        .unwrap();
+    let sheet = ContactSheet::build(&lib, shoot).unwrap();
+    let p = &sheet.photos[0];
+    let caption = p.caption();
+    assert!(caption.contains("faces"), "{caption}");
+    assert!(caption.contains("close-ups of these faces"), "{caption}");
+    let img = image::load_from_memory(&p.jpeg).unwrap();
+    assert!(
+        img.height() as f32 > img.width() as f32 * 426.0 / 640.0 * 1.1,
+        "a strip of close-ups under the frame: {}x{}",
+        img.width(),
+        img.height()
+    );
+}
+
+fn sheet_of(tastes: &[(f32, Option<usize>)]) -> ContactSheet {
+    ContactSheet {
+        shoot: 1,
+        shoot_name: "2026-10-10_Boat-Trip".into(),
+        photos: tastes
+            .iter()
+            .enumerate()
+            .map(|(i, &(taste, burst))| SheetPhoto {
+                taste,
+                burst,
+                ..sheet_photo(i + 1, "2026-10-10T12:00:00")
+            })
+            .collect(),
+        context: None,
+    }
+}
+
+fn technical(n: usize, rejects: &[usize]) -> CullResult {
+    CullResult {
+        summary: "Two frames are soft.".into(),
+        photos: (1..=n)
+            .map(|i| {
+                if rejects.contains(&i) {
+                    photo(i, Verdict::Reject, "missed focus", None, None)
+                } else {
+                    photo(i, Verdict::Unflagged, "ok", None, None)
+                }
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn the_taste_stage_rates_what_the_technical_stage_kept_by_its_faces() {
+    // Twenty frames: 1-3 one burst, 4-5 another, the rest single; taste rises with the number
+    // except frame 20, a reject that would taste best.
+    let mut tastes: Vec<(f32, Option<usize>)> = (1..=20).map(|i| (i as f32 / 20.0, None)).collect();
+    for t in tastes.iter_mut().take(3) {
+        t.1 = Some(0);
+    }
+    tastes[3].1 = Some(1);
+    tastes[4].1 = Some(1);
+    let sheet = sheet_of(&tastes);
+    let r = argus_engine::taste::rate(&sheet, technical(20, &[20]));
+    let by = |n: usize| r.photos.iter().find(|c| c.n == n).unwrap();
+    assert_eq!(by(20).stars, Some(1), "a reject is a 1-star frame");
+    assert_eq!(by(19).stars, Some(5), "the best-tasting kept frame");
+    assert_eq!(by(1).stars, Some(2), "the worst-tasting kept frame");
+    // Bursts become Stacks, best-tasting frame first.
+    assert_eq!((by(3).stack, by(3).rank), (Some(1), Some(1)));
+    assert_eq!((by(1).stack, by(1).rank), (Some(1), Some(3)));
+    assert_eq!((by(5).stack, by(5).rank), (Some(2), Some(1)));
+    assert_eq!(by(10).stack, None);
+    // Two Best Photos for twenty frames, the best-tasting kept ones, never the reject.
+    let mut best: Vec<(u32, usize)> = r
+        .photos
+        .iter()
+        .filter_map(|c| Some((c.best?, c.n)))
+        .collect();
+    best.sort();
+    assert_eq!(best, vec![(1, 19), (2, 18)]);
+}
+
+#[test]
+fn a_shoot_without_faces_gets_level_stars_and_no_invented_best_photos() {
+    let sheet = sheet_of(&[(0.0, None); 12]);
+    let r = argus_engine::taste::rate(&sheet, technical(12, &[]));
+    assert!(r.photos.iter().all(|c| c.stars == Some(3)));
+    assert!(r.photos.iter().all(|c| c.best.is_none()));
+}
+
+#[test]
+fn the_taste_stage_never_overrides_a_models_own_stars_or_best_photos() {
+    let sheet = sheet_of(&[(0.9, None), (0.1, None), (0.5, None)]);
+    let mut result = technical(3, &[]);
+    result.photos[1].stars = Some(5);
+    result.photos[1].best = Some(1);
+    let r = argus_engine::taste::rate(&sheet, result);
+    assert_eq!(r.photos[1].stars, Some(5));
+    assert_eq!(r.photos[1].best, Some(1));
+    assert_eq!(r.photos[0].best, None, "the model chose the Best Photos");
+}
+
+#[test]
+fn by_default_the_model_is_asked_only_for_technical_failures() {
+    let (_tmp, lib, shoot) = library_with(2);
+    let sheet = ContactSheet::build(&lib, shoot).unwrap();
+    let body = Ollama::from_env().request_body(&sheet);
+    let item = &body["format"]["properties"]["photos"]["items"];
+    assert_eq!(
+        item["required"],
+        serde_json::json!(["n", "verdict", "reason"])
+    );
+    assert_eq!(
+        item["properties"]["verdict"]["enum"],
+        serde_json::json!(["reject", "unflagged"])
+    );
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("technical"), "{system}");
+    // A technical reply parses as a cull with no stars, Stacks or Best Photos.
+    let r = parse_json_reply(
+        r#"{"summary":"One is soft.","photos":[{"n":1,"verdict":"reject","reason":"missed focus"},{"n":2,"verdict":"unflagged","reason":"ok"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        (r.photos[0].stars, r.photos[0].stack, r.photos[0].best),
+        (None, None, None)
+    );
+}
+
+#[test]
+fn bigger_sheets_get_longer_to_start_answering() {
+    use argus_engine::cull::Stall;
+    let sheet = |edge: u32| {
+        let mut jpeg = vec![];
+        image::RgbImage::new(edge, edge * 2 / 3)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        ContactSheet {
+            shoot: 1,
+            shoot_name: "s".into(),
+            photos: (1..=60)
+                .map(|n| SheetPhoto {
+                    jpeg: jpeg.clone(),
+                    ..sheet_photo(n, "2026-10-10T10:00:00")
+                })
+                .collect(),
+            context: None,
+        }
+    };
+    let small = Stall::for_cull(&sheet(768), Compute::Full).first.as_secs();
+    let big = Stall::for_cull(&sheet(1600), Compute::Full).first.as_secs();
+    // 2026-10-20: about 60 Photos with face close-ups read for 684 s before the first token.
+    assert!(big > 2 * 684 && big > 3 * small, "{small} s vs {big} s");
+    let gentle = Stall::for_cull(&sheet(768), Compute::Gentle)
+        .first
+        .as_secs();
+    assert_eq!(gentle, 4 * small);
+}
+
+#[test]
+fn a_frame_much_darker_than_the_moment_it_shares_ranks_below_it() {
+    // The twin check's 2 EV-under twin: same moment, same faces, far darker. The Technical
+    // check rightly leaves it (a RAW can be rescued), so Taste must put it below the original.
+    let mut sheet = sheet_of(&[(0.5, Some(0)), (0.5, Some(0)), (0.5, None)]);
+    for (p, b) in sheet.photos.iter_mut().zip([0.45, 0.12, 0.47]) {
+        p.signals.brightness = b;
+    }
+    let r = argus_engine::taste::rate(&sheet, technical(3, &[]));
+    let stars = |n: usize| r.photos[n - 1].stars.unwrap();
+    assert!(stars(2) < stars(1), "{:?}", r.photos);
+    assert_eq!(
+        r.photos[1].rank,
+        Some(2),
+        "the dark twin comes last in its Stack"
     );
 }

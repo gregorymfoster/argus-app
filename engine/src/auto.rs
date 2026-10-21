@@ -10,6 +10,7 @@
 
 use crate::recipe::{Adjust, Recipe};
 use crate::{Result, RgbImage};
+use serde::Deserialize;
 
 /// The sliders Auto owns. Running Auto replaces these and leaves the rest of the Recipe.
 pub const AUTO_SLIDERS: &[&str] = &[
@@ -47,6 +48,76 @@ const KEEP_KEY: f64 = 0.5;
 // white balance, clipped highlights, the white and black points and vibrance.
 // On the 3 RAWs in fixtures/raw that took Auto from dE 8.32 to 7.23 (no edit 7.32), the
 // camera JPEGs unchanged; the other 11 RAWs still need a re-score on the Mac.
+
+/// Auto's dials. The defaults are the tuned built-in Auto; a harness variant's `auto` field
+/// (crate::variant, `ARGUS_VARIANT`) overrides any of them, so Auto can be tuned on the bench
+/// without a rebuild (`bench/tune.py`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Params {
+    /// Brightness a non-RAW Photo is lifted toward (mean sRGB luma).
+    pub target_mean: f64,
+    /// How much of a dark Photo's own key is kept (0 = all the way to the target).
+    pub keep_key: f64,
+    /// RAWs solve Exposure too (default false: the Default Look's brightness stays).
+    pub raw_exposure: bool,
+    /// RAWs get Shadows and Contrast too (default false: the Look's tone fit stays).
+    pub raw_tone: bool,
+    /// White balance: Temp per stop of blue/red cast, Tint per stop of green cast.
+    pub wb_temp: f64,
+    pub wb_tint: f64,
+    /// Highlights per fraction of the frame above 0.93, and its cap.
+    pub highlights_gain: f64,
+    pub highlights_max: f64,
+    /// Shadows per fraction of the frame below 0.10, and its cap.
+    pub shadows_gain: f64,
+    pub shadows_max: f64,
+    /// Contrast aims the luma spread at `contrast_std`.
+    pub contrast_std: f64,
+    pub contrast_gain: f64,
+    pub whites_gain: f64,
+    pub whites_max: f64,
+    pub blacks_gain: f64,
+    pub blacks_max: f64,
+    /// Vibrance lifts mean chroma toward `vibrance_target`.
+    pub vibrance_target: f64,
+    pub vibrance_gain: f64,
+    pub vibrance_max: f64,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Params {
+            target_mean: TARGET_MEAN,
+            keep_key: KEEP_KEY,
+            raw_exposure: false,
+            raw_tone: false,
+            wb_temp: 35.0,
+            wb_tint: 70.0,
+            highlights_gain: 500.0,
+            highlights_max: 60.0,
+            shadows_gain: 250.0,
+            shadows_max: 50.0,
+            contrast_std: 0.21,
+            contrast_gain: 250.0,
+            whites_gain: 300.0,
+            whites_max: 40.0,
+            blacks_gain: 300.0,
+            blacks_max: 40.0,
+            vibrance_target: 0.22,
+            vibrance_gain: 120.0,
+            vibrance_max: 25.0,
+        }
+    }
+}
+
+impl Params {
+    /// The `auto` of the variant `ARGUS_VARIANT` names, else the built-in dials. Like the
+    /// cull, Auto reads the process's variant, so `bench/score.py --auto --variant` tunes it.
+    pub fn current() -> Result<Params> {
+        Ok(crate::variant::current()?.auto.unwrap_or_default())
+    }
+}
 
 /// `recipe` with Auto's sliders cleared: what Auto measures from.
 pub fn cleared(recipe: &Recipe) -> Recipe {
@@ -88,11 +159,15 @@ pub fn applied(recipe: &Recipe, auto: &Adjust) -> Recipe {
 /// Auto white balance (Temp, Tint) for a render made with neither set: the mid-tones'
 /// average pulled a third of the way toward grey. None for a Photo without mid-tones.
 pub fn white_balance(img: &RgbImage) -> Option<(f64, f64)> {
+    white_balance_with(img, &Params::default())
+}
+
+fn white_balance_with(img: &RgbImage, k: &Params) -> Option<(f64, f64)> {
     let [r, g, b] = Stats::of(img).mid_mean?;
     // +1 of temp moves R/B by one stop (pipeline::wb_gains); +1 of tint moves G by half a stop.
-    let temp = (35.0 * (b / r).log2()).clamp(-25.0, 25.0).round();
+    let temp = (k.wb_temp * (b / r).log2()).clamp(-25.0, 25.0).round();
     let m = (r * 2f64.powf(temp / 200.0) + b * 2f64.powf(-temp / 200.0)) / 2.0;
-    let tint = (70.0 * (g / m).log2()).clamp(-15.0, 15.0).round();
+    let tint = (k.wb_tint * (g / m).log2()).clamp(-15.0, 15.0).round();
     Some((temp, tint))
 }
 
@@ -100,12 +175,21 @@ pub fn white_balance(img: &RgbImage) -> Option<(f64, f64)> {
 /// given ones (on top of everything else in its Recipe), small. `raw`: the Photo is a RAW,
 /// whose render already carries the Default Look's tone fit.
 pub fn auto_adjust(render: impl Fn(&Adjust) -> Result<RgbImage>, raw: bool) -> Result<Adjust> {
+    auto_adjust_with(render, raw, &Params::current()?)
+}
+
+/// `auto_adjust` with these dials.
+pub fn auto_adjust_with(
+    render: impl Fn(&Adjust) -> Result<RgbImage>,
+    raw: bool,
+    k: &Params,
+) -> Result<Adjust> {
     let mut a = Adjust::default();
 
     // White balance: pull the average of the mid-tones a third of the way toward grey, as
     // camera white balance is usually close and a sunset should stay warm (on Greg's bench
     // Photos, going halfway overshot his own white balance).
-    if let Some((temp, tint)) = white_balance(&render(&a)?) {
+    if let Some((temp, tint)) = white_balance_with(&render(&a)?, k) {
         (a.temp, a.tint) = (temp, tint);
     }
 
@@ -113,15 +197,16 @@ pub fn auto_adjust(render: impl Fn(&Adjust) -> Result<RgbImage>, raw: bool) -> R
     let start = Stats::of(&render(&a)?).mean;
     // A bright Photo keeps its brightness, blown-out sky included: on the bench Greg kept
     // even a quarter of a frame clipped rather than darken it.
-    let target = if !raw && start <= TARGET_MEAN {
-        TARGET_MEAN + KEEP_KEY * (start - TARGET_MEAN)
+    let solves = !raw || k.raw_exposure;
+    let target = if solves && start <= k.target_mean {
+        k.target_mean + k.keep_key * (start - k.target_mean)
     } else {
         start
     };
     // On a RAW, Exposure stays where the Look put it: re-solving it after Highlights pulled
     // the top down brightened the mid-tones of Photos Greg had kept darker.
     let solve = |a: &Adjust| {
-        if raw {
+        if !solves {
             Ok(0.0)
         } else {
             solve_exposure(&render, a, target)
@@ -129,10 +214,16 @@ pub fn auto_adjust(render: impl Fn(&Adjust) -> Result<RgbImage>, raw: bool) -> R
     };
     a.exposure = solve(&a)?;
     let s = Stats::of(&render(&a)?);
-    a.highlights = -(s.above(0.93) * 500.0).clamp(0.0, 60.0).round();
-    if !raw {
-        a.shadows = (s.below(0.10) * 250.0).clamp(0.0, 50.0).round();
-        a.contrast = ((0.21 - s.std) * 250.0).clamp(-25.0, 30.0).round();
+    a.highlights = -(s.above(0.93) * k.highlights_gain)
+        .clamp(0.0, k.highlights_max)
+        .round();
+    if !raw || k.raw_tone {
+        a.shadows = (s.below(0.10) * k.shadows_gain)
+            .clamp(0.0, k.shadows_max)
+            .round();
+        a.contrast = ((k.contrast_std - s.std) * k.contrast_gain)
+            .clamp(-25.0, 30.0)
+            .round();
     }
 
     // White and black points: stretch toward the ends without clipping.
@@ -140,18 +231,24 @@ pub fn auto_adjust(render: impl Fn(&Adjust) -> Result<RgbImage>, raw: bool) -> R
     let s = Stats::of(&render(&a)?);
     let (lo, hi) = (s.pct(0.005), s.pct(0.995));
     a.whites = if hi < 0.93 {
-        ((0.96 - hi) * 300.0).clamp(0.0, 40.0).round()
+        ((0.96 - hi) * k.whites_gain)
+            .clamp(0.0, k.whites_max)
+            .round()
     } else {
         0.0
     };
     a.blacks = if lo > 0.04 {
-        -((lo - 0.02) * 300.0).clamp(0.0, 40.0).round()
+        -((lo - 0.02) * k.blacks_gain)
+            .clamp(0.0, k.blacks_max)
+            .round()
     } else if s.below(0.01) > 0.02 {
         (s.below(0.01) * 300.0).clamp(0.0, 25.0).round()
     } else {
         0.0
     };
-    a.vibrance = ((0.22 - s.chroma) * 120.0).clamp(0.0, 25.0).round();
+    a.vibrance = ((k.vibrance_target - s.chroma) * k.vibrance_gain)
+        .clamp(0.0, k.vibrance_max)
+        .round();
 
     a.exposure = solve(&a)?;
     Ok(a)

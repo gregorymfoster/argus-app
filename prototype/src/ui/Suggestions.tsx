@@ -80,7 +80,7 @@ function TakesButton({ job, held, onMore, onCancel }: { job: TakesJob | null; he
   if (!job)
     return (
       <Button size="sm" variant="ghost" onClick={onMore} data-testid="new-takes">
-        New takes <Kbd>R</Kbd>
+        New takes <Kbd quiet>R</Kbd>
       </Button>
     );
   const running = job.status === 'running';
@@ -151,7 +151,7 @@ export function SuggestionStrip({ photo, recipe, look, list, pick, onPick, onAcc
             </Button>
           </>
         ) : (
-          list.length > 0 && <span className="faint" style={{ fontSize: 12 }}><Kbd>Tab</Kbd> to preview a take</span>
+          list.length > 0 && <span className="faint" style={{ fontSize: 12 }}><Kbd quiet>Tab</Kbd> to preview a take</span>
         )}
         <TakesButton job={job} held={held} onMore={onMore} onCancel={onCancel} />
       </div>

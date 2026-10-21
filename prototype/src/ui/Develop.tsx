@@ -6,6 +6,7 @@ import { useState, type ReactNode } from 'react';
 import { ChevronRight, Eye, EyeOff } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Kbd } from './kit';
 
 const OPEN_KEY = 'argus.develop.closed';
 
@@ -84,7 +85,7 @@ export function ToolStrip({ tools, value, onChange }: { tools: (Tool | 'gap')[];
             </TooltipTrigger>
             <TooltipContent side="left">
               {t.label}
-              {t.keys && <kbd>{t.keys}</kbd>}
+              {t.keys && <Kbd>{t.keys}</Kbd>}
             </TooltipContent>
           </Tooltip>
         ),

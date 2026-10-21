@@ -52,10 +52,14 @@ for (const f of files) {
 }
 const library = join(work, 'library');
 
+// The mock model needs no turn at the real one: a private model lock and Foreground markers,
+// so a cull Greg's app is running neither stalls this check nor holds its Queue (2026-10-20).
+const modelLockDir = mkdtempSync(join(tmpdir(), 'argus-model-'));
+const foregroundDir = mkdtempSync(join(tmpdir(), 'argus-foreground-'));
 const bridge = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
   stdio: ['ignore', 'inherit', 'inherit'],
   // No model in part 1: point Ollama at a closed port so Shoot naming falls back to the date.
-  env: { ...process.env, ARGUS_VOLUMES: volumes, ARGUS_PROVIDER: 'ollama', OLLAMA_HOST: '127.0.0.1:9', ARGUS_COMPUTE: 'gentle' },
+  env: { ...process.env, ARGUS_VOLUMES: volumes, ARGUS_PROVIDER: 'ollama', OLLAMA_HOST: '127.0.0.1:9', ARGUS_COMPUTE: 'gentle', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
 });
 const api = (p, init) => fetch(`http://127.0.0.1:7878${p}`, init).then((r) => r.json());
 for (let i = 0; ; i++) {

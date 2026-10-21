@@ -22,6 +22,7 @@
   --color-shoot: var(--shoot);
   --color-hover: var(--hover);
   --color-fill: var(--fill);
+  --color-chip: var(--chip);
   --color-fill-hover: var(--fill-hover);
   --color-press: var(--press);
   --color-selected: var(--selected);
@@ -57,6 +58,11 @@
   --border-hover: rgb(255 255 255 / 0.16);
   /* Interaction washes, layered over whatever surface is underneath. */
   --hover: rgb(255 255 255 / 0.04);
+  /* The one fill on the active item of a quiet group (sidebar row, header switch, tab): Design v3. */
+  --chip: rgb(255 255 255 / 0.075);
+  /* Sidebar and list row height, and the icon size in rows and headers. */
+  --row-h: 28px;
+  --icon: 14px;
   /* Secondary buttons and segmented controls are a soft tint with no outline, as in Claude's header
      chips (Greg, 2026-10-18: lighter, gentler outlines, fewer borders). Hover lifts the tint. */
   --fill: rgb(255 255 255 / 0.05);
@@ -111,6 +117,9 @@
 }
 
 kbd { font-family: var(--sans); font-size: 11px; font-weight: 500; color: var(--text-2); background: rgb(255 255 255 / 0.07); border: 1px solid transparent; border-radius: 4px; padding: 0 4px; min-width: 18px; height: 18px; line-height: 16px; text-align: center; display: inline-block; font-variant-numeric: tabular-nums; }
+/* A quiet key hint (<Kbd quiet>): a plain letter for bars, headers and hint lines. Keycaps stay in menus, ⌘K and
+   tooltips. The doubled class outranks the per-bar keycap sizes (.hints kbd, .imp-keys kbd) wherever they load. */
+kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 0; height: auto; padding: 0 1px; line-height: inherit; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* Motion: popovers rise and fade in; they close instantly (a power tool shouldn't make you wait, and an exit
@@ -296,7 +305,6 @@ kbd { font-family: var(--sans); font-size: 11px; font-weight: 500; color: var(--
 .suggest button { font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid transparent; background: var(--fill); color: var(--text-2); transition: background var(--fast), color var(--fast), border-color var(--fast); }
 .suggest button:hover:not(:disabled) { color: var(--text); background: var(--fill-hover); }
 .suggest button:disabled { opacity: 0.5; cursor: default; }
-
 
 /* Loupe & editor stage */
 .stage { background: var(--canvas); flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; }
@@ -570,7 +578,7 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .qp-foot { display: flex; align-items: center; gap: 7px; padding: 8px 12px; font-size: 11.5px; color: var(--text-2); }
 
 /* The grid's flag filter: tight like Lightroom's filter bar, counts small and tabular. */
-.filter-seg > button { height: 22px; padding: 0 7px; gap: 4px; }
+.filter-seg > button { height: 26px; padding: 0 8px; gap: 4px; }
 .filter-seg .n { font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--text-3); }
 
 /* Look: Before / After side by side, as in Lightroom (Y). */
@@ -728,7 +736,7 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .shoot-editing .nav-item.editing { padding: 0 3px; background: none; }
 .shoot-editing .nav-rename { margin-left: 0; height: 24px; font-size: 12px; padding: 0 6px; }
 .rename-hint { display: flex; align-items: center; gap: 4px; padding: 0 6px; font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
-.rename-hint kbd { height: 15px; min-width: 15px; line-height: 13px; font-size: 9.5px; padding: 0 3px; }
+
 .nav-import { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 6px 0 10px; margin: 6px 0 6px; border: 1px solid transparent; border-radius: 7px; background: var(--fill); color: var(--text-2); font-size: 12.5px; cursor: pointer; transition: background var(--fast), color var(--fast), border-color var(--fast); }
 .nav-import:hover, .nav-import.active { background: var(--fill-hover); color: var(--text); }
 .keys { display: inline-flex; gap: 2px; }
@@ -845,7 +853,13 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 
 /* Updates (src/ui/Updates.tsx, Settings › Updates): Restart to update, like Cursor and Claude */
 .update-button { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 10px; margin: 6px 0 0; border: 1px solid rgb(217 119 87 / 0.45); border-radius: 7px; background: rgb(217 119 87 / 0.12); color: var(--text); font-size: 12.5px; cursor: pointer; transition: background var(--fast), border-color var(--fast); }
-.update-button svg { color: var(--accent); }
+.update-button svg { color: var(--accent); flex: none; }
+/* One line at any sidebar width: the label ellipsizes, and the version (also in the tooltip) goes first. */
+.update-button { min-width: 0; white-space: nowrap; }
+.update-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.update-version { flex: none; }
+.sidebar-foot { container-type: inline-size; }
+@container (max-width: 180px) { .update-version { display: none; } }
 .update-button:hover { background: rgb(217 119 87 / 0.2); border-color: rgb(217 119 87 / 0.7); }
 .update-notes { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; line-height: 1.4; }
 .update-notes-full { margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font: 11.5px/1.5 var(--sans); color: var(--text-2); white-space: pre-wrap; }
@@ -873,11 +887,6 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 /* Design v3 (Greg, 2026-10-20, from side-by-sides with the Claude app): quieter chrome. Tokens and
    rules in docs/design.md "Design v3". Rows have no counts boxes or keycaps at rest, groups lose their
    tray, and only the active item in a group gets a chip. Kept in one block so it reads as a layer. */
-:root {
-  --chip: rgb(255 255 255 / 0.075);
-  --row-h: 28px;
-  --icon: 14px;
-}
 .sidebar { padding: 10px 8px 0; gap: 1px; }
 .sidebar .search { height: 28px; background: transparent; border: 1px solid var(--border-strong); border-radius: 7px; margin-bottom: 6px; color: var(--text-3); }
 .sidebar .search:hover { background: var(--hover); border-color: var(--border-hover); }
@@ -905,33 +914,11 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 
 /* Headers: one row of quiet controls, as in Claude's thread header. Buttons are ghost, segmented groups
    lose their tray and the active item alone gets a chip. */
-.panel-head .view-switch { background: none; padding: 0; gap: 2px; height: 26px; }
-.panel-head .view-switch button { width: 26px; border-radius: 6px; color: var(--text-3); }
-.panel-head .view-switch button.on { background: var(--chip); color: var(--text); }
-.panel-head .filter-seg { background: none; padding: 0; gap: 2px; }
-.panel-head .filter-seg > button { height: 26px; padding: 0 8px; border-radius: 6px; color: var(--text-2); }
-.panel-head .filter-seg > button:hover { background: var(--hover); color: var(--text); }
-.panel-head .filter-seg > button[data-state='on'] { background: var(--chip); box-shadow: none; color: var(--text); }
-.panel-head .filter-seg .n { color: var(--text-3); }
 .cull-head [data-slot='button'] { height: 27px; font-weight: 400; font-size: 12.5px; color: var(--text-2); }
 .cull-head [data-slot='button']:hover { color: var(--text); }
 .cull-head .thumb-size { opacity: 0.85; }
 /* Design v3 for the bars around a photo (Loupe, Compare, the Cull footer) and panel tabs. */
-.flag-seg.flag-seg { background: none; padding: 0; gap: 2px; }
-.flag-seg.flag-seg button { border-radius: 6px; padding: 0 8px; }
-.flag-seg.flag-seg button.on { background: var(--chip); }
-.flag-seg.flag-seg kbd { background: none; color: var(--text-3); min-width: 0; padding: 0; opacity: 0; transition: opacity var(--fast); }
-.flag-seg button:hover kbd { opacity: 1; }
-.hints.hints kbd { background: none; color: var(--text-2); min-width: 0; padding: 0 1px; }
-.side-tabs [role='group'] { background: none; padding: 0; gap: 2px; }
-.side-tabs [role='group'] > button { border-radius: 6px; }
-.side-tabs [role='group'] > button[data-state='on'] { background: var(--chip); box-shadow: none; }
-.panel-head kbd { background: none; color: var(--text-3); min-width: 0; padding: 0 2px; }
-/* Design v3 in Edit: Auto and B&W are ghost buttons and strip hints are plain letters. Fixes and Agent
-   prompts keep their soft fill: an outline on each would add the borders Greg asked to lose. */
-.takes > .row > span kbd, [data-testid='new-takes'] kbd { background: none; color: var(--text-3); min-width: 0; padding: 0 1px; }
 /* Design v3 in Import: the From and New/All pickers are borderless (a wash on hover), the header's key
    hints are plain letters, and Cancel is a ghost button beside the one terracotta Import. */
 .import-v2 .import-pick { border-color: transparent; background: none; }
 .import-v2 .import-pick:hover { background: var(--hover); border-color: transparent; }
-.import-v2 .imp-keys kbd, .import-v2 [data-testid='import-cancel'] kbd { background: none; color: var(--text-3); min-width: 0; padding: 0 1px; }

@@ -11,8 +11,10 @@ export const VERDICT_LABEL: Record<Verdict, string> = { pick: 'Pick', reject: 'R
 /** Lightroom's flag keys: P pick, X reject, U unflag. */
 export const VERDICT_KEYS: Record<string, Verdict> = { p: 'pick', x: 'reject', u: 'unflagged' };
 
-export function Kbd({ children }: { children: ReactNode }) {
-  return <kbd>{children}</kbd>;
+/** A key hint. Keycaps belong in menus, the ⌘K palette and tooltips; in bars, headers and hint lines use
+ * `quiet`, a plain letter with no cap (docs/design.md, Controls). */
+export function Kbd({ children, quiet }: { children: ReactNode; quiet?: boolean }) {
+  return <kbd className={quiet ? 'quiet' : undefined}>{children}</kbd>;
 }
 
 /** A menu item's shortcut, one key cap per key, pushed to the right. */
@@ -72,9 +74,11 @@ export function Slider({ label, value, min, max, step = 1, display, ai, track, d
   );
 }
 
-export function Seg<T extends string>({ value, onChange, items, label, className }: { value: T; onChange: (v: T) => void; items: { value: T; label: ReactNode; title?: string }[]; label: string; className?: string }) {
+/** A segmented choice. `quiet` for headers, tab rows and bars (no tray, one chip on the active item); the
+ * default tray for form choices in panels and Settings. */
+export function Seg<T extends string>({ value, onChange, items, label, className, quiet }: { value: T; onChange: (v: T) => void; items: { value: T; label: ReactNode; title?: string }[]; label: string; className?: string; quiet?: boolean }) {
   return (
-    <ToggleGroup type="single" value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} className={className}>
+    <ToggleGroup type="single" look={quiet ? 'quiet' : 'tray'} value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} className={className}>
       {items.map((i) => (
         <ToggleGroupItem key={i.value} value={i.value} aria-label={i.title} title={i.title}>
           {i.label}

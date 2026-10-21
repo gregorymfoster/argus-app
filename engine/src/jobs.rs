@@ -428,7 +428,8 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
                 tools.provider(a.provider.as_deref(), Some(a.compute.unwrap_or(compute)))?;
             let progress = std::sync::Mutex::new(Library::open(tools.library())?);
             let id = job.id;
-            // In Photos answered, so the bar and its ETA move inside a long request.
+            // In the Shoot's Photos, read and answered, so the bar and its ETA move
+            // inside a long request.
             let report = crate::cull::cull_shoot_with(
                 &mut lib,
                 shoot,
@@ -438,7 +439,8 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
                     crate::progress::label_here(&p.stage());
                     crate::progress::waiting_here(p.waiting.as_deref());
                     if let Ok(l) = progress.lock() {
-                        let _ = l.job_progress(id, p.photos as i64, p.photos_total as i64);
+                        let (done, total) = p.bar();
+                        let _ = l.job_progress(id, done as i64, total as i64);
                     }
                 },
             )?;

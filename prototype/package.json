@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "build:single": "vite build --mode single",
     "typecheck": "tsc -b",
+    "design-lint": "node scripts/design-lint.mjs",
     "shots": "node scripts/shots.mjs",
     "live": "node scripts/live.mjs",
     "check": "tsc -b && npm run shots",

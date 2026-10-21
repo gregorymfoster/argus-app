@@ -189,7 +189,15 @@ fn the_queue_analyses_a_shoot_and_analyze_photo_reports_it() {
         .iter()
         .find(|f| f["eyes_closed"].is_boolean());
     assert!(read.is_some_and(|f| f["focus"].is_number()), "{v}");
-    assert!(v["summary"].as_str().unwrap().contains("eyes"), "{v}");
+    // The eyes Analyzer's caption describes the main faces ("face: smiling", "2 faces all
+    // look good", "faces left to right: ...").
+    let summary = v["summary"].as_str().unwrap();
+    assert!(
+        ["face:", "look good", "looks good", "left to right"]
+            .iter()
+            .any(|w| summary.contains(w)),
+        "{v}"
+    );
 
     // The grid's badges read the same stored Facts, without computing anything.
     let flags = argus_engine::commands::dispatch(&tools, "eye_flags", json!({})).unwrap();
@@ -282,4 +290,68 @@ fn sha256(b: &[u8]) -> String {
         .iter()
         .map(|x| format!("{x:02x}"))
         .collect()
+}
+
+/// A face read with blink scores `[l, r]`, smile and jaw-open blendshapes, at `x` with `size`.
+fn face(x: f32, size: f32, blink: [f32; 2], smile: f32, jaw: f32) -> eyes::FaceRead {
+    let mut shapes = vec![0.0; 52];
+    shapes[eyes::shape::SMILE[0]] = smile;
+    shapes[eyes::shape::SMILE[1]] = smile;
+    shapes[eyes::shape::JAW_OPEN] = jaw;
+    eyes::FaceRead {
+        face: 0,
+        read: true,
+        blink,
+        eyes_closed: blink.iter().all(|&b| b > eyes::CLOSED),
+        focus: 0.5,
+        shapes,
+        turn: 0.0,
+        size,
+        x,
+    }
+}
+
+#[test]
+fn the_face_caption_says_who_looks_off_and_skips_the_background() {
+    let good = face(0.2, 0.07, [0.1, 0.1], 0.9, 0.0);
+    let half_blink = face(0.5, 0.07, [0.5, 0.55], 0.1, 0.0);
+    let mid_word = face(0.8, 0.07, [0.1, 0.1], 0.05, 0.4);
+    let laugh = face(0.4, 0.07, [0.9, 0.9], 0.95, 0.3);
+    let background = face(0.9, 0.02, [0.9, 0.9], 0.0, 0.0);
+    assert!(
+        eyes::awkward(&laugh).is_empty(),
+        "a laugh with eyes shut is the moment"
+    );
+    assert_eq!(eyes::awkward(&half_blink), ["half-blink"]);
+    assert_eq!(eyes::awkward(&mid_word), ["mouth open mid-word"]);
+    assert_eq!(
+        eyes::caption(&[good.clone(), laugh.clone(), background.clone()]).unwrap(),
+        "2 faces all look good (+1 smaller)"
+    );
+    assert_eq!(
+        eyes::caption(&[mid_word, good.clone(), half_blink]).unwrap(),
+        "3 faces, 1 looks good; 2nd from left: not smiling, half-blink; \
+         3rd from left: not smiling, mouth open mid-word"
+    );
+    assert_eq!(eyes::caption(&[good]).unwrap(), "face: smiling");
+}
+
+#[test]
+fn the_face_model_reads_expressions_and_head_turn() {
+    if !crate::has_bench() {
+        return;
+    }
+    let (_tmp, tools, photos) = library(&[OPEN, BLINK]);
+    let lib = Library::open(tools.library()).unwrap();
+    let read = |p: &str| {
+        let f = analyzers::facts(&lib, by_name(&photos, p), &["eyes"]).unwrap();
+        eyes::read(&f["eyes"])
+    };
+    let open: Vec<_> = read(OPEN).into_iter().filter(|r| r.read).collect();
+    assert_eq!(open[0].shapes.len(), 52, "every blendshape kept: {open:?}");
+    assert!(open[0].turn.abs() < 0.5, "looking at the camera: {open:?}");
+    assert!(
+        open[0].size > 0.05 && (0.0..=1.0).contains(&open[0].x),
+        "{open:?}"
+    );
 }

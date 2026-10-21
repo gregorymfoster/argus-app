@@ -406,7 +406,7 @@ impl Tools {
                 };
                 let provider = (self.providers)(a.provider.as_deref(), Some(compute))?;
                 // The app's cull bar reads this task (`progress`).
-                let task = crate::progress::Task::start("cull", "Model looking at the photos", 0);
+                let task = crate::progress::Task::start("cull", "Reading the photos", 0);
                 let _who = crate::model_lock::as_who(format!(
                     "the AI cull in {}",
                     crate::model_lock::who()
@@ -417,7 +417,8 @@ impl Tools {
                     provider.as_ref(),
                     cull::max_per_request(),
                     &|p| {
-                        task.set(p.photos, p.photos_total);
+                        let (done, total) = p.bar();
+                        task.set(done, total);
                         task.relabel(p.stage());
                         task.set_waiting(p.waiting.clone());
                     },

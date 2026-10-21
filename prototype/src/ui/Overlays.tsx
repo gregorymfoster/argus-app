@@ -7,6 +7,7 @@ import { DECISIONS, feedbackMarkdown, useVariants, type Screen } from '../store/
 import { go } from '../router';
 import { CommandDialog, CommandGroup, CommandInput, CommandFooter, CommandItem, CommandList } from '@/components/ui/command';
 import { Button } from '@/components/ui/button';
+import { Kbd } from './kit';
 
 export interface Command {
   label: string;
@@ -64,7 +65,7 @@ export function Palette({ open, onOpenChange, extra }: { open: boolean; onOpenCh
                 }}
               >
                 <span className="grow">{c.label}</span>
-                {c.hint && (c.hint.length <= 3 ? <kbd>{c.hint}</kbd> : <span className="faint" style={{ fontSize: 12 }}>{c.hint}</span>)}
+                {c.hint && (c.hint.length <= 3 ? <Kbd>{c.hint}</Kbd> : <span className="faint" style={{ fontSize: 12 }}>{c.hint}</span>)}
               </CommandItem>
             ))}
           </CommandGroup>
@@ -81,7 +82,7 @@ export function Palette({ open, onOpenChange, extra }: { open: boolean; onOpenCh
               data-testid="palette-ask"
             >
               <span className="grow">Ask the Agent: “{query.trim()}”</span>
-              <kbd>↵</kbd>
+              <Kbd>↵</Kbd>
             </CommandItem>
           </CommandGroup>
         )}

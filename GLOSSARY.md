@@ -122,6 +122,14 @@ _Avoid_: Score, grade, stars (in code)
 The AI's ranked short list of a Shoot's strongest Photos, about one in ten and never two from one Stack, named after Lightroom's Best Photos view. The cull chooses them; Photos the person rejects drop out.
 _Avoid_: Highlights, favorites, top picks
 
+**Technical check**:
+The cull's first stage: the model looks at every Photo of the Shoot and says only whether a frame is technically broken (missed focus, shake, eyes closed, exposure beyond rescue). Local models call this well, so it is all they are asked (Greg, 2026-10-20).
+_Avoid_: QC, quality check
+
+**Taste**:
+The cull's second stage, how likely the person is to keep a frame that passed the Technical check. It comes from Facts, not the model (today the main faces: smiles, and anyone who looks off), and sets the stars, the best frame of each Stack and the Best Photos (`engine::taste`).
+_Avoid_: Aesthetics, quality score
+
 **Signals**:
 Cheap measurements of each Photo (sharpness within its Shoot, brightness, clipping) that the AI reads beside the image. Hints for its judgment, never a Verdict on their own.
 _Avoid_: Scores, metrics

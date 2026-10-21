@@ -428,8 +428,8 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
                           {scan!.imported > 0 && show === 'new' ? ` · ${scan!.imported} already in, hidden` : ''}
                         </span>
                         <span>
-                          <Kbd>⌘</Kbd>
-                          <Kbd>A</Kbd>{' '}
+                          <Kbd quiet>⌘</Kbd>
+                          <Kbd quiet>A</Kbd>{' '}
                           <button className="import-link" onClick={() => setAll(true)} disabled={busy} data-testid="import-check-all">
                             all
                           </button>
@@ -439,7 +439,7 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
                           </button>
                         </span>
                         <span>
-                          <Kbd>space</Kbd> toggle
+                          <Kbd quiet>space</Kbd> toggle
                         </span>
                         <span>pinch to resize</span>
                       </span>
@@ -534,7 +534,7 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
               )
             )}
             <Button variant="ghost" onClick={() => go({ name: 'cull' })} disabled={busy} data-testid="import-cancel">
-              Cancel <Kbd>esc</Kbd>
+              Cancel <Kbd quiet>esc</Kbd>
             </Button>
             <Button variant="default" onClick={run} disabled={!canImport} data-testid="import-start">
               {busy ? 'Importing…' : `Import ${files.length}`} {!busy && <Kbd>↵</Kbd>}

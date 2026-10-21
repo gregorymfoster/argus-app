@@ -11,6 +11,12 @@
 //! far, tokens) and as a heartbeat at least every [`HEARTBEAT`], so a long request never
 //! looks stalled.
 //!
+//! A cull runs in two stages (Greg 2026-10-20). The model checks every Photo for technical
+//! failures only (blur, shake, closed eyes, ruined exposure), which local models call well;
+//! then [`crate::taste`] gives the stars, burst order and Best Photos from the Facts, because
+//! no model ranked Greg's keepers much better than chance. [`Taste::Model`] (a harness
+//! variant) asks the model for the whole cull instead.
+//!
 //! The seam is [`Provider`]: tests use a fake; the app picks one with [`provider`]:
 //! [`Ollama`] (local, default), [`ClaudeCode`] (the person's Claude plan) or [`Claude`] (API key).
 
@@ -26,7 +32,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// The Facts (ADR 0013) each Photo's caption carries.
-pub const CULL_FACTS: &[&str] = &["signals", "eyes", "embedding"];
+pub const CULL_FACTS: &[&str] = &["signals", "faces", "eyes", "embedding"];
 
 /// Image-embedding similarity at which two frames show the same scene (a burst), and at
 /// which they are near-identical. Measured on the bench: burst frames 0.85-0.95, exact
@@ -56,6 +62,68 @@ fn alike_previous(facts: &[analyzers::Facts]) -> Vec<String> {
         .collect()
 }
 
+/// Largest main face (share of the long edge) that still gets a close-up: smaller faces are
+/// too few pixels on the Contact sheet for the model to judge an expression.
+const CLOSE_UP_UNDER: f32 = 0.15;
+/// Most close-ups under one photo, and their size on the sheet.
+const CLOSE_UPS: usize = 6;
+const CLOSE_UP_PX: u32 = 160;
+
+/// Close-ups of a frame's main faces, left to right, cut from the full preview, when they
+/// are small in the frame (group shots): the strip goes under the photo on the Contact sheet
+/// so the model can see each person's expression (Greg 2026-10-20: faces are one of the
+/// biggest factors in a cull). None for frames without small main faces.
+fn face_strip(full: &image::RgbImage, facts: &analyzers::Facts) -> Option<image::RgbImage> {
+    use analyzers::eyes;
+    let faces = analyzers::faces::read(facts.get("faces")?);
+    let reads = eyes::read(facts.get("eyes")?);
+    let main = eyes::main_faces(&reads);
+    let biggest = main.iter().map(|r| r.size).fold(0.0, f32::max);
+    if main.is_empty() || biggest >= CLOSE_UP_UNDER {
+        return None;
+    }
+    let main = &main[..main.len().min(CLOSE_UPS)];
+    let tile = CLOSE_UP_PX.min(SHEET_LONG_EDGE / main.len() as u32);
+    let (w, h) = (full.width() as f32, full.height() as f32);
+    let mut strip =
+        image::RgbImage::from_pixel(tile * main.len() as u32, tile, image::Rgb([16, 16, 16]));
+    for (k, r) in main.iter().enumerate() {
+        let f = faces.get(r.face)?;
+        let side = (f.w * w).max(f.h * h) * 1.6;
+        let (cx, cy) = ((f.x + f.w / 2.0) * w, (f.y + f.h / 2.0) * h);
+        let x0 = (cx - side / 2.0).clamp(0.0, (w - side).max(0.0)) as u32;
+        let y0 = (cy - side / 2.0).clamp(0.0, (h - side).max(0.0)) as u32;
+        let side = (side as u32)
+            .min(full.width() - x0)
+            .min(full.height() - y0)
+            .max(1);
+        let crop = image::imageops::crop_imm(full, x0, y0, side, side).to_image();
+        let crop =
+            image::imageops::resize(&crop, tile, tile, image::imageops::FilterType::Triangle);
+        image::imageops::replace(&mut strip, &crop, (k as u32 * tile) as i64, 0);
+    }
+    Some(strip)
+}
+
+/// `top` with `strip` centred under it, on a dark band.
+fn below(top: &image::RgbImage, strip: &image::RgbImage) -> image::RgbImage {
+    const GAP: u32 = 4;
+    let w = top.width().max(strip.width());
+    let mut out = image::RgbImage::from_pixel(
+        w,
+        top.height() + GAP + strip.height(),
+        image::Rgb([16, 16, 16]),
+    );
+    image::imageops::replace(&mut out, top, ((w - top.width()) / 2) as i64, 0);
+    image::imageops::replace(
+        &mut out,
+        strip,
+        ((w - strip.width()) / 2) as i64,
+        (top.height() + GAP) as i64,
+    );
+    out
+}
+
 /// Long edge of the previews a Provider sees. Cloud Providers never get more (spec 39).
 pub const SHEET_LONG_EDGE: u32 = 768;
 
@@ -71,6 +139,10 @@ pub struct SheetPhoto {
     pub sharpness_pct: u8,
     /// What the other specialist models add ("2 faces, all eyes open, faces sharp").
     pub facts: String,
+    /// How likely the person keeps it, from its faces ([`crate::taste::score`]).
+    pub taste: f32,
+    /// Which burst it belongs to (a run of look-alike frames shot seconds apart), if any.
+    pub burst: Option<usize>,
 }
 
 impl SheetPhoto {
@@ -119,6 +191,23 @@ impl ContactSheet {
         })?;
         let facts = analyzers::facts_for(lib, &photos, CULL_FACTS)?;
         let alike = alike_previous(&facts);
+        let taste: Vec<f32> = facts.iter().map(crate::taste::score).collect();
+        let frames: Vec<crate::bursts::Frame> = photos
+            .iter()
+            .zip(&facts)
+            .zip(&taste)
+            .map(|((p, f), &t)| crate::bursts::Frame {
+                id: p.id,
+                at: seconds(&p.captured_at),
+                embedding: f.get("embedding").and_then(analyzers::embedding::vector),
+                quality: t,
+            })
+            .collect();
+        let burst_of: HashMap<PhotoId, usize> = crate::bursts::group(&frames)
+            .into_iter()
+            .enumerate()
+            .flat_map(|(b, ids)| ids.into_iter().map(move |id| (id, b)))
+            .collect();
         use rayon::prelude::*;
         let photos = photos
             .par_iter()
@@ -127,7 +216,13 @@ impl ContactSheet {
             .map(|(i, (p, f))| {
                 let img = image::open(&p.preview)
                     .map_err(|e| Error(format!("preview {}: {e}", p.preview.display())))?;
+                let full = img.to_rgb8();
                 let img = img.thumbnail(SHEET_LONG_EDGE, SHEET_LONG_EDGE).to_rgb8();
+                let strip = face_strip(&full, f);
+                let img = match &strip {
+                    Some(strip) => below(&img, strip),
+                    None => img,
+                };
                 let mut jpeg = Vec::new();
                 jpeg_encoder::Encoder::new(&mut jpeg, 80)
                     .encode(
@@ -139,6 +234,7 @@ impl ContactSheet {
                     .map_err(|e| Error(format!("sheet encode: {e}")))?;
                 let mut rest = f.clone();
                 rest.remove("embedding");
+                rest.remove("faces"); // the eyes caption counts and describes them
                 let signals = rest
                     .remove("signals")
                     .map(|s| analyzers::signals::read(&s))
@@ -151,11 +247,20 @@ impl ContactSheet {
                     jpeg,
                     signals,
                     sharpness_pct: 50,
-                    facts: [analyzers::caption(&rest), alike[i].clone()]
-                        .into_iter()
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    taste: taste[i],
+                    burst: burst_of.get(&p.id).copied(),
+                    facts: [
+                        analyzers::caption(&rest),
+                        alike[i].clone(),
+                        strip
+                            .as_ref()
+                            .map(|_| "close-ups of these faces under the photo".into())
+                            .unwrap_or_default(),
+                    ]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 })
             })
             .collect::<Result<Vec<SheetPhoto>>>()?;
@@ -203,6 +308,8 @@ impl ContactSheet {
                     signals: p.signals,
                     sharpness_pct: p.sharpness_pct,
                     facts: p.facts.clone(),
+                    taste: p.taste,
+                    burst: p.burst,
                 }
             })
             .collect();
@@ -258,6 +365,12 @@ pub trait Provider {
     fn local_model(&self) -> bool {
         false
     }
+
+    /// Roughly how many seconds it takes to read one Photo of a sheet before it starts
+    /// replying, for a bar that moves while a local model reads (None: no guess).
+    fn read_pace(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// How much of its reply the model has sent in the request running now.
@@ -307,6 +420,12 @@ pub struct CullProgress {
     pub elapsed_s: u64,
     /// What it waits on before the model is free ("`argus cull` is using the model").
     pub waiting: Option<String>,
+    /// Photos the model has read, of `photos_total`: finished requests' and, while it
+    /// reads the running one before replying, an estimate at its reading pace. Reading a
+    /// sheet takes a local model many minutes with no word from it.
+    pub read: usize,
+    /// Photos in the Shoot, the scale [`CullProgress::bar`] reports on.
+    pub shoot: usize,
 }
 
 impl CullProgress {
@@ -316,15 +435,30 @@ impl CullProgress {
             return format!("Waiting: {w}");
         }
         if self.done >= self.total {
-            "Saving the cull"
-        } else if self.tokens == 0 {
-            "Model looking at the photos"
-        } else if self.total > 1 && self.done + 1 == self.total {
-            "Choosing Best Photos"
+            return "Saving the cull".into();
+        }
+        if self.total > 1 && self.done + 1 == self.total {
+            return "Choosing Best Photos".into();
+        }
+        let doing = if self.tokens == 0 {
+            "Reading the photos"
         } else {
             "Culling"
+        };
+        if self.total > 1 {
+            format!("{doing}, part {} of {}", self.done + 1, self.total - 1)
+        } else {
+            doing.into()
         }
-        .into()
+    }
+
+    /// Where a progress bar stands, in the Shoot's Photos: reading a Photo is half its
+    /// work and answering for it the other half, across every request (the Best Photos
+    /// pass included), so the bar and its ETA move from the first minute.
+    pub fn bar(&self) -> (usize, usize) {
+        let total = self.photos_total.max(1) * 2;
+        let work = (self.read + self.photos).min(total);
+        (self.shoot * work / total, self.shoot)
     }
 
     /// One line for logs, as `scripts/progress` reads it: `::progress 37/300 cull: ...`.
@@ -348,6 +482,10 @@ impl CullProgress {
 /// (reading the Contact sheet, or paused by Gentle). ARGUS_CULL_HEARTBEAT_MS overrides.
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
+/// The reading pace (seconds per Photo) the last cull in this process measured, so the
+/// next one's first request starts from it rather than a guess. Stored as f64 bits.
+static MEASURED_PACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A cull's progress so far, shared by the request and the heartbeat.
 struct Live {
     started: Instant,
@@ -355,12 +493,25 @@ struct Live {
     /// Photos answered in finished requests, and the size of the one running.
     base: usize,
     asking: usize,
+    /// When the running request was sent, and seconds per Photo it is expected to read.
+    asked_at: Option<Instant>,
+    pace: Option<f64>,
 }
 
 impl Live {
     fn snapshot(&self) -> CullProgress {
+        let reading = match (self.asked_at, self.pace) {
+            _ if self.asking == 0 => 0,
+            _ if self.p.tokens > 0 => self.asking,
+            // Never claims a sheet read before the model says so.
+            (Some(at), Some(pace)) if self.p.waiting.is_none() => {
+                ((at.elapsed().as_secs_f64() / pace) as usize).min(self.asking * 9 / 10)
+            }
+            _ => 0,
+        };
         CullProgress {
             elapsed_s: self.started.elapsed().as_secs(),
+            read: (self.base + reading).min(self.p.photos_total),
             ..self.p.clone()
         }
     }
@@ -388,9 +539,18 @@ impl Reporter<'_> {
         self.update(|l| {
             l.asking = n;
             l.p.tokens = 0;
+            l.asked_at = Some(Instant::now());
         });
         let r = provider.cull_streaming(sheet, &|s: Streamed| {
             let mut l = self.live.lock().unwrap();
+            if l.p.tokens == 0 && s.tokens > 0 && l.asking >= 5 {
+                // The model has read the sheet: its real pace sets the next request's.
+                if let Some(at) = l.asked_at {
+                    let pace = at.elapsed().as_secs_f64() / l.asking as f64;
+                    l.pace = Some(pace);
+                    MEASURED_PACE.store(pace.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             l.p.tokens = s.tokens;
             let photos = (l.base + s.photos.min(l.asking)).min(l.p.photos_total);
             if photos != l.p.photos {
@@ -402,6 +562,7 @@ impl Reporter<'_> {
         let mut l = self.live.lock().unwrap();
         l.base += l.asking;
         l.asking = 0;
+        l.asked_at = None;
         l.p.photos = l.base.min(l.p.photos_total);
         r
     }
@@ -437,6 +598,7 @@ pub fn cull_shoot_with(
 ) -> Result<CullReport> {
     let sheet = ContactSheet::build(lib, shoot)?;
     let result = cull_sheet(&sheet, provider, max, progress)?;
+    let result = crate::taste::rate(&sheet, result);
     apply(lib, &sheet, &result)
 }
 
@@ -474,9 +636,16 @@ pub fn cull_sheet(
                 tokens: 0,
                 elapsed_s: 0,
                 waiting: None,
+                read: 0,
+                shoot: n,
             },
             base: 0,
             asking: 0,
+            asked_at: None,
+            pace: match f64::from_bits(MEASURED_PACE.load(std::sync::atomic::Ordering::Relaxed)) {
+                p if p > 0.0 => Some(p),
+                _ => provider.read_pace(),
+            },
         }),
         progress,
     };
@@ -521,6 +690,7 @@ pub fn cull_sheet(
             rep.update(|l| {
                 l.p.done = l.p.total;
                 l.p.photos = l.p.photos_total;
+                l.p.read = l.p.photos_total;
             });
         }
         r
@@ -572,6 +742,9 @@ fn cull_chunks(
     candidates.sort_by_key(|&(b, stars, n)| (b, std::cmp::Reverse(stars), n));
     candidates.dedup_by_key(|c| c.2);
     candidates.truncate(max);
+    // About one Photo in ten of the whole Shoot. The final pass sees only the candidates,
+    // and the prompt's "one in ten" of those once left 3 Best Photos for 261 frames.
+    let target = (sheet.photos.len() / 10).max(1);
     let mut best: Vec<usize> = Vec::new();
     if candidates.len() > 1 {
         rep.update(|l| l.p.photos_total = l.base + candidates.len());
@@ -582,8 +755,9 @@ fn cull_chunks(
             format!(
                 "They are the strongest candidates from a {}-photo shoot, already culled in \
                  parts. Rate them against each other and choose the shoot's Best Photos \
-                 from them.",
-                sheet.photos.len()
+                 from them: about {target} of these {} photos, not one in ten of them.",
+                sheet.photos.len(),
+                candidates.len()
             ),
         );
         let r = rep.ask(provider, &sub)?;
@@ -597,8 +771,14 @@ fn cull_chunks(
     } else {
         rep.update(|l| l.p.photos_total = l.base);
     }
-    if best.is_empty() {
-        best = candidates.iter().map(|c| c.2).collect();
+    // A model that names too few is topped up from the chunks' own choices, in order.
+    for c in &candidates {
+        if best.len() >= target {
+            break;
+        }
+        if !best.contains(&c.2) {
+            best.push(c.2);
+        }
     }
     for (rank, n) in best.iter().enumerate() {
         if let Some(c) = photos.iter_mut().find(|c| c.n == *n) {
@@ -863,17 +1043,113 @@ pub fn result_schema() -> Value {
     })
 }
 
-/// The cull system prompt: SYSTEM, or the `cull` of the harness variant ARGUS_VARIANT names
-/// (an unreadable variant file is reported and the cull uses SYSTEM).
-fn system() -> String {
+/// JSON Schema for a technical-only cull ([`Taste::Signals`]): a Verdict and a reason per
+/// Photo, nothing about taste. It parses as a [`CullResult`] with no stars, Stacks or Best Photos.
+pub fn technical_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "photos"],
+        "properties": {
+            "summary": { "type": "string" },
+            "photos": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["n", "verdict", "reason"],
+                    "properties": {
+                        "n": { "type": "integer" },
+                        "verdict": { "type": "string", "enum": ["reject", "unflagged"] },
+                        "reason": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Who rates taste in a cull. `Signals` (the default) asks the model only for technical
+/// failures and leaves stars, burst order and Best Photos to [`crate::taste`]; `Model` asks the
+/// model for all of it, as culls did before 2026-10-20.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Taste {
+    Signals,
+    Model,
+}
+
+/// The cull's split: the harness variant's `cull_taste`, else `Model` when the variant brings
+/// its own `cull` prompt (written for the whole job), else `Signals`.
+pub fn taste() -> Taste {
     match crate::variant::current() {
-        Ok(v) => v.cull.unwrap_or_else(|| SYSTEM.into()),
+        Ok(v) => v.cull_taste.unwrap_or(if v.cull.is_some() {
+            Taste::Model
+        } else {
+            Taste::Signals
+        }),
+        Err(_) => Taste::Signals,
+    }
+}
+
+/// The schema a Provider answers in, for [`taste`].
+pub fn schema() -> Value {
+    match taste() {
+        Taste::Signals => technical_schema(),
+        Taste::Model => result_schema(),
+    }
+}
+
+/// The last line of a request.
+fn ask() -> &'static str {
+    match taste() {
+        Taste::Signals => "Check every photo of this shoot for technical failures.",
+        Taste::Model => "Cull and rate this shoot.",
+    }
+}
+
+/// The cull system prompt: the `cull` of the harness variant ARGUS_VARIANT names, else TECHNICAL
+/// or SYSTEM for [`taste`] (an unreadable variant file is reported and the built-in one is used).
+fn system() -> String {
+    let built_in = || match taste() {
+        Taste::Signals => TECHNICAL.to_string(),
+        Taste::Model => SYSTEM.to_string(),
+    };
+    match crate::variant::current() {
+        Ok(v) => v.cull.unwrap_or_else(built_in),
         Err(e) => {
             eprintln!("argus cull: {e}; using the built-in prompt");
-            SYSTEM.into()
+            built_in()
         }
     }
 }
+
+/// The technical stage's prompt: only what is broken, never what is good.
+const TECHNICAL: &str = "You check photo shoots for technical failures, for a photographer \
+who does the real cull afterwards. You see every photo of one shoot, in capture order. Your \
+only job is to find frames that are technically broken. Whether a sound frame is a good photo \
+is not your call: other tools rate that, so never judge composition, moment or mood.
+
+For each photo give a Verdict:
+- reject: only a frame with a concrete technical flaw you can name: missed focus or motion \
+blur on the subject, camera shake, the main subject's eyes fully closed when they aren't \
+laughing (a half-blink is not a technical failure: leave it, other tools weigh it), exposure beyond rescue (the subject blown to white or lost in black), or the \
+main subject cut off by the frame edge in a way no crop can fix. A wrong reject hides a \
+keeper from the photographer, so when in doubt, don't.
+- unflagged: every other frame, including ordinary ones, weaker versions of another frame and \
+deliberately soft, dark or moody frames.
+
+Each photo comes with measured signals: sharpness as a percentile within this shoot (low means \
+softer than most frames here), mean brightness from 0 to 1, and the share of clipped highlights \
+and crushed shadows. Treat them as hints beside your own eyes: a low sharpness percentile backs \
+up a frame that looks soft, but a shallow-focus portrait can be low and still sharp where it \
+matters. A face model reads the main faces left to right (smiling or not, half-blink, eyes \
+closed, soft); check it against the image. When the faces are small in the frame, close-ups of \
+them, left to right, sit under the photo.
+
+Give every reject a reason of two or three words a photographer can scan in a grid, like \
+\"missed focus\", \"eyes closed\", \"motion blur\", \"blown out\"; give every other photo the \
+reason \"ok\". The summary is one plain sentence to the photographer about what you found.";
 
 const SYSTEM: &str = "You cull photo shoots for a photographer. You see every photo of one \
 shoot, in capture order, before deciding anything, and you judge each photo against the \
@@ -897,7 +1173,7 @@ Rate every photo with Lightroom stars, judged against the rest of this shoot:
 - 5: one of the very best of the shoot, a frame worth printing. Most shoots have only a few.
 - 4: excellent, clearly worth editing and sharing.
 - 3: a good, solid keeper.
-- 2: usable but flawed, or a weaker version of a better frame.
+- 2: usable but flawed, a weaker version of a better frame, or someone looks off in it.
 - 1: a technical failure (and only then a reject).
 Use the whole range: spread the shoot across 2 to 5 so the photographer can sort by stars.
 
@@ -910,10 +1186,18 @@ Each photo comes with measured signals: sharpness as a percentile within this sh
 softer than most frames here), mean brightness from 0 to 1, and the share of clipped \
 highlights and crushed shadows. Treat them as hints beside your own eyes: a low sharpness \
 percentile backs up a frame that looks soft, but a deliberate shallow-focus or dark, moody \
-frame can still be among the best. Where there are faces near enough to read, a face model \
-adds whether eyes are closed and whether the faces are sharp (focus on the eyes compared with \
-the sharpest part of the frame). A blink is usually 1 or 2 stars when a near-identical frame \
-has open eyes, but closed eyes in a kiss or a laugh can be the moment. An image model also notes \
+frame can still be among the best.
+
+Faces matter most. For every frame with people, ask of each person: would they be happy with \
+how they look in this photo, or would they ask you not to share it? A half-blink, eyes shut \
+without a laugh, a mouth caught mid-word, an awkward grimace, looking down, a face turned away \
+or soft focus on a face makes a frame weaker, even when everything else is good. In a burst or \
+group shot, rank highest the frame where everyone looks good, and rate a frame below the \
+others when someone in it looks off and a near-identical frame has them looking good. Natural \
+expressions are the goal: closed eyes in a real laugh or a kiss can be the moment. A face model \
+reads the main faces left to right (smiling or not, half-blink, mouth open mid-word, looking \
+down, turned away, soft); treat it as a hint and check it against the image. When the faces \
+are small in the frame, close-ups of them, left to right, sit under the photo. An image model also notes \
 when a photo shows the same scene as the one before it (likely the same Stack) or is \
 near-identical to it.
 
@@ -970,9 +1254,9 @@ impl Claude {
         }
         content.push(json!({
             "type": "text",
-            "text": "Cull and rate this shoot. Return every photo number exactly once."
+            "text": format!("{} Return every photo number exactly once.", ask())
         }));
-        let schema = result_schema();
+        let schema = schema();
         Ok(json!({
             "model": self.model,
             "max_tokens": 16000,
@@ -1177,16 +1461,21 @@ impl Ollama {
             }));
         }
         messages.push(json!({ "role": "user", "content": format!(
-            "Cull and rate this shoot. Return JSON with every photo number from 1 to {} exactly once.",
-            sheet.photos.len()) }));
-        json!({
+            "{} Return JSON with every photo number from 1 to {} exactly once.",
+            ask(), sheet.photos.len()) }));
+        let mut body = json!({
             "model": self.model,
             "stream": true,
-            "format": result_schema(),
+            "format": schema(),
             "keep_alive": "30m",
             "options": self.options(),
             "messages": messages
-        })
+        });
+        // A harness variant can turn thinking on or off (bench/tune.py); unset, Ollama decides.
+        if let Some(think) = crate::variant::current().ok().and_then(|v| v.think) {
+            body["think"] = json!(think);
+        }
+        body
     }
 
     /// Model options. Any difference makes Ollama reload the model, so the load request
@@ -1421,11 +1710,25 @@ impl Stall {
         }
     }
 
-    /// For a cull of `photos` at `compute`: 5 min plus 6 s a Photo at Full to read the
-    /// sheet (a 100-Photo chunk read in about 5 min on Greg's M4 Max, 2026-10-19), twice
-    /// that at Balanced and four times at Gentle, whose pauses slow the read.
-    pub fn for_cull(photos: usize, compute: Compute) -> Self {
-        let full = 300 + 6 * photos as u64;
+    /// For a cull of `sheet` at `compute`: 5 min plus the time to read the sheet's prompt
+    /// at half the 63 tokens/s Qwen 3.8 27B read at Full on Greg's M4 Max (2026-10-20:
+    /// 41.7k tokens in 657 s), twice that at Balanced and four times at Gentle, whose
+    /// pauses slow the read. Image tokens follow pixels (one per 28x28 patch), so bigger
+    /// previews and face close-ups get longer; a flat 6 s a Photo once timed out on them.
+    pub fn for_cull(sheet: &ContactSheet, compute: Compute) -> Self {
+        let tokens: u64 = sheet
+            .photos
+            .iter()
+            .map(|p| {
+                let (w, h) = image::ImageReader::new(std::io::Cursor::new(&p.jpeg))
+                    .with_guessed_format()
+                    .ok()
+                    .and_then(|r| r.into_dimensions().ok())
+                    .unwrap_or((SHEET_LONG_EDGE, SHEET_LONG_EDGE * 2 / 3));
+                150 + u64::from(w) * u64::from(h) / (28 * 28)
+            })
+            .sum();
+        let full = 300 + tokens / 30;
         let factor = match compute {
             Compute::Full => 1,
             Compute::Balanced => 2,
@@ -1455,11 +1758,21 @@ impl Provider for Ollama {
         self.cull_streaming(sheet, &|_| {})
     }
 
+    /// Qwen 3.8 27B read a 67-Photo sheet at about 12 s a Photo at Gentle on Greg's Mac
+    /// (2026-10-20, 45 prompt tokens/s); faster levels scale by their share of the Mac.
+    fn read_pace(&self) -> Option<f64> {
+        Some(match self.compute {
+            Compute::Full => 4.0,
+            Compute::Balanced => 7.0,
+            Compute::Gentle => 12.0,
+        })
+    }
+
     fn cull_streaming(&self, sheet: &ContactSheet, seen: &dyn Fn(Streamed)) -> Result<CullResult> {
         // A cull holds the model for many minutes: background Queues in this and other
         // Argus processes start nothing new meanwhile, so they don't share the model.
         let _foreground = crate::compute::Foreground::begin();
-        let stall = Stall::for_cull(sheet.photos.len(), self.compute);
+        let stall = Stall::for_cull(sheet, self.compute);
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(12 * 3600)) // slow is fine; Gentle can take hours
             // Ends a reading thread that `stream_within` gave up on.
@@ -1531,7 +1844,7 @@ impl Provider for ClaudeCode {
              (no prose, no code fence) matching this JSON Schema, with every photo number exactly once:\n{}",
             system(),
             sheet.intro(),
-            result_schema()
+            schema()
         );
         let t = Instant::now();
         let out = std::process::Command::new(&self.bin)

@@ -103,10 +103,14 @@ const mock = httpServer((req, res) => {
   });
 }).listen(7879, '127.0.0.1');
 
+// The mock model needs no turn at the real one: a private model lock and Foreground markers,
+// so a cull Greg's app is running neither stalls this check nor holds its Queue (2026-10-20).
+const modelLockDir = mkdtempSync(join(tmpdir(), 'argus-model-'));
+const foregroundDir = mkdtempSync(join(tmpdir(), 'argus-foreground-'));
 const bridge = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
   stdio: ['ignore', 'inherit', 'inherit'],
   // Full: never throttle (pause) a real Ollama on this machine during a smoke test.
-  env: { ...process.env, ARGUS_PROVIDER: 'ollama', OLLAMA_HOST: '127.0.0.1:7879', ARGUS_COMPUTE: 'full', ARGUS_REFINE_ROUNDS: '1' },
+  env: { ...process.env, ARGUS_PROVIDER: 'ollama', OLLAMA_HOST: '127.0.0.1:7879', ARGUS_COMPUTE: 'full', ARGUS_REFINE_ROUNDS: '1', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
 });
 const api = (p, init) => fetch(`http://127.0.0.1:7878${p}`, init).then((r) => r.json());
 for (let i = 0; ; i++) {

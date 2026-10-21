@@ -45,8 +45,12 @@ await new Promise((r) => mock.listen(0, r));
 
 const failures = [];
 const check = (ok, msg) => (ok ? console.log(`ok   ${msg}`) : (failures.push(msg), console.log(`FAIL ${msg}`)));
+// The mock model needs no turn at the real one: a private model lock and Foreground markers,
+// so a cull Greg's app is running neither stalls this check nor holds its Queue (2026-10-20).
+const modelLockDir = mkdtempSync(join(tmpdir(), 'argus-model-'));
+const foregroundDir = mkdtempSync(join(tmpdir(), 'argus-foreground-'));
 const serve = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
-  env: { ...process.env, ARGUS_VOLUMES: volumes, OLLAMA_HOST: `127.0.0.1:${mock.address().port}`, ARGUS_PROVIDER: 'ollama', ARGUS_COMPUTE: 'full' },
+  env: { ...process.env, ARGUS_VOLUMES: volumes, OLLAMA_HOST: `127.0.0.1:${mock.address().port}`, ARGUS_PROVIDER: 'ollama', ARGUS_COMPUTE: 'full', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
 const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5198, strictPort: true }, logLevel: 'error' });

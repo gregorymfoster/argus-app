@@ -161,18 +161,13 @@ fn a_shoot_gets_suggestions_picks_first_rejects_skipped_and_nothing_changes_unti
     assert_eq!(proposals(&seen), 3, "one proposal request per Photo");
     assert_eq!(
         seen.lock().unwrap().len(),
-        6,
-        "one review round each: the scripted model returns the same takes, so they stop"
+        3,
+        "no review round by default, even at Full"
     );
     assert_eq!(
         seen.lock().unwrap()[0].1,
         2,
         "a fresh Suggestion shows the model the Photo and Auto's edit"
-    );
-    assert_eq!(
-        seen.lock().unwrap()[1].1,
-        4,
-        "a review shows the Photo before and each of the three takes"
     );
 
     let rejected = json1(&tools, "list_suggestions", json!({ "photo_id": ids[1] }));
@@ -996,7 +991,11 @@ fn model_work_waits_for_an_idle_mac_unless_told_to_run_now() {
 
     let s = json1(&tools, "queue_status", json!({}));
     assert_eq!(s["idle_only"], json!(true));
-    assert_eq!(s["waiting_for_idle"], json!(s["boost"].is_null()));
+    // Only overnight lets every model job through; an idle Mac still holds long runs.
+    assert_eq!(
+        s["waiting_for_idle"],
+        json!(s["boost"] != json!("overnight"))
+    );
     let s = json1(&tools, "set_queue", json!({ "run_now": true }));
     assert_eq!(
         (s["run_now"].clone(), s["waiting_for_idle"].clone()),

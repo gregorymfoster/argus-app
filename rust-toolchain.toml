@@ -1,0 +1,7 @@
+# One Rust for the Mac and cloud sessions, so clippy flags the same lints in both places
+# (v0.1.4 hit five clippy errors only the Mac's newer Rust caught). rustup installs it on
+# first use; bump it here when the Mac updates. See docs/agents/build-speed.md.
+[toolchain]
+channel = "1.99"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

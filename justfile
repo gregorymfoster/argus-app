@@ -18,6 +18,7 @@ check:
     scripts/cached clippy {{rust_inputs}} -- scripts/progress clippy -- cargo clippy --workspace --all-targets --profile fast -- -D warnings
     scripts/cached test {{rust_inputs}} -- scripts/progress test -- cargo test --workspace --profile fast
     scripts/cached install-sh --in scripts/release/install.sh --in scripts/release/install.test.sh --in scripts/release/stamp-install.sh -- scripts/release/install.test.sh
+    scripts/cached design-lint --in prototype/src --in prototype/scripts/design-lint.mjs --in prototype/scripts/design-lint-baseline.json -- node prototype/scripts/design-lint.mjs
     @ls fixtures/raw/*.ARW >/dev/null 2>&1 || echo "warning: fixtures/raw is empty, so golden and RAW tests were SKIPPED (see CLAUDE.md for getting the RAWs)"
 
 # Render a RAW to out/<stem>.jpg (JPEG q90 by default) and print timings. e.g. `just render fixtures/raw/DSC03945.ARW --long-edge 2048`
@@ -74,11 +75,13 @@ app:
 
 # Drive the real desktop app end to end over WebDriver (Linux + Xvfb; needs tauri-driver and webkit2gtk-driver). Screens land in out/shots/app-*.png.
 app-e2e:
-    cd app && ../scripts/progress app-e2e --stall 1200 -- sh -c 'npm install --no-audit --no-fund && npm run e2e'
+    scripts/cached app-npm-install --in app/package.json --in app/package-lock.json --out app/node_modules -- sh -c 'cd app && npm install --no-audit --no-fund'
+    cd app && ../scripts/progress app-e2e --stall 1200 -- npm run e2e
 
 # The first part of app-e2e only (Import from a card, grid previews, one flag written to the Library), for iterating; run the full app-e2e before landing.
 app-e2e-quick:
-    cd app && ../scripts/progress app-e2e-quick --stall 1200 -- sh -c 'npm install --no-audit --no-fund && npm run e2e:quick'
+    scripts/cached app-npm-install --in app/package.json --in app/package-lock.json --out app/node_modules -- sh -c 'cd app && npm install --no-audit --no-fund'
+    cd app && ../scripts/progress app-e2e-quick --stall 1200 -- npm run e2e:quick
 
 # Install what app-e2e needs in a fresh Linux cloud container (WebKit, Xvfb, tauri-driver) and warm the app build. About 6 minutes.
 app-e2e-setup:
@@ -92,10 +95,33 @@ app-e2e-setup:
 release-local version *mode:
     scripts/progress release --stall 3600 -- scripts/release/local.sh {{version}} {{mode}}
 
-# The Mac check, with no screen control: real engine + the app's UI headless in WebKit (Import from a fake RAW+JPEG card, Esc, ⌘, Settings › Library, grid, flags, AI cull, Agent edit, Undo). Background priority. MAC_E2E_LIBRARY=<dir> also opens that Library read-only. e.g. `just mac-e2e`
+# Everything before publishing, as one unattended job on the Mac: `just check`, then `just mac-e2e` and the release build side by side (they share no build folder; the UI's npm install and Vite build run first so neither repeats them). Saves the agent round trip (up to a 5 min poll) between steps and the e2e's minute. Publish afterwards with `just release-local X.Y.Z --publish-only`, or use `just ship`.
+release-candidate version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just check
+    scripts/cached prototype-npm --in prototype/package.json --in prototype/package-lock.json --out prototype/node_modules -- sh -c 'cd prototype && npm install --no-audit --no-fund --silent'
+    # Same command as app/tauri.conf.json's beforeBuildCommand, so the release build then skips it.
+    (cd prototype && ../scripts/cached prototype-build --in prototype --out prototype/dist/index.html -- sh -c 'npm install --no-audit --no-fund && npm run build')
+    mkdir -p out/logs
+    just mac-e2e > out/logs/rc-mac-e2e.out 2>&1 & e2e=$!
+    trap 'kill $e2e 2>/dev/null || true' EXIT
+    just release-local {{version}} --build-only
+    if wait $e2e; then echo "mac-e2e passed"; else tail -n 30 out/logs/rc-mac-e2e.out; echo "release-candidate: mac-e2e failed (out/logs/mac-e2e.log), so don't publish {{version}}" >&2; exit 1; fi
+    trap - EXIT
+    echo "release-candidate: {{version}} is built and checked; publish with just release-local {{version}} --publish-only"
+
+# Release in one go (Greg, 2026-10-20: one "ship it" covers build and publish): release-candidate, then publish, then a dry run of the stamped installer this release uploaded. Publishing is public, so run it only on Greg's word. The public-export sync stays a separate, looked-at step.
+ship version:
+    just release-candidate {{version}}
+    just release-local {{version}} --publish-only
+    bash out/release/v{{version}}/install.sh --dry-run --no-open
+
+# The Mac check, with no screen control: real engine + the app's UI headless in WebKit (Import from a fake RAW+JPEG card, Esc, ⌘, Settings › Library, grid, flags, AI cull, Agent edit, Undo). Builds at gentle priority (Greg, 2026-10-20). MAC_E2E_LIBRARY=<dir> also opens that Library read-only. e.g. `just mac-e2e`
 mac-e2e *raws:
-    scripts/progress build-cli -- {{ if os() == "macos" { "taskpolicy -b nice -n 20" } else { "" } }} cargo build --profile fast -p argus-cli -j 2
-    cd prototype && npm install --no-audit --no-fund --silent {{ if os() == "macos" { "&& npx playwright install webkit" } else { "" } }}
+    scripts/progress build-cli -- {{ if os() == "macos" { "taskpolicy -c utility nice -n 10" } else { "" } }} cargo build --profile fast -p argus-cli
+    scripts/cached prototype-npm --in prototype/package.json --in prototype/package-lock.json --out prototype/node_modules -- sh -c 'cd prototype && npm install --no-audit --no-fund --silent'
+    {{ if os() == "macos" { "cd prototype && npx playwright install webkit" } else { "true" } }}
     cd prototype && ../scripts/progress mac-e2e -- ../scripts/timeout 900 node scripts/mac-e2e.mjs {{raws}}
 
 # Rebase onto origin/main, run `just check`, push to main (retries; works from any branch). LAND_SKIP_CHECK=1 for docs-only changes.

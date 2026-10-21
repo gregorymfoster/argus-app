@@ -149,21 +149,17 @@ Reply with only JSON: {\"suggestions\": [{\"see\": \"...\", \"title\": \"...\", 
 
 ";
 
-/// Review rounds after the first proposal: render, look, critique, adjust. On the edit
-/// bench (2026-10-18, claude-code) two rounds left the first take's dE unchanged (7.57) and
-/// the best take a touch further from Greg (6.90 -> 6.99) while doubling the time per Photo,
-/// so only Full (overnight, idle) spends one. `ARGUS_REFINE_ROUNDS` overrides.
-pub fn rounds(compute: Compute) -> usize {
-    if let Some(n) = std::env::var("ARGUS_REFINE_ROUNDS")
+/// Review rounds after the first proposal: render, look, critique, adjust. None by default.
+/// On the edit bench two rounds left Claude's first take unchanged (2026-10-18), and on
+/// 2026-10-20 the round made both Qwen runs and a 30-Photo Claude run slightly worse by dE
+/// (Claude first 10.53 -> 10.60), while the Claude judge preferred the unreviewed take 7-1
+/// where the round changed it. It also doubles the time per Photo. A variant's `rounds` or
+/// `ARGUS_REFINE_ROUNDS` turns it back on.
+pub fn rounds(_compute: Compute) -> usize {
+    std::env::var("ARGUS_REFINE_ROUNDS")
         .ok()
         .and_then(|v| v.parse().ok())
-    {
-        return n;
-    }
-    match compute {
-        Compute::Gentle | Compute::Balanced => 0,
-        Compute::Full => 1,
-    }
+        .unwrap_or(0)
 }
 
 /// One take as the loop carries it: the model's words, its sliders and how it renders.
@@ -289,6 +285,28 @@ pub fn suggest_photo(
         } else {
             vec![]
         };
+        // The person's own finished edits of scenes like this one, so the takes lean toward
+        // their taste (a missing render costs that exemplar, not the Suggestions).
+        let n = v.exemplars.unwrap_or(crate::exemplars::DEFAULT);
+        let lib = Library::open(tools.library())?;
+        for (id, sim) in crate::exemplars::find(&lib, a.photo_id, n)? {
+            let Some(r) = lib.read_recipe(id)? else {
+                continue;
+            };
+            let Ok(r) = Recipe::from_value(&r.recipe) else {
+                continue;
+            };
+            if let Ok((img, _)) = render(tools, id, Some(&r)) {
+                images.push(img);
+                text += &format!(
+                    "The photographer's own finished edit of a similar scene (image {}, similarity {sim:.2}): {}. \
+                     Let it show you their taste in brightness, contrast and colour; this Photo still gets what it needs.\n",
+                    images.len(),
+                    crate::exemplars::describe(&r)
+                );
+            }
+        }
+        drop(lib);
         if !style.is_empty() {
             text += &format!(
                 "\nThis photographer's own habit, learned from how they finished earlier takes, goes on top of each \

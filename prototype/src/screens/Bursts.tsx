@@ -142,6 +142,7 @@ export function BurstsScreen({ start }: { start?: string }) {
         <span className="grow" />
         <span className="faint view-meta wide-only">The rest</span>
         <Seg
+          quiet
           label="What Enter does with the frames you don't keep"
           value={rest}
           onChange={setRest}

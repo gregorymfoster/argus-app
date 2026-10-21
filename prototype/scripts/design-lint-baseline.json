@@ -1,0 +1,42 @@
+{
+  "src/components/ui/button.tsx": {
+    "color": 2
+  },
+  "src/components/ui/command.tsx": {
+    "font-size": 1
+  },
+  "src/components/ui/slider.tsx": {
+    "color": 2
+  },
+  "src/components/ui/toggle-group.tsx": {
+    "color": 2
+  },
+  "src/styles.css": {
+    "color": 116,
+    "font-size": 1,
+    "radius": 6
+  },
+  "src/ui/EditPanel.tsx": {
+    "color": 12
+  },
+  "src/ui/EditSections.tsx": {
+    "color": 10
+  },
+  "src/ui/Histogram.tsx": {
+    "color": 4
+  },
+  "src/ui/MaskingPanel.tsx": {
+    "color": 3
+  },
+  "src/ui/Overlays.tsx": {
+    "color": 4,
+    "kbd": 1
+  },
+  "src/ui/PhotoView.tsx": {
+    "color": 5
+  },
+  "src/views.css": {
+    "color": 18,
+    "radius": 3
+  }
+}

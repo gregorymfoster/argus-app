@@ -641,7 +641,8 @@ pub fn chat_with_format(
             Ok(Box::new(OllamaChat {
                 o,
                 format,
-                think: std::env::var("ARGUS_OLLAMA_THINK").is_ok_and(|v| v == "1"),
+                think: std::env::var("ARGUS_OLLAMA_THINK").is_ok_and(|v| v == "1")
+                    || crate::variant::current().is_ok_and(|v| v.think == Some(true)),
                 throttle: Mutex::new(None),
             }))
         }

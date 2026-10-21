@@ -1,6 +1,8 @@
-//! Eyes open and face focus, per face: MediaPipe's face landmarker (478 points) and its
-//! blendshapes model (Apache 2.0), run on a rotated crop around each YuNet face, plus the
-//! focus energy around the eyes compared with the sharpest part of the frame.
+//! Eyes open, expression and face focus, per face: MediaPipe's face landmarker (478 points)
+//! and its blendshapes model (Apache 2.0), run on a rotated crop around each YuNet face, plus
+//! the focus energy around the eyes compared with the sharpest part of the frame. The 52
+//! blendshapes (smile, jaw open, gaze...) and the head turn feed [`awkward`]: does each person
+//! look like someone who'd like this photo of themselves (docs/research/cull-faces.md).
 //!
 //! The crop follows MediaPipe's own image pipeline: a square 1.5x the face, turned so the
 //! eyes are level, then a second pass on the box the first landmarks give. Eyes count as
@@ -55,6 +57,34 @@ pub struct FaceRead {
     /// Focus energy around the eyes over the frame's sharpest tiles: about 1 means the
     /// eyes are as sharp as anything in the frame, well under 0.3 means they're soft.
     pub focus: f32,
+    /// All 52 blendshape scores (MediaPipe's order, [`shape`] names the ones we read).
+    #[serde(default)]
+    pub shapes: Vec<f32>,
+    /// How far the head is turned: 0 facing the camera, ±1 in full profile (sign: which way
+    /// in the image, negative = towards the image's left).
+    #[serde(default)]
+    pub turn: f32,
+    /// Face size: the larger side of its box over the image's long edge.
+    #[serde(default)]
+    pub size: f32,
+    /// Horizontal centre of the face, 0 (left edge) to 1 (right edge).
+    #[serde(default)]
+    pub x: f32,
+}
+
+/// Indices into [`FaceRead::shapes`] (MediaPipe face blendshapes).
+pub mod shape {
+    pub const BROW_DOWN: [usize; 2] = [1, 2];
+    pub const BLINK: [usize; 2] = [9, 10];
+    pub const LOOK_DOWN: [usize; 2] = [11, 12];
+    pub const LOOK_UP: [usize; 2] = [17, 18];
+    pub const SQUINT: [usize; 2] = [19, 20];
+    pub const JAW_OPEN: usize = 25;
+    pub const FROWN: [usize; 2] = [30, 31];
+    pub const PUCKER: usize = 38;
+    pub const SMILE: [usize; 2] = [44, 45];
+    pub const STRETCH: [usize; 2] = [46, 47];
+    pub const SNEER: [usize; 2] = [50, 51];
 }
 
 pub struct Eyes;
@@ -64,7 +94,7 @@ impl Analyzer for Eyes {
         "eyes"
     }
     fn version(&self) -> u32 {
-        1
+        2
     }
     fn cost(&self) -> Cost {
         Cost::Model
@@ -81,14 +111,18 @@ impl Analyzer for Eyes {
         let mut blob = Vec::new();
         for (i, f) in faces.iter().enumerate() {
             match read_face(img, f)? {
-                Some((blink, points)) => {
+                Some((blink, shapes, points)) => {
                     let focus = eye_focus(&luma, img, &points) / frame.max(1e-6);
                     reads.push(FaceRead {
                         face: i,
                         read: true,
                         blink,
                         eyes_closed: blink[0] > CLOSED && blink[1] > CLOSED,
-                        focus: (focus * 100.0).round() / 100.0,
+                        focus: round(focus, 100.0),
+                        shapes,
+                        turn: round(turn(&points), 100.0),
+                        size: round(size_of(img, f), 1000.0),
+                        x: round(f.x + f.w / 2.0, 1000.0),
                     });
                     let (w, h) = (img.width() as f32, img.height() as f32);
                     for p in &points {
@@ -103,6 +137,10 @@ impl Analyzer for Eyes {
                     blink: [0.0; 2],
                     eyes_closed: false,
                     focus: 0.0,
+                    shapes: Vec::new(),
+                    turn: 0.0,
+                    size: round(size_of(img, f), 1000.0),
+                    x: round(f.x + f.w / 2.0, 1000.0),
                 }),
             }
         }
@@ -112,26 +150,151 @@ impl Analyzer for Eyes {
         })
     }
     fn caption(&self, fact: &Fact) -> Option<String> {
-        let reads: Vec<FaceRead> = read(fact).into_iter().filter(|r| r.read).collect();
-        if reads.is_empty() {
-            return None;
-        }
-        let closed = reads.iter().filter(|r| r.eyes_closed).count();
-        let soft = reads.iter().filter(|r| r.focus < SOFT).count();
-        let n = reads.len();
-        let eyes = match (closed, n) {
-            (0, 1) => "eyes open".to_string(),
-            (0, _) => "all eyes open".to_string(),
-            (1, 1) => "eyes closed".to_string(),
-            (c, n) => format!("eyes closed on {c} of {n} faces"),
-        };
-        let focus = match (soft, n) {
-            (0, _) => "faces sharp",
-            (s, n) if s == n => "faces soft",
-            _ => "some faces soft",
-        };
-        Some(format!("{eyes}, {focus}"))
+        caption(&read(fact))
     }
+}
+
+/// How the main faces look, so the cull can ask whether each person would like how they look:
+/// "face: smiling", "6 faces all look good", "6 faces, 5 look good; 4th from left: not
+/// smiling, half-blink". Only read faces at least half the size of the largest count; smaller
+/// ones are the background.
+pub fn caption(reads: &[FaceRead]) -> Option<String> {
+    let main = main_faces(reads);
+    let mut s = match main.as_slice() {
+        [] => return None,
+        [one] => format!("face: {}", look(one).join(", ")),
+        many => {
+            let off: Vec<String> = many
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| !looks_good(r))
+                .map(|(i, r)| format!("{} from left: {}", ordinal(i + 1), look(r).join(", ")))
+                .collect();
+            match off.len() {
+                0 => format!("{} faces all look good", many.len()),
+                n if n == many.len() => format!(
+                    "faces left to right: {}",
+                    many.iter()
+                        .map(|r| look(r).join(", "))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+                n => format!(
+                    "{} faces, {} {} good; {}",
+                    many.len(),
+                    many.len() - n,
+                    if many.len() - n == 1 { "looks" } else { "look" },
+                    off.join("; ")
+                ),
+            }
+        }
+    };
+    let small = reads.iter().filter(|r| r.read).count() - main.len();
+    if small > 0 {
+        s += &format!(" (+{small} smaller)");
+    }
+    Some(s)
+}
+
+fn ordinal(n: usize) -> String {
+    match n {
+        1 => "1st".into(),
+        2 => "2nd".into(),
+        3 => "3rd".into(),
+        n => format!("{n}th"),
+    }
+}
+
+/// Nothing [`awkward`] and at least a slight smile (or a laugh with eyes shut).
+pub fn looks_good(r: &FaceRead) -> bool {
+    !r.shapes.is_empty() && awkward(r).is_empty() && smile(r) >= 0.3
+}
+
+/// The faces that matter in a frame, left to right: read faces at least half the size of the
+/// largest read face.
+pub fn main_faces(reads: &[FaceRead]) -> Vec<&FaceRead> {
+    let big = reads
+        .iter()
+        .filter(|r| r.read)
+        .map(|r| r.size)
+        .fold(0.0, f32::max);
+    let mut main: Vec<&FaceRead> = reads
+        .iter()
+        .filter(|r| r.read && r.size >= big * 0.5)
+        .collect();
+    main.sort_by(|a, b| a.x.total_cmp(&b.x));
+    main
+}
+
+fn both(r: &FaceRead, idx: [usize; 2]) -> f32 {
+    idx.iter()
+        .map(|&i| r.shapes.get(i).copied().unwrap_or(0.0))
+        .fold(0.0, f32::max)
+}
+
+/// Smile, 0 (straight face) to 1 (a full smile or laugh).
+pub fn smile(r: &FaceRead) -> f32 {
+    both(r, shape::SMILE)
+}
+
+/// What could make this person dislike the photo of themselves, by the face model: a half
+/// blink or a blink that isn't a laugh, mouth caught mid-word, looking down, turned away,
+/// soft focus. Empty when nothing looks off. Measured on Greg's 2026-10-10 card: a frame
+/// with one of these on a main face was kept 38% of the time against 50% for the rest.
+pub fn awkward(r: &FaceRead) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if r.shapes.is_empty() {
+        return out; // a v1 Fact
+    }
+    let smiling = smile(r) >= 0.4;
+    let blink = r.blink[0].max(r.blink[1]);
+    if r.eyes_closed && !smiling {
+        out.push("eyes closed");
+    } else if !r.eyes_closed && blink > 0.45 && !smiling {
+        out.push("half-blink");
+    }
+    if r.shapes[shape::JAW_OPEN] > 0.15 && smile(r) < 0.3 {
+        out.push("mouth open mid-word");
+    }
+    if both(r, shape::LOOK_DOWN) > 0.6 && !smiling {
+        out.push("looking down");
+    }
+    if r.turn.abs() > 0.7 {
+        out.push("turned away");
+    }
+    if both(r, shape::FROWN) > 0.3 || both(r, shape::BROW_DOWN) > 0.6 && !smiling {
+        out.push("frowning");
+    }
+    // Eye focus is relative to the frame's sharpest tiles, so on group and scene shots it
+    // flags faces that look fine (on 2026-10-10 frames with "soft" faces were kept more
+    // often). Only a large face that is clearly soft counts.
+    if r.focus < 0.1 && r.size > 0.2 {
+        out.push("soft");
+    }
+    out
+}
+
+/// A few words on one face: its expression, then anything [`awkward`].
+pub fn look(r: &FaceRead) -> Vec<&'static str> {
+    if r.shapes.is_empty() {
+        return vec![if r.eyes_closed {
+            "eyes closed"
+        } else {
+            "eyes open"
+        }];
+    }
+    let mut words = vec![match smile(r) {
+        s if s >= 0.6 && r.eyes_closed => "laughing, eyes closed",
+        s if s >= 0.6 => "smiling",
+        s if s >= 0.3 => "slight smile",
+        _ => "not smiling",
+    }];
+    words.extend(
+        awkward(r)
+            .into_iter()
+            .filter(|w| *w != "eyes closed" || smile(r) < 0.6),
+    );
+    words
 }
 
 /// Eye focus under which a face reads as soft.
@@ -173,8 +336,26 @@ struct Roi {
     angle: f32,
 }
 
-/// Blink scores per eye and the landmarks of one face, in image pixels.
-type Reading = ([f32; 2], Vec<[f32; 2]>);
+/// Blink scores per eye, all blendshape scores and the landmarks of one face, in image pixels.
+type Reading = ([f32; 2], Vec<f32>, Vec<[f32; 2]>);
+
+fn round(v: f32, k: f32) -> f32 {
+    (v * k).round() / k
+}
+
+/// A face box's larger side over the image's long edge.
+fn size_of(img: &image::RgbImage, f: &Face) -> f32 {
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    (f.w * w).max(f.h * h) / w.max(h)
+}
+
+/// Head turn from the landmarks: where the nose tip sits between the cheek edges, -1..1.
+fn turn(points: &[[f32; 2]]) -> f32 {
+    let d = |a: [f32; 2], b: [f32; 2]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+    let (nose, left, right) = (points[1], points[234], points[454]);
+    let (dl, dr) = (d(nose, left), d(nose, right));
+    ((dl - dr) / (dl + dr).max(1e-6)).clamp(-1.0, 1.0)
+}
 
 /// One face's [`Reading`], or None if it can't be read.
 fn read_face(img: &image::RgbImage, f: &Face) -> Result<Option<Reading>> {
@@ -206,8 +387,9 @@ fn read_face(img: &image::RgbImage, f: &Face) -> Result<Option<Reading>> {
     let out = BLENDSHAPE_MODEL.run(input)?;
     let scores = floats(&out[0])?;
     // The model names eyes from the subject's side: their left eye is on the image's right.
-    let blink = [scores[BLINK_RIGHT], scores[BLINK_LEFT]].map(|v| (v * 1000.0).round() / 1000.0);
-    Ok(Some((blink, points)))
+    let blink = [scores[BLINK_RIGHT], scores[BLINK_LEFT]].map(|v| round(v, 1000.0));
+    let shapes = scores.iter().map(|&v| round(v, 1000.0)).collect();
+    Ok(Some((blink, shapes, points)))
 }
 
 /// Run the landmarker on one crop. Landmarks in image pixels, or None if no face there.

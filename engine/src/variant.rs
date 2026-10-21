@@ -32,8 +32,20 @@ pub struct Variant {
     /// Replaces the style profile learned from the usage log: moves added to every fresh
     /// take after the model's settings, e.g. {"exposure": 0.3}. {} turns it off.
     pub style: Option<BTreeMap<String, f64>>,
+    /// How many of the person's own edits of similar scenes a fresh Suggestion shows the
+    /// model (`exemplars::DEFAULT` unless set; 0 turns them off).
+    pub exemplars: Option<usize>,
     /// Replaces the cull system prompt.
     pub cull: Option<String>,
+    /// Who rates taste in a cull: "signals" (the model checks technical failures only) or
+    /// "model" (the whole cull). Unset: "model" when `cull` is set, else "signals".
+    pub cull_taste: Option<crate::cull::Taste>,
+    /// Lets a thinking model (Qwen through Ollama) reason before it answers, in the cull,
+    /// Suggestions and the Agent (ARGUS_OLLAMA_THINK=1 does the same for Suggestions and the
+    /// Agent). Unset, the cull leaves it to Ollama and the rest don't think.
+    pub think: Option<bool>,
+    /// Overrides Auto's dials (crate::auto::Params); fields left out keep the built-in value.
+    pub auto: Option<crate::auto::Params>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,5 +97,12 @@ mod tests {
         .unwrap();
         let v = load(path.to_str().unwrap()).unwrap();
         assert_eq!(v.takes.unwrap()[0].start["contrast"], 5.0);
+        // Auto's dials: the ones named change, the rest keep the built-in value; a typo fails.
+        std::fs::write(&path, r#"{"auto":{"target_mean":0.5,"raw_tone":true}}"#).unwrap();
+        let a = load(path.to_str().unwrap()).unwrap().auto.unwrap();
+        assert_eq!((a.target_mean, a.raw_tone), (0.5, true));
+        assert_eq!(a.wb_temp, crate::auto::Params::default().wb_temp);
+        std::fs::write(&path, r#"{"auto":{"target_maen":0.5}}"#).unwrap();
+        assert!(load(path.to_str().unwrap()).is_err());
     }
 }

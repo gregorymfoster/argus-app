@@ -12,6 +12,8 @@ On the Mac, on an up-to-date main with nothing uncommitted:
 
 ```sh
 just release-local 0.2.0      # or scripts/release/local.sh 0.2.0
+just ship 0.2.0                         # all of it on Greg's one "ship it": release-candidate, publish, installer dry run
+just release-candidate 0.2.0            # check, then mac-e2e beside --build-only, as one unattended job
 just release-local 0.2.0 --build-only    # build and check it first (mac-e2e), no publish
 just release-local 0.2.0 --publish-only  # then publish that exact build once Greg says go
 ```
@@ -19,6 +21,10 @@ just release-local 0.2.0 --publish-only  # then publish that exact build once Gr
 The script refuses to publish a version that isn't newer than the current release, because the updater only installs a higher semver than the one running. It takes the version from its argument, so nobody bumps `tauri.conf.json`, and it tags the source through the GitHub API (no git push credentials needed). It ends by fetching `latest.json` the way installed copies do and checking that the version matches. Build files land in `out/release/vX.Y.Z/`.
 
 A release build keeps the Mac busy for several minutes, so Claude runs it when Greg says go or overnight, following the Remote Control rules in CLAUDE.md (time limits and progress notes).
+
+## The public release page
+
+argus-releases is the page friends land on, so it reads like a download page, not a build log (Greg, 2026-10-20: "way less sketchy"). Before a release, write `docs/release-notes/X.Y.Z.md`: a few bullets on what's new, in words for people who use the app (no commit subjects, bench work or anything from this private repo). `local.sh` stops before building without it. `scripts/release/notes.sh` wraps those bullets in the install steps, the not-notarized explanation, a link to the public source in argus-app and the `.dmg`'s SHA-256. After publishing, `scripts/release/dress.sh vX.Y.Z` sets the notes, gives the assets plain labels (".dmg", "Update bundle (the app downloads this itself)") and sets the repo's description; it only changes text, so re-run it on any release after editing the template. The repo's README (icon, install, what Argus is) lives in argus-releases itself. Its screenshots (`screenshots/` there, also shown in every release's notes) are the real app on a sample card of public-domain photos, never Greg's: the card is in `/mnt/project-files/argus-release-shots/` with its licences. To refresh them after a UI change, in a cloud session: `argus import` that card into a fresh Library, `argus cull --provider claude-code`, `argus tool suggest_edits '{"photo_ids":[28]}'` then `argus work --drain`, and `ARGUS_PROVIDER=claude-code node prototype/scripts/release-shots.mjs <library> 28 34` (Edit shot, Agent shot); look at the JPEGs in `prototype/out/release-shots/`, resize to 1800 px wide and commit them to argus-releases.
 
 ## The one-command installer
 

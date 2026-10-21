@@ -14,9 +14,8 @@ Why not moon, Turborepo, Nx or Bazel (2026-10-18): the repo is two Rust crates p
 
 ## Ideas, biggest first
 
-- **mac-e2e builds at background QoS with `-j 2`** (CLAUDE.md rule), so on Greg's Mac it runs on efficiency cores only. Moving it to `taskpolicy -c utility` like the release would speed it up several times; it's his rule, so ask first.
-- **Skip `npm install` in `live`, `mac-e2e` and `app-e2e`** with `scripts/cached` keyed on the lockfile (a few seconds each).
-- **sccache on the Mac.** Only helps after `app/target` is wiped or when switching between worktrees; the persistent target folders already cover the usual case.
+- **sccache on the Mac** (asked of the Mac thread 2026-10-20). Only cold builds gain (after a dependency bump or a wiped target, ~5 min today); incremental Argus crates pass through it.
+- **Orchestration, not compiling, is most of a release's wall time** (2026-10-20). On Greg's Mac a warm release is quick: `just check` 0:19, `just mac-e2e` 1:04, the release build 0:42-1:00 when only Argus crates changed (4:53 after a dependency change at gentle, 5:43 cold), plus ~35 s of DMG bundling. What makes a release take an hour is the agent loop: each step is a separate command the driving thread polls at most every 5 minutes, and anything that needs Greg (a gh login, the publish OK) waits for him. `just release-candidate` removes the step waits; the rest is people.
 
 ## Tried, didn't pay
 
@@ -24,6 +23,10 @@ Why not moon, Turborepo, Nx or Bazel (2026-10-18): the repo is two Rust crates p
 
 ## Done
 
+- **One Rust everywhere** (2026-10-20). `rust-toolchain.toml` pins the channel the Mac runs (1.99), so cloud clippy catches what the Mac's does; v0.1.4 lost a round to five lints only the Mac's newer clippy knew. Bump it when the Mac updates. The first build after a bump is cold (and sccache misses once).
+- **`just release-candidate X.Y.Z`** (2026-10-20) runs `just check`, then `just mac-e2e` beside `release-local --build-only` (separate target folders; the UI's npm install and Vite build run first through `scripts/cached` so neither repeats them), as one job. `just ship` adds the publish and the installer dry run: Greg's one "ship it" covers both, which removes the ~15 min wait for a second OK. `--build-only` no longer needs `gh` logged in (v0.1.4's build stopped on a lapsed login before compiling anything); the published-version checks then run at `--publish-only`.
+- `just mac-e2e` builds at gentle priority (utility QoS + nice 10, all cores) instead of background QoS with `-j 2`, which pinned it to the 4 efficiency cores (Greg chose this 2026-10-20).
+- `app-e2e`, `app-e2e-quick` and `mac-e2e` skip `npm install` when the lockfile is unchanged (`scripts/cached`).
 - **Release builds** (2026-10-18). Measured on the 4-core cloud container, `cargo build --release -p argus-cli`, no sccache: thin LTO took 463 s cold and 182 s after an engine change; no LTO with 16 codegen units 330 s and 65 s; the `fast` settings (no LTO, 256 codegen units, incremental) 6 s after an engine change. `just speed`, two runs each, `fast` against thin LTO: decode 83-118 ms vs 90-142, Edit slider 41-42 vs 52, previews 197-200 vs 222-224 ms/photo, Import the same. So `[profile.release]` in both `Cargo.toml` and `app/Cargo.toml` now uses the `fast` settings. (Both were already above the cloud baseline's 27 ms slider before this change.)
 - **Release priority** (2026-10-18). `taskpolicy -b` (background QoS) pins a process to the efficiency cores on Apple Silicon (4 of the M4 Max's 16), which made most of the ~25 min. `ARGUS_BUILD_PRIORITY` in `scripts/release/local.sh`: `gentle` (default) is utility QoS plus `nice -n 10`, which uses the performance cores and still yields to Greg's apps; `full` drops all limits; `background` is the old mode. Not yet timed on the Mac.
 - `scripts/cached` skips the prototype's Vite build in `tauri build` (release and app-e2e) when `prototype/` is unchanged, and the release's `npm ci` when the app's lockfile is unchanged.

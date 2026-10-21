@@ -10,7 +10,7 @@ import { LIVE, aiName, renameShoot, revealInFinder, suggestShootName } from '../
 import { Download, Folder, FolderOpen, Pencil, Rows3, Sparkles, Wand2, Trash2 } from 'lucide-react';
 import { askRemove } from './Remove';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/menu';
-import { MenuKeys } from './kit';
+import { Kbd, MenuKeys } from './kit';
 
 const message = (e: unknown) => String(e).replace(/^Error: /, '');
 
@@ -124,7 +124,7 @@ export function ShootItem({
           />
         </div>
         <div className="rename-hint">
-          <kbd>↵</kbd> save <kbd>esc</kbd> cancel <span className="grow" /> folder follows
+          <Kbd quiet>↵</Kbd> save <Kbd quiet>esc</Kbd> cancel <span className="grow" /> folder follows
         </div>
       </div>
     );

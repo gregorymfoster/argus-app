@@ -51,9 +51,17 @@ Obvious damage is a different story. In the cull_degrade run (5 Shoots, neutral 
 
 Caveat (2026-10-20): every portrait frame of the 2026-10-10 fixtures was sideways (sips kept the sensor orientation; fixed in 414ece4), so all 2026-10-10 numbers above, for every model, need a rerun on the upright fixtures.
 
+Faces (2026-10-20): what the face model adds and how it scores on this card is in `docs/research/cull-faces.md`.
+
 ## Decision (Greg, 2026-10-20)
 
 Qwen only for now, and a cautious cull. The AI rates every Photo, rejects only a 1-star frame with a named technical flaw, and never picks (`cautious()` in engine/src/cull.rs enforces it whatever the model answers). Greg does the real cull by stars. So the cull bench's numbers that matter are star AUC and keepers near the top of a star sort, wrong rejects (should be about zero) and damaged twins caught, not Verdict agreement.
+
+On the upright fixtures with the faces-first prompt and eyes v2 (2489745), Qwen at Full on 1600 px sheets (whole-cull variant, ceb3fd5, 2026-10-20) reached star AUC .61, put 56% of Greg's keepers in the top k of a star sort, chose 17 of 25 Best Photos from his picks and wrongly rejected none. That matches Opus's .61 from before the fixes. It took 75 minutes for the 261 Photos.
+
+The two-stage cull now on main (Technical check by Qwen, Taste from faces; fdd211a) ranks as well (AUC .62, top .57) in 40 minutes, rejects none of Greg's keepers, and on the damaged twins ranks the original higher 29 of 30 times. Its Best Photos hit fewer of his picks (12 of 26) than the whole cull's (17 of 25).
+
+The shorter stars-first variant did a little worse on the same sheets (AUC .59, top .55, Best 19/26 picks, 2 wrong rejects), so the built-in prompt stays.
 
 ## Decision models (Jev and friends)
 

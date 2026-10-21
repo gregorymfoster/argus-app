@@ -28,7 +28,11 @@ echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || die "
 [ "$(uname -s)" = Darwin ] || die "builds the Mac app, so run it on the Mac"
 cd "$(git rev-parse --show-toplevel)"
 [ -f "$KEY" ] && [ -f "$KEY.password" ] && [ -f "$KEY.pub" ] || die "no signing key in ~/.tauri: run scripts/release/setup.sh once"
-gh auth status >/dev/null 2>&1 || die "run 'gh auth login' first"
+# Only publishing needs gh. A --build-only run without it still builds (the version checks below
+# then wait for --publish-only), so a lapsed gh login doesn't stall the build (v0.1.4, 2026-10-20).
+GH=1
+gh auth status >/dev/null 2>&1 || GH=
+[ -n "$GH" ] || [ "$MODE" = --build-only ] || die "run 'gh auth login' first"
 
 OUT="out/release/$TAG"
 if [ "$MODE" = --publish-only ]; then
@@ -40,9 +44,15 @@ git fetch -q origin main
 [ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes; commit or stash them first"
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "HEAD isn't origin/main; check out main and pull first"
 SHA=$(git rev-parse HEAD)
+# The public notes are written by hand, so a release without them stops here, before the build.
+[ -f "docs/release-notes/$VERSION.md" ] || die "write docs/release-notes/$VERSION.md first: what's new, for people who use the app (see docs/release.md)"
 fi
-if gh release view "$TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1; then die "$TAG is already published"; fi
-latest=$(gh release view --repo "$RELEASE_REPO" --json tagName -q .tagName 2>/dev/null || true)
+if [ -z "$GH" ]; then
+  echo "release: gh isn't logged in, so the published-version checks wait for --publish-only"
+  latest=
+elif gh release view "$TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1; then die "$TAG is already published"
+else latest=$(gh release view --repo "$RELEASE_REPO" --json tagName -q .tagName 2>/dev/null || true)
+fi
 if [ -n "$latest" ]; then
   newest=$(printf '%s\n%s\n' "${latest#v}" "$VERSION" | sort -V | tail -n1)
   [ "$newest" = "$VERSION" ] && [ "${latest#v}" != "$VERSION" ] || die "$TAG isn't newer than $latest; installed copies would ignore it"
@@ -93,19 +103,7 @@ cp "$tarball" "$OUT/$name.app.tar.gz"
 node scripts/release/latest-json.mjs --version "$VERSION" --repo "$RELEASE_REPO" --tag "$TAG" \
   --platform "$PLATFORM" --bundle "$name.app.tar.gz" --sig "$tarball.sig" --notes "Argus $VERSION" \
   > "$OUT/latest.json"
-prev=$(git describe --tags --abbrev=0 --match 'v*' "$SHA^" 2>/dev/null || true)
-{
-  echo "Built from $SOURCE_REPO@${SHA:0:7}."
-  echo
-  echo "Install with one command in Terminal (installs Argus, Ollama and the local AI model; it asks once before the big download):"
-  echo
-  echo '```sh'
-  echo "curl -fsSL https://github.com/$RELEASE_REPO/releases/latest/download/install.sh | bash"
-  echo '```'
-  echo
-  echo "Or by hand: open the .dmg, drag Argus to Applications, then approve it once in System Settings > Privacy & Security > Open Anyway. Later versions install themselves."
-  if [ -n "$prev" ]; then echo; echo "Changes since $prev:"; git log --format='- %s' "$prev..$SHA" | head -n 50; fi
-} > "$OUT/notes.md"
+scripts/release/notes.sh "$VERSION" "$name.dmg" "$(shasum -a 256 "$OUT/$name.dmg" | cut -d" " -f1)" > "$OUT/notes.md"
 echo "$SHA" > "$OUT/built-from"
 scripts/release/stamp-install.sh "$VERSION" "$OUT/$name.dmg" "$SHA" > "$OUT/install.sh"
 ls -la "$OUT"
@@ -125,6 +123,7 @@ gh release create "$TAG" --repo "$RELEASE_REPO" --title "Argus $VERSION" --notes
 # Tag the source through the API, so this needs no git push credentials.
 gh api "repos/$SOURCE_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null \
   || echo "warning: couldn't tag $SOURCE_REPO at $TAG; the release is published anyway"
+scripts/release/dress.sh "$TAG" || echo "warning: couldn't label the release page; run scripts/release/dress.sh $TAG"
 
 step "Checking what installed copies will see"
 sleep 5

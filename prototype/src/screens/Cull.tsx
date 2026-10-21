@@ -548,6 +548,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
           {state.importing && <ImportProgress />}
           <span className="grow" />
           <Seg
+            quiet
             label="Filter by flag"
             className="filter-seg"
             value={filter}
@@ -731,14 +732,14 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
           ) : null}
           <span className="grow" />
           <span className="foot-keys">
-            <span><Kbd>P</Kbd> Pick</span>
-            <span><Kbd>X</Kbd> Reject</span>
-            <span><Kbd>U</Kbd> Clear</span>
-            <span><Kbd>1-5</Kbd> Stars</span>
-            <span><Kbd>C</Kbd> Compare</span>
-            <span><Kbd>N</Kbd> Stacks</span>
-            <span><Kbd>D</Kbd> Edit</span>
-            <span><Kbd>⌘</Kbd><Kbd>Z</Kbd> Undo</span>
+            <span><Kbd quiet>P</Kbd> Pick</span>
+            <span><Kbd quiet>X</Kbd> Reject</span>
+            <span><Kbd quiet>U</Kbd> Clear</span>
+            <span><Kbd quiet>1-5</Kbd> Stars</span>
+            <span><Kbd quiet>C</Kbd> Compare</span>
+            <span><Kbd quiet>N</Kbd> Stacks</span>
+            <span><Kbd quiet>D</Kbd> Edit</span>
+            <span><Kbd quiet>⌘</Kbd><Kbd quiet>Z</Kbd> Undo</span>
           </span>
         </footer>
       </main>

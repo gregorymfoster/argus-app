@@ -43,5 +43,6 @@ target/
 fixtures/raw/
 fixtures/raw-*/
 fixtures/bench-raw/
+fixtures/bench/cull/*/hd
 out/
 __pycache__/
