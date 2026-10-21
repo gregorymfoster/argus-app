@@ -34,17 +34,25 @@ Size is a rough guess: S is a day or less for one thread, M a few days, L a week
 
 ### 1. Copy, paste and sync settings
 
+Built 2026-10-21 (`engine/src/paste.rs`, the `paste_settings` tool, ⇧⌘C ⇧⌘V ⌥⌘V ⇧⌘S).
+
 This is the one Lightroom move every batch editor uses and Argus doesn't have. Today a person can "Sync to Look" (fold the open Photo's settings into the Shoot's Look for every Pick), and the AI can "apply to the rest" from a Hero Photo. What's missing is the plain version: copy this Photo's settings, pick which groups come along (Light, Color, Crop, Masks, Retouch), and paste onto a selection, or ⌥⌘V to paste the previous Photo's settings. Lightroom cloud does exactly this from the Edit menu and the filmstrip. In the engine it's one tool, `paste_settings {from, photo_ids, groups}`, written as one batch so `undo_batch` reverts it; Masks need care because a person Mask with `person: 2` may not exist on the target, so AI Masks should carry their kind and hand-drawn ones their shapes. The UI is a small dialog and two hotkeys.
 
 ### 2. Lens corrections from the camera's own data
+
+Built 2026-10-21 (`engine/src/lens.rs`, `docs/research/lens-corrections.md`): As camera by default, On and Off in Optics.
 
 Lightroom turns on a lens profile for almost every Photo, and Argus can't use lensfun. There's a licence-free way around it. Sony writes its in-camera distortion, vignetting and chromatic aberration coefficients into every ARW (tags 0x7032, 0x7035 and 0x7037 in the SR2 data; rawler 0.8 already names the tags but its ARW decoder ignores them). Applying those gives the same correction the camera's own JPEG has, which is also what Greg's A7R V JPEGs look like today. This needs a careful read of the public tag documentation (exiftool's Sony tag tables) rather than darktable's GPL code, an Optics "Use camera corrections" switch on by default, and a golden test. Vignetting correction alone should brighten corners on most wide shots, which is "fix the light" for free. The Leica Q3's DNGs may carry the same data as DNG warp and vignette opcodes; that's unchecked.
 
 ### 3. AI Denoise
 
+Built 2026-10-21 (`engine/src/denoise.rs`): SCUNet's real-noise model in tract, a cached full-size base per RAW computed by a Queue job, and Lightroom's Amount slider at the top of Detail. Open: speed on the Mac (about 35 min per 61 MP frame on a 4-core cloud CPU), which may call for a GPU runtime.
+
 Lightroom's Denoise is the feature photographers cite most since 2023, and indoor and evening shots of people are where Greg's photos are noisiest. Argus has the classic luminance and color noise sliders but no learned denoiser. Candidates with acceptable licences are NAFNet (MIT) and SCUNet (Apache-2.0); both are image-domain, while Lightroom denoises the RAW mosaic before demosaic, which is better. It belongs behind the Analyzer seam (ADR 0013) as a specialist, cached like the demosaiced image so sliders stay fast, and it would need a speed check on the Mac. This is the biggest item on the list and the one most likely to show up in a side-by-side with Lightroom.
 
-### 4. Spot heal and clone (needs a scope call)
+### 4. Spot heal and clone (built 2026-10-21)
+
+Greg said build it (2026-10-21), and the spec now lists Heal and Clone Spots as in scope, as long as they only copy pixels. Built: the Recipe's `spots`, `engine/src/heal.rs` (Heal matches the source to the spot's edge with a harmonic blend; Clone copies), an automatic source pick, the `add_spot` tools for the Agent, and the Heal tool (H) in Edit. Still to do: brushed strokes (Lightroom's Remove paints any shape; Argus has circles only) and Content-Aware.
 
 Lightroom's Remove tool has three modes: Generative (out for us), Content-Aware and Heal/Clone. The last two copy pixels from elsewhere in the same photo, with no generation, and they're how photographers take out a stray hair, a blemish the skin smoothing misses, a sensor dust spot or a distracting sign. The spec lists "object removal" as out of scope alongside generative fill, so this needs Greg's word. A narrow version (brush a spot, Argus picks a nearby source patch, blends it; or the person drags the source) is non-generative and fits "natural retouching". It would live in the Recipe as a list of spots, like Lightroom's.
 

@@ -408,7 +408,7 @@ export function cap(k: string) {
 }
 
 /** Sliders that only go up from 0: shown without a sign. */
-const UNSIGNED = new Set(['fade', 'grain', 'skin', 'eyes', 'teeth', 'vignetteMidpoint', 'vignetteFeather', 'vignetteHighlights', 'grainSize', 'grainRoughness', 'sharpen', 'sharpenDetail', 'sharpenMasking', 'noise', 'noiseDetail', 'noiseContrast', 'colorNoise', 'colorNoiseDetail', 'colorNoiseSmoothness', 'defringePurple', 'defringeGreen', 'lensVignetteMidpoint', 'sat', 'hue°', 'blending', 'refineSat', 'split']);
+const UNSIGNED = new Set(['fade', 'grain', 'skin', 'eyes', 'teeth', 'vignetteMidpoint', 'vignetteFeather', 'vignetteHighlights', 'grainSize', 'grainRoughness', 'denoise', 'sharpen', 'sharpenDetail', 'sharpenMasking', 'noise', 'noiseDetail', 'noiseContrast', 'colorNoise', 'colorNoiseDetail', 'colorNoiseSmoothness', 'defringePurple', 'defringeGreen', 'lensVignetteMidpoint', 'sat', 'hue°', 'blending', 'refineSat', 'split']);
 
 export function fmt(key: keyof Adjust | string, v: number) {
   const sign = v > 0 ? '+' : v < 0 ? '−' : '';
@@ -459,6 +459,7 @@ export function LibraryProvider({ children, skipImport }: { children: ReactNode;
   const now = useRef(state);
   now.current = state;
   const pending = useRef<Pending | null>(null);
+  const undoTail = useRef<Promise<unknown>>(Promise.resolve());
   // Live, flags, stars, edits, Undo and Redo go to the Library; screens then show its answer.
   const dispatch = useCallback((a: Action) => {
     if (!LIVE) return raw(a);
@@ -551,10 +552,16 @@ export function LibraryProvider({ children, skipImport }: { children: ReactNode;
       const s = now.current;
       const step = a.type === 'undo' ? s.past[s.past.length - 1] : s.future[s.future.length - 1];
       if (step?.batch) {
-        const batch = step.batch.then((done) => {
-          if (done.batch == null) throw new Error('that change was never saved');
-          return undoBatch(done.batch);
-        });
+        // Undo and Redo reach the Library in the order they were pressed. Each waits for the
+        // one before it: a Redo's step is an Undo still in flight after a quick ⌘Z ⌘Z ⇧⌘Z ⇧⌘Z,
+        // and chained on its own step alone, a later press could overtake an earlier one.
+        const batch = undoTail.current
+          .then(() => step.batch)
+          .then((done) => {
+            if (done?.batch == null) throw new Error('that change was never saved');
+            return undoBatch(done.batch);
+          });
+        undoTail.current = batch.catch(() => {});
         void settle(batch, []);
         return send({ ...a, batch });
       }

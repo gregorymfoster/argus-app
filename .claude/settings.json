@@ -3,9 +3,30 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/cloud-setup.sh", "timeout": 360 }
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/cloud-setup.sh",
+            "timeout": 360
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/pstack-quiet.sh",
+            "timeout": 10
+          }
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "pstack@pstack-claude": true
+  },
+  "extraKnownMarketplaces": {
+    "pstack-claude": {
+      "source": {
+        "source": "github",
+        "repo": "michael-denyer/pstack-claude",
+        "ref": "v0.9.99"
+      }
+    }
   }
 }

@@ -2,7 +2,7 @@
 // edited (render_photo). Saving is the store's job: each change is an engine batch
 // (saveRecipe in live.ts), so ⌘Z is `undo_batch`.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { call } from './backend';
 import { photoFacts } from './facts';
 import type { LocalAdjust, MaskRef, Recipe } from '../domain/types';
@@ -20,6 +20,33 @@ export async function loadRecipe(photoId: string): Promise<Recipe | null> {
   return r?.recipe ?? null;
 }
 
+/** Where the engine would copy from for a Spot at x, y, r on `recipe` (`pick_spot_source`). */
+export async function pickSpotSource(photoId: string, recipe: Recipe, x: number, y: number, r: number, avoid: { x: number; y: number }[] = []): Promise<{ x: number; y: number }> {
+  const out = await call<{ from: { x: number; y: number } }>('pick_spot_source', { photo_id: Number(photoId), recipe, x, y, r, avoid });
+  return out.from;
+}
+
+// What a render shows can change without the Recipe changing: AI Denoise's base lands
+// minutes after the Amount was set. Bumping this stamp re-renders the open Photo.
+let baseStamp = 0;
+const baseListeners = new Set<() => void>();
+
+/** A Photo's AI Denoise base just finished: render it again. */
+export function baseChanged() {
+  baseStamp++;
+  for (const l of baseListeners) l();
+}
+
+function useBaseStamp() {
+  return useSyncExternalStore(
+    (l) => {
+      baseListeners.add(l);
+      return () => baseListeners.delete(l);
+    },
+    () => baseStamp,
+  );
+}
+
 /**
  * Render `recipe` whenever it changes, latest wins: at most one render runs at a time, and
  * slider drags in between collapse into the newest Recipe. Returns the newest render as a data URL (null until the first one lands) and
@@ -31,6 +58,7 @@ export function useLiveRender(photoId: string, recipe: Recipe | null, enabled: b
   const state = useRef({ running: false, next: null as Recipe | null });
   // Compared by content: the store hands out a fresh empty Recipe on every render.
   const json = recipe ? JSON.stringify(recipe) : null;
+  const stamp = useBaseStamp();
 
   useEffect(() => {
     if (!enabled || !json) return;
@@ -55,7 +83,7 @@ export function useLiveRender(photoId: string, recipe: Recipe | null, enabled: b
       }
     };
     void pump();
-  }, [photoId, json, enabled]);
+  }, [photoId, json, enabled, stamp]);
 
   return { url, busy };
 }
@@ -143,8 +171,9 @@ const detailCache = new Map<string, Promise<string>>();
 export function useDetailRender(photoId: string, recipe: Recipe | null, need: number, have: number, natural: number, enabled: boolean) {
   const [out, setOut] = useState<{ key: string; photoId: string; json: string; url: string } | null>(null);
   const json = recipe ? JSON.stringify(recipe) : '';
+  const stamp = useBaseStamp();
   const edge = need > have * 1.05 ? Math.min(natural, DETAIL_EDGES.find((e) => e >= need) ?? natural) : 0;
-  const key = edge > have ? `${photoId}|${edge}|${json}` : '';
+  const key = edge > have ? `${photoId}|${edge}|${stamp}|${json}` : '';
   useEffect(() => {
     if (!enabled || !key) return;
     let live = true;

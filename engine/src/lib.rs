@@ -24,11 +24,14 @@ pub mod commands;
 pub mod compute;
 pub mod cull;
 pub mod debug_log;
+pub mod denoise;
 pub mod effects;
 pub mod exemplars;
 pub mod export;
 pub mod geometry;
+pub mod heal;
 pub mod jobs;
+pub mod lens;
 pub mod libraries;
 pub mod library;
 mod local;
@@ -37,10 +40,14 @@ pub mod masks;
 pub mod meter;
 pub mod model_lock;
 pub mod naming;
+pub mod paste;
 pub mod pipeline;
 pub mod power;
+pub mod preset_rank;
+pub mod presets;
 mod preview;
 pub mod progress;
+pub mod rawcheck;
 pub mod recipe;
 pub mod render;
 pub mod signals;
@@ -101,6 +108,8 @@ pub struct RawPhoto {
     /// Camera matrix: XYZ(D65-ish) -> camera RGB (3x3).
     pub xyz_to_cam: [[f32; 3]; 3],
     pub orientation: Orientation,
+    /// The lens corrections the camera wrote into the file ([`lens`]), if any.
+    pub lens: Option<std::sync::Arc<lens::Profile>>,
 }
 
 impl RawPhoto {
@@ -162,6 +171,7 @@ pub fn raw_size(path: &Path, data: &[u8]) -> Result<(usize, usize, Orientation)>
         Some(size) => size,
         // No crop tag: ask rawler, whose dummy decode still allocates the full mosaic.
         None => {
+            rawcheck::check(path)?;
             let src = rawler::rawsource::RawSource::new(path)
                 .map_err(|e| Error(format!("read {}: {e}", path.display())))?;
             let img = rawler::decode_dummy(&src).map_err(|e| Error(format!("rawler: {e}")))?;
@@ -181,8 +191,17 @@ pub fn raw_size(path: &Path, data: &[u8]) -> Result<(usize, usize, Orientation)>
 
 /// Decode a RAW file with rawler.
 pub fn decode(path: &Path) -> Result<RawPhoto> {
-    let mut img =
-        rawler::decode_file(path).map_err(|e| Error(format!("rawler decode failed: {e}")))?;
+    rawcheck::check(path)?;
+    let mut img = rawler::decode_file(path).map_err(|e| {
+        // An empty file or one that only ends in .ARW: rawler's "No decoder found, model ''"
+        // says nothing to a person.
+        if e.to_string().contains("No decoder found") {
+            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            Error(format!("not a RAW file Argus can read ({bytes} bytes)"))
+        } else {
+            Error(format!("rawler decode failed: {e}"))
+        }
+    })?;
     // Take the samples rather than copy them: a 61 MP mosaic is 120 MB.
     let mosaic = match std::mem::replace(&mut img.data, rawler::RawImageData::Integer(Vec::new())) {
         rawler::RawImageData::Integer(v) => v,
@@ -279,6 +298,7 @@ pub fn decode(path: &Path) -> Result<RawPhoto> {
         wb,
         xyz_to_cam,
         orientation,
+        lens: lens::read(path).map(std::sync::Arc::new),
     })
 }
 
@@ -293,7 +313,8 @@ pub fn develop(raw: &RawPhoto, opts: &DevelopOptions) -> RgbImage {
         return d.finish(&opts.look, &opts.recipe, opts.analysis.as_deref());
     }
     let (cw, ch) = raw.crop_size();
-    if opts.recipe.needs_masks() || effects::active(&opts.recipe.render_adjust()) {
+    let adjust = opts.recipe.render_adjust();
+    if opts.recipe.needs_masks() || effects::active(&adjust) {
         // Masks and neighbourhood effects need the whole image at once.
         let rgb = demosaic_bilinear(&normalize_white_balance(raw), cw, ch, raw.cfa);
         let d = Demosaiced {
@@ -303,17 +324,33 @@ pub fn develop(raw: &RawPhoto, opts: &DevelopOptions) -> RgbImage {
             camera_to_srgb: camera_to_srgb_matrix(raw.xyz_to_cam),
             orientation: raw.orientation,
             scale: 1.0,
+            lens: lens::Lens::new(raw.lens.clone()),
         };
         return d.finish(&opts.look, &opts.recipe, opts.analysis.as_deref());
     }
     // Full resolution: demosaic one row at a time straight into colour+tone+quantize.
-    let fin = Finish::new(
-        camera_to_srgb_matrix(raw.xyz_to_cam),
-        &opts.look,
-        &opts.recipe.render_adjust(),
-    );
+    let fin = Finish::new(camera_to_srgb_matrix(raw.xyz_to_cam), &opts.look, &adjust);
     let mosaic = normalize_white_balance(raw); // stages 1+2
     let mut data = vec![0u8; cw * ch * 3];
+    let profile = raw.lens.as_ref().map(|p| (p, lens::which(p, &adjust)));
+    if let Some((p, which)) = profile.filter(|(_, w)| w.any()) {
+        // Lens corrections move pixels, so they need the whole demosaiced image; each
+        // corrected row then goes straight into colour and tone.
+        let rgb = demosaic_bilinear(&mosaic, cw, ch, raw.cfa); // stage 3
+        drop(mosaic);
+        let warp = lens::Warp::new(cw, ch, p, which);
+        data.par_chunks_mut(cw * 3)
+            .enumerate()
+            .with_min_len(8)
+            .for_each_init(
+                || vec![0f32; cw * 3],
+                |scratch, (y, orow)| {
+                    warp.row(&rgb, y, scratch);
+                    color_tone_row(scratch, &fin, orow); // stages 4-7
+                },
+            );
+        return orient(data, cw, ch, raw.orientation); // stage 8
+    }
     data.par_chunks_mut(cw * 3)
         .enumerate()
         .with_min_len(8)
@@ -340,6 +377,8 @@ pub struct Demosaiced {
     pub orientation: Orientation,
     /// Pixels of this image per pixel of the RAW, for size-dependent effects.
     pub scale: f32,
+    /// The camera's lens corrections, applied in [`Demosaiced::finish`].
+    pub lens: lens::Lens,
 }
 
 impl Demosaiced {
@@ -368,6 +407,7 @@ impl Demosaiced {
             camera_to_srgb: camera_to_srgb_matrix(raw.xyz_to_cam),
             orientation: raw.orientation,
             scale: w.max(h) as f32 / cw.max(ch) as f32,
+            lens: lens::Lens::new(raw.lens.clone()),
         })
     }
 
@@ -381,9 +421,15 @@ impl Demosaiced {
         analysis: Option<&masks::Analysis>,
     ) -> RgbImage {
         use pipeline::*;
+        let adjust = recipe.render_adjust();
+        // Lens corrections first, on the frame as the sensor saw it.
+        let corrected = self
+            .lens
+            .corrected(&self.rgb, self.width, self.height, &adjust);
+        let base: &[f32] = corrected.as_deref().map_or(&self.rgb, |v| v);
         if recipe.needs_masks() {
             let (rgb, w, h) =
-                orient_pixels(self.rgb.clone(), self.width, self.height, self.orientation);
+                orient_pixels(base.to_vec(), self.width, self.height, self.orientation);
             let data = local::finish(
                 &rgb,
                 (w, h, self.scale),
@@ -398,22 +444,14 @@ impl Demosaiced {
                 data,
             };
         }
-        let adjust = recipe.render_adjust();
         let fin = Finish::new(self.camera_to_srgb, look, &adjust);
-        let data = finish_pixels(
-            &self.rgb,
-            self.width,
-            self.height,
-            &fin,
-            &adjust,
-            self.scale,
-        );
+        let data = finish_pixels(base, self.width, self.height, &fin, &adjust, self.scale);
         orient(data, self.width, self.height, self.orientation)
     }
 
     /// Heap size, for caches.
     pub fn bytes(&self) -> usize {
-        self.rgb.len() * std::mem::size_of::<f32>()
+        self.rgb.len() * std::mem::size_of::<f32>() + self.lens.bytes()
     }
 }
 

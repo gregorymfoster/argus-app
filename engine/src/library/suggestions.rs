@@ -162,7 +162,7 @@ impl Library {
         for s in list {
             let recipe = match amount {
                 Some(a) if a != 1.0 => self.suggestion_at(&s, a)?,
-                _ => s.recipe.clone(),
+                _ => self.keeping_spots(s.photo_id, s.recipe.clone())?,
             };
             let version = self.write_recipe(s.photo_id, &recipe, Author::Ai, Some(batch))?;
             // Only the newest accepted one reads as accepted; an earlier pick is open again.
@@ -193,7 +193,23 @@ impl Library {
             Some(v) => Recipe::from_value(&v.recipe)?,
             None => Recipe::default(),
         };
-        Ok(Recipe::blend(&from, &to, amount.clamp(0.0, 1.5)).to_value())
+        let r = Recipe::blend(&from, &to, amount.clamp(0.0, 1.5)).to_value();
+        self.keeping_spots(s.photo_id, r)
+    }
+
+    /// `take` with the Photo's current Heal and Clone Spots when it has none of its own:
+    /// takes are looks, not retouching, so accepting one keeps the person's Spots.
+    fn keeping_spots(&self, photo: PhotoId, mut take: Value) -> Result<Value> {
+        let has = |v: &Value| v["spots"].as_array().is_some_and(|a| !a.is_empty());
+        if has(&take) {
+            return Ok(take);
+        }
+        if let (Some(cur), Some(o)) = (self.read_recipe(photo)?, take.as_object_mut()) {
+            if has(&cur.recipe) {
+                o.insert("spots".into(), cur.recipe["spots"].clone());
+            }
+        }
+        Ok(take)
     }
 
     pub fn dismiss_suggestion(&self, id: i64) -> Result<()> {

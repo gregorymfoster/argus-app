@@ -348,3 +348,58 @@ fn a_raw_plus_jpeg_estimate_counts_the_jpegs_unless_raw_only() {
     assert_eq!(raw["original_bytes"], json!(50_000), "{raw}");
     assert!(pair["needed_bytes"].as_u64() > raw["needed_bytes"].as_u64());
 }
+
+#[test]
+fn a_second_import_copies_into_the_folder_named_like_its_own_shoot() {
+    // Cancel an Import part way and import the card again: only the rest comes in, as a
+    // Shoot dated by its own Photos. Its originals folder must carry that name too, not the
+    // date of the earlier frames it skipped as duplicates.
+    let dir = tempfile::tempdir().unwrap();
+    let card = dir.path().join("card");
+    let day = |y: i32| {
+        std::time::UNIX_EPOCH
+            + std::time::Duration::from_secs(((y - 1970) as u64 * 36525 / 100 + 100) * 86400)
+    };
+    for (name, year, seed) in [("old.jpg", 2020, 3), ("new.jpg", 2024, 5)] {
+        let path = card.join(name);
+        write_jpeg(&path, 600, 400, seed);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(day(year))
+            .unwrap();
+    }
+    let tools = Tools::new(dir.path().join("lib"));
+    let first = call(
+        &tools,
+        "import_folder",
+        json!({ "folder": card, "copy": true, "files": [card.join("old.jpg")] }),
+    );
+    assert_eq!(first["imported"], 1, "{first}");
+
+    let second = call(
+        &tools,
+        "import_folder",
+        json!({ "folder": card, "copy": true }),
+    );
+    assert_eq!(
+        (second["imported"].clone(), second["duplicates"].clone()),
+        (json!(1), json!(1)),
+        "{second}"
+    );
+    let name = second["shoot_name"].as_str().unwrap();
+    assert!(name.starts_with("2024-"), "{name}");
+    assert_eq!(second["copied_to"], format!("originals/{name}"), "{second}");
+    let lib = dir.path().join("lib").canonicalize().unwrap();
+    let new = photos(&lib)
+        .into_iter()
+        .find(|p| p.file_name == "new.jpg")
+        .unwrap();
+    assert!(
+        Path::new(&new.path).starts_with(lib.join("originals").join(name)),
+        "{}",
+        new.path
+    );
+    assert!(Path::new(&new.path).is_file());
+}

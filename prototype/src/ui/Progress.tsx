@@ -26,9 +26,10 @@ export function eta(seconds: number | null | undefined): string | null {
 
 /**
  * A progress bar. With `done`/`total` it fills to match; without, it shows a calm moving
- * sheen (still never a spinner). `eta` is seconds left.
+ * sheen (still never a spinner). `eta` is seconds left. `count={false}` leaves out "n of
+ * total" where the units mean nothing to the person (model tiles) or space is tight.
  */
-export function ProgressBar({ label, done, total, eta: left, testId }: { label: string; done?: number; total?: number; eta?: number | null; testId?: string }) {
+export function ProgressBar({ label, done, total, eta: left, testId, count = true }: { label: string; done?: number; total?: number; eta?: number | null; testId?: string; count?: boolean }) {
   const known = total != null && total > 0 && done != null;
   const pct = known ? Math.min(100, (done! / total!) * 100) : 0;
   const leftText = eta(left);
@@ -37,8 +38,8 @@ export function ProgressBar({ label, done, total, eta: left, testId }: { label: 
       <div className="progress-head">
         <span>{label}</span>
         <span className="mono faint">
-          {known ? `${done} of ${total}` : ''}
-          {known && leftText ? ' · ' : ''}
+          {known && count ? `${done} of ${total}` : ''}
+          {known && count && leftText ? ' · ' : ''}
           {leftText ? `${leftText} left` : ''}
         </span>
       </div>

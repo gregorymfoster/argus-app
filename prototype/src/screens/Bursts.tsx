@@ -12,7 +12,7 @@ import { go } from '../router';
 import { PhotoView } from '../ui/PhotoView';
 import { Stars } from '../ui/Stars';
 import { Button } from '@/components/ui/button';
-import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL } from '../ui/kit';
+import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
 import { aiName } from '../data/live';
 
@@ -120,7 +120,7 @@ export function BurstsScreen({ start }: { start?: string }) {
   useHotkeys('enter', keep, { preventDefault: true }, [stack, cur, state, rest, at]);
   useHotkeys(['z', 'space'], () => cur && go({ name: 'loupe', id: cur.id }), { preventDefault: true }, [cur]);
   useHotkeys('d', () => cur && go({ name: 'edit', id: cur.id }), [cur]);
-  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }));
+  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
 
   const total = stacks.length;
   const pct = total ? (doneCount / total) * 100 : 0;

@@ -155,13 +155,14 @@ export function SuggestionStrip({ photo, recipe, look, list, pick, onPick, onAcc
         )}
         <TakesButton job={job} held={held} onMore={onMore} onCancel={onCancel} />
       </div>
-      <div className="takes-row">
+      {/* With nothing to compare it to, "Your edit" alone would only take height from the photo. */}
+      {(list.length > 0 || job) && <div className="takes-row">
         <Tile photo={photo} recipe={recipe} look={look} s={null} label="0" title="Your edit" why="What you have now" selected={pick < 0} onPick={() => onPick(-1)} />
         {list.map((s, i) => (
           <Tile key={s.id} photo={photo} recipe={s.recipe} look={look} s={s} label={String(i + 1)} title={s.title} why={s.why} selected={pick === i} onPick={() => onPick(i)} />
         ))}
         {job && Array.from({ length: job.takes }, (_, i) => <Pending key={`${job.id}-${i}`} photo={photo} recipe={recipe} look={look} n={i + 1} stage={held ?? (job.status === 'running' ? job.stage : 'Queued')} delay={i * 90} />)}
-      </div>
+      </div>}
     </section>
   );
 }

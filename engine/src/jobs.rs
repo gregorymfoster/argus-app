@@ -30,8 +30,13 @@ use std::time::Duration;
 /// - `cull_shoot` (alias `rate_shoot`) {shoot_id?, provider?}: the AI cull
 /// - `render_previews` {shoot_id?}: Argus's own previews over the camera's, queued by `import_folder`
 /// - `analyze` {shoot_id?, photo_ids?}: the specialist models' Facts (ADR 0013), queued after Import
+/// - `rank_presets` {shoot_id, provider?}: the AI's suggested order of the Presets for a Shoot
+/// - `denoise` {photo_id}: AI Denoise's base for one RAW ([`crate::denoise`]), queued when a
+///   Recipe with a Denoise Amount is saved
 pub const KINDS: &[&str] = &[
+    "rank_presets",
     "analyze",
+    "denoise",
     "suggest",
     "suggest_shoot",
     "match_hero",
@@ -291,6 +296,19 @@ pub fn enqueue(
             format!("analyze:{}", id("shoot_id").unwrap_or(0)),
             PRIORITY_ANALYZE,
         ),
+        "rank_presets" => (
+            shoot("Ranking Presets"),
+            format!("rank_presets:{}", id("shoot_id").unwrap_or(0)),
+            PRIORITY_OTHER,
+        ),
+        "denoise" => {
+            let p = id("photo_id").ok_or_else(|| Error("denoise needs photo_id".into()))?;
+            (
+                format!("Denoise {}", name(Some(p))),
+                format!("denoise:{p}"),
+                PRIORITY_OTHER,
+            )
+        }
         "render_previews" => (
             shoot("Previews"),
             format!("render_previews:{}", id("shoot_id").unwrap_or(0)),
@@ -499,6 +517,60 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
                 }
             }
             Ok(json!({ "photos": photos.len(), "analyzers": ids, "stacks": stacked }))
+        }
+        "rank_presets" => {
+            #[derive(Deserialize)]
+            struct A {
+                shoot_id: ShootId,
+                provider: Option<String>,
+            }
+            let a: A = args(job)?;
+            let lib = Library::open(tools.library())?;
+            let progress = Library::open(tools.library())?;
+            let id = job.id;
+            let r = crate::preset_rank::rank(
+                &lib,
+                a.shoot_id,
+                a.provider.as_deref(),
+                compute,
+                &|done, total| {
+                    let _ = progress.job_progress(id, done as i64, total as i64);
+                },
+            )?;
+            Ok(
+                json!({ "top": r.ranked.iter().take(6).map(|x| &x.id).collect::<Vec<_>>(), "photos": r.photos }),
+            )
+        }
+        "denoise" => {
+            #[derive(Deserialize)]
+            struct A {
+                photo_id: PhotoId,
+            }
+            let a: A = args(job)?;
+            let lib = Library::open(tools.library())?;
+            let photo = lib
+                .photo(a.photo_id)?
+                .ok_or_else(|| Error(format!("no Photo {}", a.photo_id)))?;
+            // Undone or turned off since it was queued: nothing to do.
+            let recipe = lib
+                .read_recipe(a.photo_id)?
+                .map(|v| Recipe::from_value(&v.recipe))
+                .transpose()?
+                .unwrap_or_default();
+            if crate::denoise::amount(&recipe) == 0.0 {
+                return Ok(json!({ "photo_id": a.photo_id, "skipped": "Denoise is off" }));
+            }
+            let started = std::time::Instant::now();
+            let id = job.id;
+            let progress = std::sync::Mutex::new(lib);
+            compute.cpu_pool()?.install(|| {
+                crate::denoise::compute(&photo, &|done, total| {
+                    if let Ok(l) = progress.lock() {
+                        let _ = l.job_progress(id, done as i64, total as i64);
+                    }
+                })
+            })?;
+            Ok(json!({ "photo_id": a.photo_id, "seconds": started.elapsed().as_secs() }))
         }
         other => Err(Error(format!("unknown job kind {other:?}"))),
     }
@@ -711,8 +783,16 @@ pub fn boost(c: &QueueConfig) -> Option<&'static str> {
     boost_at(c, idle_seconds(), local_hour())
 }
 
-/// The kinds that run the big local model, which wait for an idle Mac ([`QueueConfig::idle_only`]).
-pub const MODEL_KINDS: &[&str] = &["suggest", "suggest_shoot", "match_hero", "cull_shoot"];
+/// The kinds that run a big model (the local LLM, or AI Denoise's minutes per Photo), which
+/// wait for an idle Mac ([`QueueConfig::idle_only`]). The open Photo's always run.
+pub const MODEL_KINDS: &[&str] = &[
+    "suggest",
+    "suggest_shoot",
+    "match_hero",
+    "cull_shoot",
+    "rank_presets",
+    "denoise",
+];
 
 /// Long model jobs: a whole-Shoot cull, or a Shoot's Suggestions fanning out.
 const LONG_KINDS: &[&str] = &["suggest_shoot", "cull_shoot"];

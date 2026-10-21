@@ -352,6 +352,17 @@ impl Library {
         Ok(self.db.last_insert_rowid())
     }
 
+    /// Who started a batch: its changes are recorded under the same author.
+    pub fn batch_author(&self, batch: BatchId) -> Result<Author> {
+        let a: String = self
+            .db
+            .query_row("SELECT author FROM batches WHERE id = ?1", [batch], |r| {
+                r.get(0)
+            })
+            .map_err(db_err)?;
+        a.parse()
+    }
+
     /// Set one Verdict on many Photos. A person overruling an AI Verdict is logged as an
     /// Override. Unknown Photo ids are an error and nothing is changed.
     pub fn set_verdict(
@@ -542,6 +553,7 @@ impl Library {
                 )
                 .map_err(db_err)?;
             lib.log_recipe(photo, next, recipe, author.as_str(), batch);
+            crate::denoise::queue_if_needed(lib, photo, recipe, author)?;
             Ok(next)
         })
     }

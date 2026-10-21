@@ -188,6 +188,10 @@ _Avoid_: Selection, layer
 Slider changes that apply only inside one Mask, on top of the global sliders.
 _Avoid_: Layer, local edit
 
+**Spot**:
+One circle of Lightroom's Heal or Clone tool: pixels copied over a small blemish, stray hair or dust speck from a source circle elsewhere in the same Photo, which Argus picks and the person can drag. Heal blends the copy into the light and colour around the spot; Clone copies it exactly. Nothing is generated, and a Spot is small (up to 15% of the long edge), so it never removes whole objects.
+_Avoid_: Healing brush, patch, object removal
+
 **Retouch**:
 Natural people fixes that never move a pixel: skin smoothing, brighter eyes, whiter teeth and light on faces.
 _Avoid_: Beautify, filter, face tune
@@ -196,10 +200,22 @@ _Avoid_: Beautify, filter, face tune
 What the local Mask models found in a Photo (people, skin, hair, sky, faces with their eyes and mouths), made once from its preview and cached.
 _Avoid_: Detection, segmentation result
 
+**Denoise**:
+Lightroom's AI Denoise: a learned model (SCUNet) runs once over a RAW's full-size image in the background and the result is kept as the Photo's denoised base in the Library's cache. The Recipe's Denoise Amount (0-100, 0 is off) blends that base over the plain image, so the slider moves instantly once the base exists. RAW only. Separate from the manual Noise reduction sliders.
+_Avoid_: Noise reduction (that's the manual sliders), enhance, clean up
+
 **Auto**:
 Lightroom's Auto button: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temp, Tint and Vibrance set from a Photo's own light by a fast, deterministic measurement (no model). It replaces only those sliders and keeps the rest of the Recipe.
 _Avoid_: Auto-enhance, magic fix
 
+**Settings group**:
+One of the groups Copy, Paste and Sync settings move between Photos, as in Lightroom's Copy Settings dialog: White balance, Light, Color, Effects, Detail, Optics, Calibration, Retouch, Masks, Spot removal and Crop (`engine/src/paste.rs`). Pasting a group replaces those settings on the target and leaves the rest of its Recipe alone.
+_Avoid_: Category, section
+
+**Lens corrections**:
+Distortion, vignetting and chromatic aberration fixes taken from the lens data the camera writes into each RAW (Sony ARWs today; `engine/src/lens.rs`), in place of Lightroom's lens profiles. The Recipe's `lensCorrections` is As camera (the default: what the camera did to its own JPEG), On or Off.
+_Avoid_: Lens profile (we have no profile database)
+
 **Preset**:
-A one-click starting point from the Presets tool, as in Lightroom: a built-in set of slider values (a Look such as Warm film or B&W contrast), or an adaptive one that adds a Mask the engine finds by itself (Subject, Sky, People). Applying one sets only what it names. Unlike a Look, it belongs to no Shoot and is copied into the Photo's Recipe.
+A one-click starting point from the Presets tool, as in Lightroom: a built-in set of settings in a group (Essentials, Portrait, Film, Black and white...; `engine/presets/builtin.json`), or an adaptive one that adds a Mask the engine finds by itself (Subject, Sky, People). Applied at an Amount (0 to 200%), its numbers add to the Photo's Recipe, so it stacks on Auto, and the Recipe remembers what it changed so it can come off again. Unlike a Look, it belongs to no Shoot and is copied into the Photo's Recipe. The AI suggests an order of Presets per Shoot ("Suggested for this Shoot"), a suggestion, never applied by itself.
 _Avoid_: Filter, style

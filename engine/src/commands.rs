@@ -17,6 +17,7 @@
 //! | `flag`   | {ids, verdict, author = "person", reason?, label?, batch_id?} | {flagged, batch_id, photos: [CullState]} |
 //! | `rate`   | {ids, stars (0-5), author = "person", label?, batch_id?} | {rated, batch_id, photos: [CullState]} |
 //! | `photo_states` | {ids}                                | [CullState]                   |
+//! | `denoise_status` | {photo_id}                         | {raw, ready, job: {status, done, total, eta_s} or null}: AI Denoise's base for the Edit panel |
 //! | `as_person` | {tool, args, label}                     | the tool's result plus `batch_id` |
 //! | `edit`   | {photo_id, recipe, label?}                   | {version, batch_id}           |
 //! | `thumbnail`    | {path, long_edge = 320}                | {images: [data URL]}          |
@@ -555,21 +556,65 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
         }
         "flag" => {
             let a: FlagArgs = args(command, a)?;
+            let ids = distinct(&a.ids);
+            if ids.is_empty() {
+                // Nothing to flag is no Undo step either.
+                return Ok(json!({ "flagged": 0, "batch_id": null, "photos": [] }));
+            }
             let mut lib = Library::open(tools.library())?;
-            let label = format!("Flagged {} {}", a.ids.len(), a.verdict.as_str());
+            let label = format!("Flagged {} {}", ids.len(), a.verdict.as_str());
             let batch = person_batch(&mut lib, a.author, a.batch_id, a.label, label)?;
-            lib.set_verdict(&a.ids, a.verdict, a.author, a.reason.as_deref(), batch)?;
-            let photos = lib.cull_states(&a.ids)?;
-            Ok(json!({ "flagged": a.ids.len(), "batch_id": batch, "photos": photos }))
+            lib.set_verdict(&ids, a.verdict, a.author, a.reason.as_deref(), batch)?;
+            let photos = lib.cull_states(&ids)?;
+            Ok(json!({ "flagged": ids.len(), "batch_id": batch, "photos": photos }))
         }
         "rate" => {
             let a: RateArgs = args(command, a)?;
+            let ids = distinct(&a.ids);
+            if ids.is_empty() {
+                return Ok(json!({ "rated": 0, "batch_id": null, "photos": [] }));
+            }
             let mut lib = Library::open(tools.library())?;
-            let label = format!("Rated {} at {} stars", a.ids.len(), a.stars);
+            let label = format!("Rated {} at {} stars", ids.len(), a.stars);
             let batch = person_batch(&mut lib, a.author, a.batch_id, a.label, label)?;
-            lib.set_rating(&a.ids, a.stars, a.author, batch)?;
-            let photos = lib.cull_states(&a.ids)?;
-            Ok(json!({ "rated": a.ids.len(), "batch_id": batch, "photos": photos }))
+            lib.set_rating(&ids, a.stars, a.author, batch)?;
+            let photos = lib.cull_states(&ids)?;
+            Ok(json!({ "rated": ids.len(), "batch_id": batch, "photos": photos }))
+        }
+        "denoise_status" => {
+            #[derive(Deserialize)]
+            struct A {
+                photo_id: crate::library::PhotoId,
+            }
+            let a: A = args(command, a)?;
+            let lib = Library::open(tools.library())?;
+            let photo = lib
+                .photo(a.photo_id)?
+                .ok_or_else(|| Error(format!("no Photo {}", a.photo_id)))?;
+            let job = lib
+                .jobs(None, Some("denoise"), 50)?
+                .into_iter()
+                .filter(|j| j.args["photo_id"].as_i64() == Some(a.photo_id))
+                .find(|j| {
+                    matches!(
+                        j.status,
+                        crate::library::JobStatus::Queued | crate::library::JobStatus::Running
+                    )
+                });
+            let job = match job {
+                Some(j) => {
+                    let ran = lib.job_elapsed_seconds(j.id)?.unwrap_or(0.0);
+                    let eta = (j.done > 0 && j.total > j.done)
+                        .then(|| ran * (j.total - j.done) as f64 / j.done as f64);
+                    json!({ "status": j.status, "done": j.done, "total": j.total, "eta_s": eta })
+                }
+                None => Value::Null,
+            };
+            Ok(json!({
+                "raw": crate::denoise::base_file(&photo).is_some(),
+                "ready": crate::denoise::ready(&photo).is_some(),
+                "job": job,
+            }))
         }
         "photo_states" => {
             let a: StatesArgs = args(command, a)?;
@@ -711,4 +756,10 @@ fn write_thumb(preview: &Path, thumb: &Path) -> Result<()> {
     let tmp = thumb.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&tmp, jpeg).map_err(|e| Error(e.to_string()))?;
     std::fs::rename(&tmp, thumb).map_err(|e| Error(e.to_string()))
+}
+
+/// The ids once each, in the order given: a selection sent twice is still one change per Photo.
+fn distinct<T: Copy + Eq + std::hash::Hash>(ids: &[T]) -> Vec<T> {
+    let mut seen = std::collections::HashSet::new();
+    ids.iter().copied().filter(|id| seen.insert(*id)).collect()
 }

@@ -7,6 +7,8 @@
 # - face_detection_yunet_2023mar: OpenCV Zoo YuNet (MIT).
 # - deeplabv3_mnv2_ade20k: TensorFlow DeepLab v3, MobileNetV2 on ADE20K (Apache 2.0). A
 #   frozen TF graph, cut to the normalised input and the logits, then converted to ONNX.
+# - scunet_color_real_f16: SCUNet's blind real-noise model (Apache 2.0) for AI Denoise,
+#   exported from PyTorch by scunet_onnx.py (fp16 weights).
 set -euo pipefail
 out="$(cd "$(dirname "$0")/../../engine/models" && pwd)"
 work="$(mktemp -d)"
@@ -49,3 +51,13 @@ curl -fsSL -o "$out/face_detection_yunet_2023mar.onnx" \
 
 sha256sum "$out"/*.onnx
 echo "Now update engine/models/manifest.json with these hashes and sizes."
+
+# SCUNet (Apache 2.0): network code and weights from the authors' GitHub, exported by
+# scunet_onnx.py. A different torch version may write different bytes for the same model:
+# update the manifest's sha256 after checking renders.
+curl -fsSL -o "$work/network_scunet.py" https://raw.githubusercontent.com/cszn/SCUNet/main/models/network_scunet.py
+curl -fsSL -o "$work/scunet.pth" https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth
+python3 -m venv "$work/torch"
+"$work/torch/bin/pip" install -q torch onnx einops numpy
+"$work/torch/bin/python" "$(dirname "$0")/scunet_onnx.py" "$work/network_scunet.py" "$work/scunet.pth" \
+  "$out/scunet_color_real_f16.onnx"

@@ -256,7 +256,9 @@ fn every_model_is_in_the_manifest_with_an_allowed_licence() {
     let models = manifest["models"].as_array().unwrap();
     // Permissive licences only: weights we can ship in a distributed app (ADR 0013).
     const ALLOWED: [&str; 4] = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause"];
-    let ids: Vec<&str> = REGISTRY.iter().map(|a| a.id()).collect();
+    // Models used outside the Analyzer seam, by the module named here.
+    let mut ids: Vec<&str> = REGISTRY.iter().map(|a| a.id()).collect();
+    ids.push("denoise");
     for m in models {
         let file = m["file"].as_str().unwrap();
         assert!(ALLOWED.contains(&m["license"].as_str().unwrap()), "{m}");

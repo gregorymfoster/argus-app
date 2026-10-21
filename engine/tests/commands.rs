@@ -690,3 +690,39 @@ fn edited_previews_are_cached_on_disk_until_the_recipe_changes() {
     dispatch(&tools, "clear_cache", json!({})).unwrap();
     assert!(!library_file(tools.library(), &second).unwrap().exists());
 }
+
+#[test]
+fn flag_and_rate_with_no_ids_make_no_undo_step_and_repeats_count_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("2026-10-12_tahoe");
+    write_jpeg(&src.join("a.jpg"), 64, 48, 3);
+    let tools = Tools::new(dir.path().join("lib"));
+    dispatch(&tools, "import_folder", json!({ "folder": src })).unwrap();
+    let id = dispatch(&tools, "photos", json!({})).unwrap()[0]["id"].clone();
+    let last = || {
+        argus_engine::library::Library::open(tools.library())
+            .unwrap()
+            .last_batch(None)
+            .unwrap()
+            .map(|b| b.0)
+    };
+    let before = last();
+
+    let r = dispatch(&tools, "flag", json!({ "ids": [], "verdict": "pick" })).unwrap();
+    assert_eq!(r["flagged"], 0);
+    assert_eq!(r["batch_id"], Value::Null);
+    let r = dispatch(&tools, "rate", json!({ "ids": [], "stars": 3 })).unwrap();
+    assert_eq!(r["rated"], 0);
+    assert_eq!(last(), before, "nothing changed, so Undo has no new step");
+
+    let r = dispatch(
+        &tools,
+        "flag",
+        json!({ "ids": [id, id, id], "verdict": "pick" }),
+    )
+    .unwrap();
+    assert_eq!(r["flagged"], 1);
+    assert_eq!(r["photos"].as_array().unwrap().len(), 1);
+    let r = dispatch(&tools, "rate", json!({ "ids": [id, id], "stars": 4 })).unwrap();
+    assert_eq!(r["rated"], 1);
+}

@@ -664,6 +664,20 @@ const CHARACTERS: &[Character] = &[
             ("local.sky.saturation", 12.0),
         ],
     },
+    // Third by default since 2026-10-21. Greg's blind picks rank Moody last of every take,
+    // and the Claude judge preferred this take to Moody 79%. A warmer Natural was tried
+    // first, but it rendered within dE 3 of Natural (median), too close for him to tell
+    // apart. Bright differs from Natural by a visible step (median dE 6) and moves toward
+    // his own edits, which run about 2 L* brighter than Natural.
+    Character {
+        name: "Bright",
+        brief: "The same honest edit, brighter and more open: shadows lifted, the subject a little lighter. Nothing clipped.",
+        start: &[
+            ("exposure", 0.2),
+            ("shadows", 10.0),
+            ("local.subject.exposure", 0.1),
+        ],
+    },
     Character {
         name: "Moody",
         brief: "A deliberate mood: darker and denser, colour graded (cool shadows and warm highlights, or a faded film look), softer highlights, edges falling off. Faces stay readable.",

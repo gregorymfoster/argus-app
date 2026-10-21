@@ -136,6 +136,7 @@ export interface Adjust {
   grainSize?: number; // 0..100 [25]
   grainRoughness?: number; // 0..100 [50]
   // Detail
+  denoise?: number; // AI Denoise Amount 0..100, RAW only (engine/src/denoise.rs)
   sharpen?: number; // 0..150
   sharpenRadius?: number; // 0.5..3 [1]
   sharpenDetail?: number; // 0..100 [25]
@@ -147,6 +148,8 @@ export interface Adjust {
   colorNoiseDetail?: number; // [50]
   colorNoiseSmoothness?: number; // [50]
   // Optics
+  /** Lens corrections from the camera's own data (engine lens.rs); absent = 'camera'. */
+  lensCorrections?: 'camera' | 'on' | 'off';
   removeCA?: number; // 0 or 1
   defringePurple?: number; // 0..20
   defringeGreen?: number; // 0..20
@@ -201,7 +204,7 @@ export type HslBand = (typeof HSL_BANDS)[number];
 export type HslShift = { hue?: number; sat?: number; lum?: number };
 
 /** The Adjust sliders that are plain numbers (all but the Color mixer). */
-export type NumKey = Exclude<keyof Adjust, 'hsl' | 'curve' | 'grading' | 'calibration' | 'pointColor'>;
+export type NumKey = Exclude<keyof Adjust, 'hsl' | 'curve' | 'grading' | 'calibration' | 'pointColor' | 'lensCorrections'>;
 
 /** How a Mask is made; the engine's kinds (engine/src/masks/mod.rs). */
 export type MaskRef = (
@@ -256,6 +259,34 @@ export interface Recipe {
   local: LocalAdjust[];
   /** Absent means no crop. */
   crop?: Crop;
+  /** Presets on this Recipe, in the order applied (engine/src/presets.rs). */
+  presets?: AppliedPreset[];
+  /** Heal and Clone Spots, on the uncropped frame; absent means none. */
+  spots?: Spot[];
+}
+
+/**
+ * One Heal or Clone circle (engine `heal::Spot`): pixels from `from` cover the circle at
+ * x, y. x and y are 0..1 of the upright image; r is a fraction of its long edge.
+ */
+export interface Spot {
+  id: string;
+  mode: 'heal' | 'clone';
+  x: number;
+  y: number;
+  r: number;
+  from: { x: number; y: number };
+  feather: number;
+  opacity: number;
+  source?: Actor;
+}
+
+/** A Preset on a Recipe: its Amount (0..2) and each setting it changed, before and after. */
+export interface AppliedPreset {
+  id: string;
+  amount: number;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
 }
 
 /** A complete edit the AI proposes for one Photo; nothing changes until it's accepted. */

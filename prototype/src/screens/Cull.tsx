@@ -5,7 +5,7 @@ import { Award, Check, ChevronDown, Columns2, Copy, Download, Flag, Folder, Grid
 import { toast } from 'sonner';
 import { acceptMany, useShootTakes } from '../data/suggestions';
 import { undoBatch } from '../data/liveAgent';
-import { LIVE, asPerson, importingBytes, inCollection, revealInFinder } from '../data/live';
+import { LIVE, importingBytes, inCollection, revealInFinder } from '../data/live';
 import { call } from '../data/backend';
 import { useAiStatus, type AiState } from '../data/aiStatus';
 import { useEyeFlags, type EyeFlags } from '../data/facts';
@@ -26,7 +26,9 @@ import { ViewSwitch } from '../ui/ViewBar';
 import { SortMenu, toggleStars, useSort } from '../ui/Sort';
 import { sortPhotos } from '../domain/sort';
 import { aiName } from '../data/live';
-import { Kbd, MenuKeys, Seg, Tip, VERDICT_KEYS } from '../ui/kit';
+import { ESC_OUTSIDE_DIALOGS, Kbd, MenuKeys, Seg, Tip, VERDICT_KEYS } from '../ui/kit';
+import { askSettings, hasCopiedSettings, pasteClip, pasteSettings, useSettingsKeys } from '../ui/PasteSettings';
+import { ALL_GROUPS } from '../domain/settings';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
@@ -76,6 +78,8 @@ interface TileMenu {
   others: number;
   onAuto: () => void;
   onApplyToSelection: () => void;
+  onPaste: () => void;
+  onSync: () => void;
   onCompare: () => void;
   onAsk: () => void;
   onExport: () => void;
@@ -183,6 +187,15 @@ function TileMenuItems({ p, stars, onStars, onSet, menu: menuOf }: Pick<TileProp
       </ContextMenuItem>
       <ContextMenuItem onSelect={menu.onApplyToSelection} disabled={menu.others === 0}>
         <Copy size={13} /> Apply this edit to {menu.others ? `${menu.others} selected` : 'selection'} <MenuKeys keys={['⌘', '⇧', 'A']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => askSettings({ mode: 'copy', from: p.id, targets: [] })}>
+        <span style={{ width: 13 }} /> Copy settings… <MenuKeys keys={['⌘', '⇧', 'C']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={menu.onPaste} disabled={!hasCopiedSettings()}>
+        <span style={{ width: 13 }} /> Paste settings{menu.others > 0 && menu.selected ? ` to ${menu.others + 1} Photos` : ''} <MenuKeys keys={['⌘', '⇧', 'V']} />
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={menu.onSync} disabled={menu.others === 0}>
+        <span style={{ width: 13 }} /> Sync settings to {menu.others ? `${menu.others} selected` : 'selection'}… <MenuKeys keys={['⌘', '⇧', 'S']} />
       </ContextMenuItem>
       <ContextMenuItem onSelect={menu.onCompare} disabled={menu.others === 0 && !p.stackId}>
         <Columns2 size={13} /> {menu.others === 0 && p.stackId ? 'Compare the Stack' : 'Compare with selection'} <MenuKeys keys={['C']} />
@@ -315,6 +328,20 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     setSel(new Set());
     setCur((s) => Math.max(0, Math.min(visible.length - 1, s + d)));
   };
+  // After a flag or star, move on to the Photo that was next, wherever it lands: under a
+  // flag or star filter the flagged Photo leaves the grid, and sorted by stars or flag it
+  // moves, so stepping the cursor by one would skip a Photo or jump away.
+  const [follow, setFollow] = useState<string | null>(null);
+  const moveOn = () => {
+    const next = visible[Math.min(cur, visible.length - 1) + 1];
+    if (next) setFollow(next.id);
+  };
+  useLayoutEffect(() => {
+    if (!follow) return;
+    const i = visible.findIndex((p) => p.id === follow);
+    if (i >= 0) setCur(i);
+    setFollow(null);
+  }, [visible, follow]);
 
   // TanStack Virtual renders only the rows on screen. Columns follow the panel width and
   // the thumbnail size; tiles stretch to fill the row, as in Lightroom.
@@ -421,7 +448,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     (e) => {
       setVerdict(targets, VERDICT_KEYS[e.key.toLowerCase()]);
       // design.md: flagging jumps to the next Photo. A multi-selection stays put.
-      if (!sel.size) setCur((c) => Math.min(visible.length - 1, c + 1));
+      if (!sel.size) moveOn();
     },
     [targets, visible, sel],
   );
@@ -431,7 +458,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     STAR_KEYS,
     (e) => {
       setStars(targets, Number(e.key));
-      if (!sel.size) setCur((c) => Math.min(visible.length - 1, c + 1));
+      if (!sel.size) moveOn();
     },
     [targets, visible, sel],
   );
@@ -463,7 +490,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   );
   useHotkeys('a', () => acceptFirst(targets), [targets, takes]);
   useHotkeys('mod+a', () => setSel(new Set(visible.map((p) => p.id))), { preventDefault: true }, [visible]);
-  useHotkeys('escape', () => setSel(new Set()));
+  useHotkeys('escape', () => setSel(new Set()), ESC_OUTSIDE_DIALOGS);
   // Lightroom: Delete removes the selection (or the current Photo) from the Library, after asking.
   useHotkeys(['backspace', 'delete'], () => targets.length && askRemove({ photos: targets }), { preventDefault: true }, [targets]);
   // L sets a Look on the Shoot's Picks; say why when it can't.
@@ -488,6 +515,8 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
         dispatch(autoAction(ids, (id) => recipeOf(state, id)));
       },
       onApplyToSelection: () => copyEdit(p.id, others),
+      onPaste: () => pasteCopied(sel.has(p.id) && sel.size > 1 ? [...sel] : [p.id]),
+      onSync: () => askSettings({ mode: 'sync', from: p.id, targets: others }),
       onCompare: () => go({ name: 'compare', ids: others.length ? [p.id, ...others] : stackOf(p).map((x) => x.id) }),
       onAsk: () => {
         const i = visible.findIndex((x) => x.id === p.id);
@@ -500,14 +529,10 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
       onRemove: () => askRemove({ photos: sel.has(p.id) ? [...sel] : [p.id] }),
     };
   };
-  // Lightroom's Sync Settings: this Photo's whole edit onto the others, as one batch.
-  const copyEdit = (from: string, to: string[]) => {
-    if (!to.length) return;
-    const recipe = recipeOf(state, from);
-    const label = `Edit copied to ${to.length} Photo${to.length > 1 ? 's' : ''}`;
-    if (LIVE) dispatch({ type: 'engine/saved', label, batch: asPerson('write_recipe', { photo_ids: to.map(Number), recipe }, label, () => to.map(Number)) });
-    else dispatch({ type: 'batch', label, actions: to.map((id) => ({ type: 'recipe/set', id, recipe, label: 'Copied edit', by: 'you' })) });
-  };
+  // "Apply this edit": the whole edit onto the others, as one batch (⇧⌘S asks which groups).
+  const copyEdit = (from: string, to: string[]) => pasteSettings(state, dispatch, from, to, ALL_GROUPS);
+  const pasteCopied = (to: string[]) => pasteClip(state, dispatch, to);
+  useSettingsKeys(current?.id ?? null, [...sel]);
   useHotkeys('mod+shift+a', () => current && copyEdit(current.id, [...sel].filter((id) => id !== current.id)), { preventDefault: true }, [current, sel, state]);
   useHotkeys('mod+l', () => current && menuFor(current).onAsk(), { preventDefault: true }, [current, visible]);
   useHotkeys('mod+shift+r', () => current && LIVE && void revealInFinder({ photo_id: Number(current.id) }).catch(() => {}), { preventDefault: true }, [current]);

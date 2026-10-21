@@ -227,6 +227,12 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
             })
         }
         Format::Jpeg | Format::Tiff => {
+            // AI Denoise needs its base; an export waits for it rather than leaving it out.
+            if crate::denoise::amount(item.recipe) > 0.0
+                && crate::denoise::base_file(item.photo).is_some()
+            {
+                crate::denoise::compute(item.photo, &|_, _| {})?;
+            }
             let img =
                 render::render_photo(item.photo, item.recipe, opts.long_edge, item.masks.clone())?;
             let ext = if opts.format == Format::Jpeg {

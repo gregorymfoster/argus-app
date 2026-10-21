@@ -415,8 +415,10 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .decision .note { font-size: 12px; color: var(--text-3); }
 .decision input { height: 28px; border-radius: 7px; border: 1px solid #3a3222; background: #110f0a; padding: 0 8px; font-size: 12px; outline: none; }
 
+/* A narrow window (or a small one at ⌘+ zoom: 1024 px at 125% lays out at 819) drops the side
+   columns, but never Edit's panel, which lives in the Agent column: without it Edit can't edit. */
 @media (max-width: 900px) {
-  .sidebar, .agent, .side { display: none; }
+  .sidebar, .agent:not(:has([data-testid='edit-panel'])), .side { display: none; }
 }
 
 /* Settings sections. Selected comes only from aria-current; hover is a lighter wash on the others (and only with a
@@ -597,6 +599,11 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .tool-strip button.on { background: var(--selected); color: var(--text); box-shadow: var(--highlight); }
 .tool-badge { position: absolute; right: 1px; bottom: 1px; min-width: 12px; height: 12px; padding: 0 2px; border-radius: 4px; font: 500 9px/12px var(--mono); background: var(--raised-2); color: var(--text-2); }
 .dev-scroll { flex: 0 1 auto; max-height: 78%; overflow: auto; min-height: 0; }
+/* The Agent under the Edit panel: its composer alone until it's in use, so the sliders get the height. */
+/* `contents`: its parts stay the column's own flex items, laid out as before the wrapper. */
+.agent-chat { display: contents; }
+.agent-chat.slim > .agent-head, .agent-chat.slim > .agent-body { display: none; }
+.agent-col:has(> .agent-chat.slim) > .dev-scroll { flex: 1 1 auto; max-height: none; }
 .dev-panel { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; }
 .dev-title { display: flex; align-items: center; gap: 6px; height: 26px; font-weight: 500; }
 .dev-note { font-size: 11.5px; color: var(--text-3); font-weight: 400; }
@@ -656,8 +663,8 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .dev-panel .sub-head { margin: 6px 0 0; height: 20px; font-size: 11.5px; }
 .dev-panel .dim-soft { opacity: 0.5; transition: opacity var(--fast); }
 .dev-panel .dim-soft:hover, .dev-panel .dim-soft:focus-within { opacity: 1; }
-.curve-modes { width: 100%; margin-bottom: 6px; }
-.curve-modes > button { flex: 1; height: 22px; font-size: 11.5px; }
+.curve-modes, .lens-profile { width: 100%; margin-bottom: 6px; }
+.curve-modes > button, .lens-profile > button { flex: 1; height: 22px; font-size: 11.5px; }
 .curve-graph { display: block; width: 100%; max-width: 232px; aspect-ratio: 1; margin: 2px auto 4px; touch-action: none; cursor: crosshair; }
 .curve-bg { fill: var(--fill); }
 .curve-grid line, .curve-diag { stroke: var(--border); stroke-width: 1; }
@@ -714,6 +721,15 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .linear-line { position: absolute; width: 300%; height: 0; border-top: 1.5px dashed rgb(255 255 255 / 0.6); }
 .linear-line.full { border-top-style: solid; border-color: rgb(255 255 255 / 0.9); }
 .mask-handles:has(.linear-line) { overflow: hidden; }
+/* Heal and Clone Spots: the circle, its dashed source, the line between, the brush */
+.heal-layer { pointer-events: auto; cursor: crosshair; }
+.spot-ring { pointer-events: auto; cursor: grab; touch-action: none; }
+.spot-ring.from { border-style: dashed; opacity: 0.7; }
+.spot-ring.sel { border-color: var(--accent); opacity: 1; }
+.spot-ring.brush { pointer-events: none; opacity: 0.5; }
+.spot-links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.spot-links line { stroke: var(--text-2); stroke-width: 1; opacity: 0.6; }
+.spot-links line.sel { stroke: var(--accent); opacity: 1; }
 .ratio-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
 .ratio-grid button { height: 26px; border-radius: 5px; border: 1px solid transparent; background: var(--fill); color: var(--text-2); font-family: var(--mono); font-size: 11px; }
 .ratio-grid button:hover { background: var(--fill-hover); color: var(--text); }
@@ -878,6 +894,8 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .remove-check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--text); cursor: pointer; padding: 8px 0 2px; }
 .remove-sub { display: block; font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
 .remove-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.paste-groups { display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; }
+.paste-group { padding: 4px 0; align-items: center; }
 .job.movable { cursor: grab; }
 .job.dragging { opacity: 0.45; }
 .job.drop-over { box-shadow: inset 0 2px 0 var(--accent); }

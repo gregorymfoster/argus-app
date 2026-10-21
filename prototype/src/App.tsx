@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { PHOTOS, SHOOT } from './data/dummy';
 import { lastRemovalAt, takeRemovedToast, undoRemoval } from './data/remove';
 import { RemoveDialog, askRemove, showRemoved } from './ui/Remove';
+import { PasteSettingsDialog } from './ui/PasteSettings';
 import { LIVE, inCollection, exportAfterLoad, noteImportFinished, refreshLivePhotos, runningImport, takeCullAfterLoad } from './data/live';
 import { zoom } from './ui/zoom';
 import { initialCull } from './agent/agent';
@@ -215,6 +216,7 @@ export function App() {
         <ImportDialog open={route.name === 'import'} autoCull={autoCull} setAutoCull={setAutoCull} />
         <SettingsDialog />
         <RemoveDialog />
+        <PasteSettingsDialog />
         <Palette open={palette} onOpenChange={setPalette} extra={commands} />
         <ExportDialog
           open={exporting}

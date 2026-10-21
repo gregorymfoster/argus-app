@@ -49,6 +49,7 @@ pub const TOOLS: &[&str] = &[
     "list_looks",
     "set_look",
     "sync_to_look",
+    "paste_settings",
     "suggest_edits",
     "match_to_photo",
     "list_suggestions",
@@ -58,6 +59,9 @@ pub const TOOLS: &[&str] = &[
     "edit_mask",
     "remove_mask",
     "view_mask",
+    "add_spot",
+    "edit_spot",
+    "remove_spot",
 ];
 
 /// One message of the conversation as the model sees it.

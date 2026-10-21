@@ -16,6 +16,7 @@ PRIVATE=(
   fixtures/bench
   fixtures/golden
   .claude/skills/bench-report
+  docs/blog
 )
 # All of bench/ but the speed baseline, so a new bench script stays private by default.
 KEEP_IN_BENCH=speed-baseline.json

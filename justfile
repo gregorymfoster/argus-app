@@ -26,17 +26,31 @@ render file *args:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
     ./target/fast/argus render {{file}} {{args}}
 
-# Prototype against a real Library: bridge + Vite smoke test with screenshots. e.g. `just live ~/tmp/argus-lib`
-live library:
+# Prototype against a real Library: bridge + Vite smoke test with screenshots. e.g. `just live ~/tmp/argus-lib`, or one flow in ~20 s: `just live ~/tmp/argus-lib --only zoom,flags`
+live library *args:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
-    cd prototype && ../scripts/progress live -- npm run live {{library}}
+    cd prototype && ../scripts/progress live -- npm run live {{library}} {{args}}
 
 # Crawl every main screen on a real Library with no model running: fails on page errors, console errors and engine calls that error. Shots in prototype/out/shots/explore-*.png.
 explore library:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
     cd prototype && ../scripts/progress explore -- node scripts/explore.mjs {{library}}
 
+# Keyboard fuzz on a real Library: seeded flag, star, move, Undo and Redo keys as fast as a person mashing them, then checks the Library agrees (undo all = start, redo all = end). e.g. `just fuzz ~/tmp/argus-lib 7 300`. Shots in prototype/out/shots/fuzz-*.png.
+fuzz library seed="1" steps="300":
+    scripts/progress build-cli -- cargo build --profile fast -p argus-cli
+    cd prototype && ../scripts/progress fuzz -- node scripts/fuzz.mjs {{library}} {{seed}} {{steps}}
+
 # Every main screen at Greg's window widths (1280, 1500 px), demo data: fails when a header or footer wraps or clips. Shots in prototype/out/shots/layout-*.png.
+# Dummy-data screenshots of every screen, then a pixel diff against the blessed set (cloud only: Linux Chromium baselines in /mnt/project-files/baselines/shots). e.g. `just shots cull`
+shots *filters:
+    cd prototype && ../scripts/progress shots -- node scripts/shots.mjs {{filters}}
+    cd prototype && node scripts/shot-diff.mjs
+
+# Accept the current shots as the baselines (all, or names containing these words).
+shots-bless *names:
+    cd prototype && node scripts/shot-diff.mjs --bless {{names}}
+
 layout:
     cd prototype && ../scripts/progress layout -- node scripts/layout.mjs
 
@@ -125,5 +139,10 @@ mac-e2e *raws:
     cd prototype && ../scripts/progress mac-e2e -- ../scripts/timeout 900 node scripts/mac-e2e.mjs {{raws}}
 
 # Rebase onto origin/main, run `just check`, push to main (retries; works from any branch). LAND_SKIP_CHECK=1 for docs-only changes.
+# Native menu bar check on the Mac: launches Argus.app on a throwaway Library and clicks its menus through System Events (needs Accessibility for the terminal, once). e.g. `just mac-menus`
+mac-menus *args:
+    scripts/progress build-cli -- {{ if os() == "macos" { "taskpolicy -c utility nice -n 10" } else { "" } }} cargo build --profile fast -p argus-cli
+    scripts/progress mac-menus -- scripts/timeout 300 scripts/mac-menu-check {{args}}
+
 land:
     scripts/land

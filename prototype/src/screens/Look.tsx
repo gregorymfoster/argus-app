@@ -12,7 +12,7 @@ import { fmt, recipeOf, useLibrary, verdictOf } from '../store/library';
 import { go } from '../router';
 import { Agent } from '../agent/AgentPanel';
 import { PhotoView } from '../ui/PhotoView';
-import { Kbd, Slider, Tip } from '../ui/kit';
+import { Kbd, Slider, Tip, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter } from '../ui/ViewBar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
@@ -151,7 +151,7 @@ export function LookScreen({ onExport }: { onExport: () => void }) {
   useHotkeys('y', cycle);
   useHotkeys('shift+s', sync, [sel, canSync]);
   useHotkeys('e', () => sel && go({ name: 'edit', id: sel.id }), [sel]);
-  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }));
+  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
 
   const look = state.look;
   const card = (

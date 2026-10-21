@@ -227,15 +227,20 @@ export function Agent({ ctx, chips, placeholder, selected, picks, onReview, head
       )}
     </div>
   );
-  const column = (
+  // Under the Edit panel the Agent waits as its composer alone, so the sliders get the
+  // height; its heading and suggestions come back once it's in use or the composer has focus.
+  const [focused, setFocused] = useState(false);
+  const slim = !!strip && messages.length === 0 && !focused;
+  const chat = (
     <>
-      {strip ? header : head}
       {strip ? head : header}
       <div className="agent-body" ref={bodyRef}>
         {messages.length === 0 && (
           <div className="suggest">
             {((LIVE ? LIVE_SUGGESTIONS : SUGGESTIONS)[kind] ?? []).map((s) => (
-              <button key={s} disabled={!!down} title={down ?? undefined} onClick={() => send(s)}>
+              // Keep focus in the composer: under Edit the chips hide again once it leaves, and
+              // WebKit never focuses a clicked button, so the click would land on nothing.
+              <button key={s} disabled={!!down} title={down ?? undefined} onMouseDown={(e) => e.preventDefault()} onClick={() => send(s)}>
                 {s}
               </button>
             ))}
@@ -252,6 +257,24 @@ export function Agent({ ctx, chips, placeholder, selected, picks, onReview, head
         {after}
       </div>
       <Composer ctx={ctx} chips={chips} placeholder={placeholder} onSend={send} onProvider={() => providerChanged((n) => n + 1)} />
+    </>
+  );
+  const column = strip ? (
+    <>
+      {header}
+      <div
+        className={`agent-chat ${slim ? 'slim' : ''}`}
+        data-testid="agent-chat"
+        onFocus={() => setFocused(true)}
+        onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setFocused(false)}
+      >
+        {chat}
+      </div>
+    </>
+  ) : (
+    <>
+      {head}
+      {chat}
     </>
   );
   if (embed) return <div className="agent-embed">{column}</div>;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { askRemove } from '../ui/Remove';
 import { Award, Flag, X } from 'lucide-react';
@@ -12,7 +12,7 @@ import { Filmstrip } from '../ui/Filmstrip';
 import { STAR_KEYS, Stars } from '../ui/Stars';
 import { LIVE, aiName, focusPhoto } from '../data/live';
 import { useSuggestionImage, useSuggestions } from '../data/suggestions';
-import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL } from '../ui/kit';
+import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
 import { Histogram } from '../ui/Histogram';
 import { useSort } from '../ui/Sort';
@@ -23,6 +23,7 @@ import { EyeBadges } from '../ui/EyeBadges';
 import { longEdge, useNeed, useZoomPan, useZoomed } from '../ui/zoomPan';
 import { ZoomReadout } from '../ui/Navigator';
 import { useDetailRender } from '../data/liveEdit';
+import { useSettingsKeys } from '../ui/PasteSettings';
 
 /** Face boxes (F shows them all; closed eyes always show). Live, from the faces Analyzer's Facts. */
 export function Faces({ p, all = true, found }: { p: Photo; all?: boolean; found?: FaceFacts[] }) {
@@ -77,14 +78,33 @@ export function LoupeScreen({ id }: { id: string }) {
     if (n) go({ name: 'loupe', id: n });
   };
   // Greg's pick: setting a Verdict in the loupe moves on to the next photo.
-  const set = (x: Verdict) => {
-    dispatch({ type: 'verdict/set', id: p.id, verdict: x, by: 'you' });
-    setTimeout(() => move(1), 160);
+  // It moves after a beat, so the flag shows first. A second key within that beat goes to the
+  // next Photo (fast typing flags one Photo per key), and leaving the Loupe or opening another
+  // Photo meanwhile cancels the move, so Esc right after P stays on the grid.
+  const here = useRef(p.id);
+  here.current = p.id;
+  const advance = useRef<{ from: string; to: string; timer: number } | null>(null);
+  useEffect(() => () => clearTimeout(advance.current?.timer), []);
+  const thenMove = (act: (id: string) => void) => {
+    const pending = advance.current?.from === here.current ? advance.current : null;
+    if (advance.current) clearTimeout(advance.current.timer);
+    advance.current = null;
+    const at = pending?.to ?? here.current;
+    act(at);
+    if (at !== here.current) {
+      here.current = at;
+      go({ name: 'loupe', id: at });
+    }
+    const to = order[order.indexOf(at) + 1];
+    if (!to) return;
+    const timer = window.setTimeout(() => {
+      advance.current = null;
+      if (here.current === at) go({ name: 'loupe', id: to });
+    }, 160);
+    advance.current = { from: at, to, timer };
   };
-  const rate = (n: number) => {
-    dispatch({ type: 'stars/set', id: p.id, stars: n, by: 'you' });
-    setTimeout(() => move(1), 160);
-  };
+  const set = (x: Verdict) => thenMove((id) => dispatch({ type: 'verdict/set', id, verdict: x, by: 'you' }));
+  const rate = (n: number) => thenMove((id) => dispatch({ type: 'stars/set', id, stars: n, by: 'you' }));
   const compare = () => stackIds.length && go({ name: 'compare', ids: stackIds });
 
   // Delete removes this Photo from the Library (after asking) and shows the next one.
@@ -99,12 +119,13 @@ export function LoupeScreen({ id }: { id: string }) {
   );
   useHotkeys('right', () => move(1), [pos]);
   useHotkeys('left', () => move(-1), [pos]);
-  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }));
+  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
   useHotkeys(['p', 'x', 'u'], (e) => set(VERDICT_KEYS[e.key.toLowerCase()]), [p.id, pos]);
   useHotkeys(STAR_KEYS, (e) => rate(Number(e.key)), [p.id, pos]);
   useHotkeys('f', () => setFaces((f) => !f));
   useHotkeys('backslash', () => setBefore((b) => !b));
   useHotkeys('d', () => go({ name: 'edit', id: p.id }), [p.id]);
+  useSettingsKeys(p.id, []);
   useHotkeys('c', compare, [stackIds.join(',')]);
 
   return (

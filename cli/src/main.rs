@@ -149,6 +149,20 @@ enum Cmd {
         #[arg(long)]
         save: bool,
     },
+    /// Time AI Denoise on a RAW without a Library: denoise a centre crop of about `--tiles`
+    /// model tiles at full resolution, print seconds per tile and the projected time for the
+    /// whole frame as JSON, and write the crop before, at Amount 50 and at 100 to `--out`. `--tiles 0`
+    /// denoises the whole frame.
+    Denoise {
+        file: PathBuf,
+        #[arg(long, default_value_t = 48)]
+        tiles: usize,
+        /// CPU share: gentle, balanced or full. Default: $ARGUS_COMPUTE or gentle.
+        #[arg(long)]
+        compute: Option<Compute>,
+        #[arg(long, default_value = "out/denoise")]
+        out: PathBuf,
+    },
     /// Replace camera previews with Argus's own render (what Import leaves with
     /// --camera-previews, or the app builds in the background). Prints JSON.
     Previews {
@@ -420,6 +434,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Cmd::Denoise {
+            file,
+            tiles,
+            compute,
+            out,
+        } => denoise_time(
+            &file,
+            tiles,
+            compute.unwrap_or_else(Compute::from_env),
+            &out,
+        )?,
         Cmd::Previews {
             library,
             shoot,
@@ -759,4 +784,79 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `argus denoise`: see [`Cmd::Denoise`].
+fn denoise_time(
+    file: &Path,
+    tiles: usize,
+    compute: Compute,
+    out: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use argus_engine::{denoise, pipeline};
+    let raw = decode(file)?;
+    let (w, h) = raw.crop_size();
+    let full = pipeline::demosaic_bilinear(&pipeline::normalize_white_balance(&raw), w, h, raw.cfa);
+    // A centre crop about `tiles` tiles big (224 px apart), or the whole frame.
+    let side = if tiles == 0 {
+        w.max(h)
+    } else {
+        ((tiles as f64).sqrt() * 224.0) as usize
+    };
+    let (cw, ch) = (side.min(w), side.min(h));
+    let (x0, y0) = ((w - cw) / 2, (h - ch) / 2);
+    let mut crop = Vec::with_capacity(cw * ch * 3);
+    for y in y0..y0 + ch {
+        crop.extend_from_slice(&full[(y * w + x0) * 3..(y * w + x0 + cw) * 3]);
+    }
+    drop(full);
+    let started = std::time::Instant::now();
+    let pool = compute.cpu_pool()?;
+    let den = pool.install(|| {
+        denoise::denoise(&crop, cw, ch, &|done, total| {
+            println!("::progress {done}/{total} tiles")
+        })
+    })?;
+    let secs = started.elapsed().as_secs_f64();
+    let per_tile = secs / denoise::tiles(cw, ch) as f64;
+    std::fs::create_dir_all(out)?;
+    let stem = file
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let mut half = crop.clone();
+    denoise::blend(&mut half, &den, denoise::weight(50.0));
+    for (name, rgb) in [("before", crop), ("amount50", half), ("after", den)] {
+        let d = argus_engine::Demosaiced {
+            width: cw,
+            height: ch,
+            rgb,
+            camera_to_srgb: pipeline::camera_to_srgb_matrix(raw.xyz_to_cam),
+            orientation: raw.orientation,
+            scale: 1.0,
+            lens: Default::default(),
+        };
+        let img = d.finish(&pipeline::Look::DEFAULT, &Recipe::default(), None);
+        std::fs::write(
+            out.join(format!("{stem}_{name}.jpg")),
+            argus_engine::render::encode_jpeg(&img, 92)?,
+        )?;
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "file": file,
+            "size": [w, h],
+            "crop": [cw, ch],
+            "tiles": denoise::tiles(cw, ch),
+            "seconds": (secs * 10.0).round() / 10.0,
+            "seconds_per_tile": (per_tile * 1000.0).round() / 1000.0,
+            "threads": pool.current_num_threads(),
+            "compute": format!("{compute:?}").to_lowercase(),
+            "whole_frame_tiles": denoise::tiles(w, h),
+            "whole_frame_minutes": (per_tile * denoise::tiles(w, h) as f64 / 6.0).round() / 10.0,
+        })
+    );
+    Ok(())
 }

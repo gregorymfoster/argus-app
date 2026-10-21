@@ -61,12 +61,15 @@ claude mcp add argus -- /path/to/argus/target/release/argus mcp --library /Users
 | `analyze_photo` | What the local Mask models see: faces (numbered left to right, with boxes) and how much of the frame is people, skin, hair and sky |
 | `add_mask` | Add a local adjustment (slider deltas inside a Mask: `subject`, `background`, `faces` with optional `face`, `skin`, `hair`, `sky`, `brush`, `linear`, `radial`) to many Photos as one batch |
 | `edit_mask` / `remove_mask` | Change or remove one local adjustment by its id |
+| `add_spot` / `edit_spot` / `remove_spot` | Lightroom's Heal and Clone: cover a small circle (blemish, stray hair, dust) with pixels from elsewhere in the Photo, on many Photos as one batch; Argus picks the source unless `from` is given. Move, resize, re-source or remove one by id |
+| `pick_spot_source` | Where Argus would copy from for a Spot, without changing anything (the Edit screen's Heal tool) |
 | `view_mask` | See where a Mask lands, tinted over the render, with the share of the frame it covers |
 | `render_photo` | See a Photo with its edits, rendered from the original (or try a draft Recipe without saving it) |
 | `list_versions` | A Photo's Recipe history: every Version with who made it and its batch label |
 | `undo_batch` | Undo one batch (an Agent request, a cull, a Look change): Recipes, Verdicts and Looks go back as they were. Defaults to the newest AI batch |
 | `list_looks` / `set_look` | Read a Shoot's Looks, or create or tune one (sliders as in `edit_recipe`) and put Photos under it; a new Look goes on the Picks |
 | `sync_to_look` | Lightroom's Sync: fold one Photo's own sliders into its Shoot's Look |
+| `paste_settings` | Lightroom's Copy/Paste and Sync settings: groups of one Photo's settings onto others, one batch |
 | `remove_look` | Take a Look off every Photo under it (the Look is kept, so undo puts it back) |
 | `export_photos` | Write edited JPEGs to a folder, never overwriting |
 | `crop.*` settings | `edit_recipe` also straightens (`crop.angle`, degrees) and crops (`crop.x/y/w/h`, fractions of the straightened frame, never empty corners) |

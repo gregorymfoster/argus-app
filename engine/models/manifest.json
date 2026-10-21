@@ -60,6 +60,16 @@
       "bytes": 10961723,
       "sha256": "e6c7326029b23bd94ceab4b017ecf4508adbfdb44bddd0773d63d416971d59fb",
       "embedded": true
+    },
+    {
+      "file": "scunet_color_real_f16.onnx",
+      "analyzer": "denoise",
+      "what": "SCUNet blind real-image denoiser (scunet_color_real_psnr, trained on synthetic camera noise over WED, DIV2K and Flickr2K), exported from PyTorch at a 256 px tile with fp16 weights by scripts/models/scunet_onnx.py. Not an Analyzer: crate::denoise runs it for AI Denoise",
+      "source": "https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth",
+      "license": "Apache-2.0",
+      "bytes": 39133390,
+      "sha256": "ff610364856b4cabee714ce0e6005a484ea6dd108f689acb94bb04450b204095",
+      "embedded": true
     }
   ]
 }

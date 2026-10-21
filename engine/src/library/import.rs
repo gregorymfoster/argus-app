@@ -286,6 +286,15 @@ pub(super) fn run(lib: &mut Library, folder: &Path, opts: &ImportOptions) -> Res
     }
     tx.commit().map_err(db_err)?;
     failed.sort_by(|a: &ImportFailure, b| a.file.cmp(&b.file));
+    let mut copied_to = copy_dir
+        .filter(|d| d.is_dir())
+        .map(|d| store_path(&ctx.root, &d));
+    // The copy folder was named before Import knew which files were new, from every file's
+    // date. Run again after a cancelled Import, the earlier frames are duplicates and the
+    // Shoot is dated by the rest, so its folder follows the Shoot's name (a no-op otherwise).
+    if imported > 0 && copied_to.is_some() {
+        copied_to = lib.rename_shoot(shoot_id, &shoot_name)?.originals;
+    }
 
     Ok(ImportReport {
         shoot_id: (imported > 0).then_some(shoot_id),
@@ -294,9 +303,7 @@ pub(super) fn run(lib: &mut Library, folder: &Path, opts: &ImportOptions) -> Res
         imported,
         camera_previews,
         duplicates,
-        copied_to: copy_dir
-            .filter(|d| d.is_dir())
-            .map(|d| store_path(&ctx.root, &d)),
+        copied_to,
         failed,
         scan_ms,
         process_ms: ms(t1),
@@ -436,6 +443,10 @@ fn try_process(path: &Path, jpeg: Option<&Path>, ctx: &Ctx) -> Result<Option<Ite
     let hash = blake3::hash(&data).to_hex().to_string();
     if !ctx.seen.lock().unwrap().insert(hash.clone()) {
         return Ok(None);
+    }
+    // A corrupt header would abort rawler later (previews, Edit): fail this file here instead.
+    if kind == "raw" {
+        crate::rawcheck::check(path)?;
     }
     let file_name = path
         .file_name()

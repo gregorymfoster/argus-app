@@ -57,3 +57,12 @@ fn cached_rerender_matches_fresh_develop() {
         assert!(cached.data == fresh.data, "exposure {exposure}");
     }
 }
+
+#[test]
+fn a_file_that_is_not_a_raw_says_so_plainly() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("EMPTY.ARW");
+    std::fs::write(&empty, b"").unwrap();
+    let e = decode(&empty).err().expect("an empty file can't decode").0;
+    assert_eq!(e, "not a RAW file Argus can read (0 bytes)");
+}

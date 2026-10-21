@@ -1,0 +1,107 @@
+#!/bin/bash
+# Mac menu bar check: launches the real Argus.app on a throwaway Library and drives its native
+# menus through System Events, the one part of the app no headless check reaches (the menus'
+# routing into the UI is in live.mjs; this checks the menus exist, carry the right shortcuts,
+# and that clicking them reaches the app). Mac only.
+#
+#   scripts/mac-menu-check [Argus.app] [raw-folder]
+#     Argus.app   default /Applications/Argus.app (or app/target/release/bundle/macos/Argus.app)
+#     raw-folder  default fixtures/raw-a7rv, else fixtures/raw (two RAWs are imported)
+#
+# Needs Accessibility for the app that runs it (Terminal, or Claude): System Settings ›
+# Privacy & Security › Accessibility, once. Without it every check fails with error -1719
+# or -25211 and the script says so. Nothing touches Greg's own Library or settings.
+set -u
+cd "$(dirname "$0")/.."
+[ "$(uname)" = Darwin ] || { echo "mac-menu-check: macOS only"; exit 2; }
+
+app="${1:-}"
+for c in "$app" /Applications/Argus.app app/target/release/bundle/macos/Argus.app; do
+  [ -n "$c" ] && [ -x "$c/Contents/MacOS/argus-app" ] && { app="$c"; break; }
+done
+[ -x "$app/Contents/MacOS/argus-app" ] || { echo "mac-menu-check: no Argus.app found (pass one)"; exit 2; }
+raws="${2:-}"
+[ -n "$raws" ] || for d in fixtures/raw-a7rv fixtures/raw; do ls "$d"/*.ARW >/dev/null 2>&1 && { raws=$d; break; }; done
+argus=${ARGUS_BIN:-target/fast/argus}
+[ -x "$argus" ] || { echo "mac-menu-check: build the CLI first (cargo build --profile fast -p argus-cli)"; exit 2; }
+
+tmp=$(mktemp -d /tmp/argus-menu-XXXX)
+lib="$tmp/lib"
+mkdir -p "$tmp/card"
+for f in $(ls "$raws"/*.ARW | head -2); do cp "$f" "$tmp/card/"; done
+scripts/timeout 300 "$argus" import "$tmp/card" --library "$lib" --camera-previews >/dev/null || { echo "mac-menu-check: import failed"; exit 1; }
+
+fails=0
+ok() { echo "ok   $*"; }
+bad() { echo "FAIL $*"; fails=$((fails + 1)); }
+as() { scripts/timeout 30 osascript -e "$1" 2>&1; }
+verdicts() { "$argus" list --library "$lib" --photos | python3 -c 'import json,sys; print(",".join(str(p.get("verdict")) for p in json.load(sys.stdin)))'; }
+
+# Its own config and Library, idle Queue, so nothing it does lands anywhere real.
+ARGUS_CONFIG="$tmp/config" ARGUS_LIBRARY="$lib" ARGUS_QUEUE=off "$app/Contents/MacOS/argus-app" >"$tmp/app.log" 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -rf "$tmp"' EXIT
+proc='first application process whose unix id is '$pid
+for _ in $(seq 60); do
+  [ "$(as "tell application \"System Events\" to count windows of ($proc)" 2>/dev/null)" = 1 ] && break
+  sleep 0.5
+done
+probe=$(as "tell application \"System Events\" to get name of every menu of menu bar 1 of ($proc)")
+case "$probe" in
+  *-1719*|*-25211*|*"not allowed assistive"*)
+    echo "mac-menu-check: no Accessibility permission for this terminal ($probe)"
+    echo "Grant it once in System Settings › Privacy & Security › Accessibility, then rerun."
+    exit 3 ;;
+esac
+as "tell application \"System Events\" to set frontmost of ($proc) to true" >/dev/null
+sleep 1
+
+# 1. The menus Greg expects, in Mac order.
+[[ "$probe" == *Argus*Edit*View*Window* ]] && ok "menu bar: $probe" || bad "menu bar is \"$probe\", want Argus, Edit, View, Window"
+
+# 2. Each item exists and carries its shortcut (AXMenuItemCmdChar plus modifiers).
+item() { # menu, item, want-key, want-mods (0 = ⌘, 1 = ⇧⌘)
+  local got
+  got=$(as "tell application \"System Events\" to tell menu item \"$2\" of menu \"$1\" of menu bar item \"$1\" of menu bar 1 of ($proc) to return (value of attribute \"AXMenuItemCmdChar\") & \"|\" & (value of attribute \"AXMenuItemCmdModifiers\")")
+  if [ "$got" = "$3|$4" ]; then ok "$1 › $2 is ⌘$( [ "$4" = 1 ] && echo ⇧)$3"; else bad "$1 › $2: got \"$got\", want \"$3|$4\""; fi
+}
+item Argus "Settings…" "," 0
+[ "$(as "tell application \"System Events\" to exists menu item \"Check for Updates…\" of menu \"Argus\" of menu bar item \"Argus\" of menu bar 1 of ($proc)")" = true ] && ok "Argus › Check for Updates… is there" || bad "Argus › Check for Updates… is missing"
+item Edit Undo Z 0
+item Edit Redo Z 1
+item Edit "Select All" A 0
+item View "Zoom In" "=" 0
+item View "Zoom Out" "-" 0
+item View "Actual Size" 0 0
+
+# 3. Clicking reaches the app: flag with P, then Edit › Undo puts the Library back.
+click() { as "tell application \"System Events\" to click menu item \"$2\" of menu \"$1\" of menu bar item \"$1\" of menu bar 1 of ($proc)" >/dev/null; sleep 1; }
+before=$(verdicts)
+as "tell application \"System Events\" to key code 124" >/dev/null # → selects a Photo
+as "tell application \"System Events\" to keystroke \"p\"" >/dev/null
+sleep 1.5
+flagged=$(verdicts)
+if [ "$flagged" = "$before" ]; then
+  bad "P didn't flag anything ($before), so Edit › Undo couldn't be checked (did the grid have focus?)"
+else
+  click Edit Undo
+  sleep 1
+  [ "$(verdicts)" = "$before" ] && ok "Edit › Undo undid the flag in the Library ($flagged → $before)" || bad "Edit › Undo left $(verdicts), want $before"
+  click Edit Redo
+  sleep 1
+  [ "$(verdicts)" = "$flagged" ] && ok "Edit › Redo redid it" || bad "Edit › Redo left $(verdicts), want $flagged"
+fi
+
+# 4. View › Zoom In and Actual Size, and Settings…: the click lands and the app lives on
+# (what they do inside the UI is checked headless in live.mjs and mac-e2e).
+for i in "View|Zoom In" "View|Actual Size" "Argus|Settings…"; do
+  click "${i%%|*}" "${i#*|}"
+  kill -0 $pid 2>/dev/null && ok "${i%%|*} › ${i#*|} clicked, app still running" || bad "the app died after ${i%%|*} › ${i#*|}"
+done
+as "tell application \"System Events\" to key code 53" >/dev/null # Esc closes Settings
+
+echo
+[ $fails = 0 ] && { echo "mac-menu-check: all checks passed"; exit 0; }
+echo "mac-menu-check: $fails check(s) failed (app log: $tmp/app.log)"
+trap 'kill $pid 2>/dev/null' EXIT
+exit 1

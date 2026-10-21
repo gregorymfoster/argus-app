@@ -21,6 +21,11 @@ const steps = [
     await p.waitForTimeout(300);
     await p.getByTestId('preset-moody').hover();
   }],
+  ['-presets-on', async (p) => {
+    await p.getByRole('tab', { name: 'Presets' }).click();
+    await p.getByTestId('presets-suggested').getByTestId('preset-film-portrait').click();
+    await p.locator('.dev-scroll').evaluate((e) => (e.scrollTop = 0));
+  }],
   ['-masking', async (p) => (await p.getByRole('tab', { name: 'Masking' }).count()) && p.getByRole('tab', { name: 'Masking' }).click()],
   ['-recommended', async (p) => {
     await p.getByTestId('rec-warm-film').click();

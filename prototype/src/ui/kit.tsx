@@ -6,6 +6,10 @@ import type { Verdict } from '../domain/types';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Slider as UiSlider } from '@/components/ui/slider';
+import { escClosedDialog } from '@/components/ui/dialog';
+
+/** Options for a screen's Esc: a dialog's Esc closes the dialog and must not also leave the screen. */
+export const ESC_OUTSIDE_DIALOGS = { ignoreEventWhen: escClosedDialog };
 
 export const VERDICT_LABEL: Record<Verdict, string> = { pick: 'Pick', reject: 'Reject', unflagged: 'Unflagged' };
 /** Lightroom's flag keys: P pick, X reject, U unflag. */

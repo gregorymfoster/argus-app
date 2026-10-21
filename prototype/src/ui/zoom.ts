@@ -72,7 +72,10 @@ export function zoom(step: 'in' | 'out' | 'reset'): Promise<void> {
 /** Restore the remembered zoom and follow the View menu. Call once at start. */
 export function initZoom() {
   if (level !== 1) void apply(level);
+  const menu = (step: 'in' | 'out' | 'reset') => (photoZoom ? photoZoom(step) : void zoom(step));
+  // The same path as a window event, so headless checks (live.mjs) can drive View › Zoom.
+  window.addEventListener('argus:zoom', (e) => menu((e as CustomEvent<'in' | 'out' | 'reset'>).detail));
   if (IN_APP) {
-    void import('@tauri-apps/api/event').then(({ listen }) => listen<'in' | 'out' | 'reset'>('zoom', (e) => (photoZoom ? photoZoom(e.payload) : void zoom(e.payload))));
+    void import('@tauri-apps/api/event').then(({ listen }) => listen<'in' | 'out' | 'reset'>('zoom', (e) => menu(e.payload)));
   }
 }

@@ -6,7 +6,7 @@
 
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 
 const filters = process.argv.slice(2);
 const out = new URL('../out/shots/', import.meta.url).pathname;
@@ -37,7 +37,15 @@ async function shot(name, path, { variants = '', act, zoom } = {}) {
   if (filters.length && !filters.some((f) => name.includes(f))) return;
   const { p, ctx } = await page(path, variants, zoom);
   if (act) await act(p);
-  await p.screenshot({ path: `${out}${name}.png` });
+  // Settled, so two runs of one commit shoot the same pixels (shot-diff.mjs): the grid paints
+  // its stand-in previews on idle callbacks, so wait until no new image appears and all decoded.
+  for (let last = -1, i = 0; i < 20; i++) {
+    const n = await p.evaluate(() => (document.images.length * 2 + [...document.images].filter((x) => x.complete).length));
+    if (n === last) break;
+    last = n;
+    await p.waitForTimeout(250);
+  }
+  await p.screenshot({ path: `${out}${name}.png`, animations: 'disabled', caret: 'hide' });
   results.push(name);
   await ctx.close();
 }
@@ -168,6 +176,8 @@ await shot('07-look-applied', '#/look', {
 });
 await shot('08-edit', '#/edit/p15', {
   act: async (p) => {
+    // Under Edit the Agent shows its suggestions once the composer has focus.
+    await p.getByPlaceholder(/A bit more on the face/).click();
     await p.getByRole('button', { name: /Brighten her face/ }).click();
     await p.waitForTimeout(3200);
     await p.keyboard.press('o');
@@ -315,6 +325,57 @@ await check('smoke-flag-keys-advance', async () => {
   await p.keyboard.press('ArrowLeft');
   await p.keyboard.press('u');
   if ((await verdict(p, 0)) !== 'unflagged') throw new Error(`U: expected unflagged, got ${await verdict(p, 0)}`);
+  await ctx.close();
+});
+
+// Under the Unflagged filter a flagged Photo leaves the grid, and sorted by stars a rated one
+// moves: either way the cursor goes to the Photo that was next, never one past it.
+await check('smoke-flag-under-filter-and-sort-goes-to-next', async () => {
+  const { p, ctx } = await page('#/cull');
+  const ids = () => p.locator('.grid-v .tile').evaluateAll((els) => els.map((e) => e.dataset.testid));
+  const cur = () => p.locator('.grid-v .tile.cur').getAttribute('data-testid');
+  await p.locator('.filter-seg [title="Unflagged"]').click();
+  await p.locator('.grid-v .tile').first().click();
+  const before = await ids();
+  await p.keyboard.press('p');
+  if ((await cur()) !== before[1]) throw new Error(`P under Unflagged: cursor on ${await cur()}, expected ${before[1]}`);
+  await p.keyboard.press('x');
+  if ((await cur()) !== before[2]) throw new Error(`X after P under Unflagged: cursor on ${await cur()}, expected ${before[2]}`);
+  await p.locator('.filter-seg [title="All"]').click();
+  await p.keyboard.press('Shift+S');
+  await p.locator('.grid-v .tile').nth(3).click();
+  const sorted = await ids();
+  await p.keyboard.press('5');
+  if ((await cur()) !== sorted[4]) throw new Error(`5 sorted by stars: cursor on ${await cur()}, expected ${sorted[4]}`);
+  await ctx.close();
+});
+
+// Esc right after a flag in the Loupe stays on the grid: the Loupe's move to the next Photo
+// must not fire once it's gone. Fast keys flag one Photo each.
+await check('smoke-loupe-flag-then-esc-and-fast-keys', async () => {
+  const { p, ctx } = await page('#/cull');
+  const first = await p.locator('.grid-v .tile').first().getAttribute('data-testid');
+  const ids = await p.locator('.grid-v .tile').evaluateAll((els) => els.slice(0, 2).map((e) => e.dataset.testid.replace('tile-', '')));
+  await p.locator('.grid-v .tile').first().dblclick();
+  await p.waitForURL(/#\/loupe\//);
+  await p.keyboard.press('p');
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(400);
+  if (!p.url().includes('#/cull')) throw new Error(`Esc after P ended on ${p.url().split('#')[1]}`);
+  if ((await p.locator(`[data-testid="${first}"]`).getAttribute('data-verdict')) !== 'pick') throw new Error('P in the Loupe did not pick');
+  await p.goto(`${base}#/loupe/${ids[1]}`);
+  await p.waitForTimeout(500);
+  const strip = p.getByTestId('filmstrip').locator('button');
+  const names = await strip.evaluateAll((els) => {
+    const i = els.findIndex((e) => e.classList.contains('on'));
+    return els.slice(i, i + 3).map((e) => e.getAttribute('aria-label'));
+  });
+  await p.keyboard.press('x');
+  await p.keyboard.press('x');
+  await p.keyboard.press('x');
+  await p.waitForTimeout(500);
+  const v = await Promise.all(names.map(async (n) => ((await strip.filter({ has: p.locator(`xpath=self::*[@aria-label="${n}"]`) }).first().getAttribute('class')) ?? '').includes('rejected') ? 'reject' : 'not'));
+  if (v.join() !== 'reject,reject,reject') throw new Error(`three fast X in the Loupe flagged ${v}`);
   await ctx.close();
 });
 
@@ -472,6 +533,7 @@ await check('smoke-sync-to-look', async () => {
 
 await check('smoke-agent-edit-masks', async () => {
   const { p, ctx } = await page('#/edit/p15');
+  await p.getByPlaceholder(/A bit more on the face/).click();
   await p.getByRole('button', { name: /Brighten her face/ }).click();
   await p.waitForTimeout(3200);
   await p.getByRole('tab', { name: 'Masking' }).click();
@@ -483,11 +545,12 @@ await check('smoke-agent-edit-masks', async () => {
 await check('smoke-edit-v2-recommended-fixes-people-crop', async () => {
   const { p, ctx } = await page('#/edit/p15');
   // Recommended at an Amount, then a fix that toggles.
-  await p.getByTestId('rec-warm-film').click();
   const temp = async () => Number((await p.locator('.slider', { hasText: 'Temp' }).first().locator('.val').textContent()).replace('−', '-'));
-  if ((await temp()) !== 16) throw new Error(`Warm film set temp ${await temp()}`);
+  const t0 = await temp();
+  await p.getByTestId('rec-warm-film').click();
+  if ((await temp()) !== t0 + 12) throw new Error(`Warm film should add 12 to temp ${t0}, got ${await temp()}`);
   await p.getByTestId('rec-natural').click();
-  if ((await temp()) !== 0) throw new Error(`switching Looks left temp ${await temp()}`);
+  if ((await temp()) !== t0) throw new Error(`switching Looks left temp ${await temp()}, was ${t0}`);
   await p.getByTestId('fix-shadows').click();
   if ((await p.getByTestId('fix-shadows').getAttribute('aria-pressed')) !== 'true') throw new Error('Lift shadows did not turn on');
   await p.getByTestId('fix-shadows').click();
@@ -506,12 +569,113 @@ await check('smoke-edit-v2-recommended-fixes-people-crop', async () => {
   await ctx.close();
 });
 
+await check('smoke-lens-corrections', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  const optics = p.getByTestId('section-optics');
+  await optics.locator('.dev-section-toggle').click();
+  const seg = optics.getByRole('group', { name: 'Lens corrections' });
+  if ((await seg.getByRole('radio', { name: 'What the camera corrected in its own JPEG' }).getAttribute('data-state')) !== 'on') throw new Error('Lens corrections should start As camera');
+  await seg.getByText('Off', { exact: true }).click();
+  await p.waitForTimeout(150);
+  await optics.scrollIntoViewIfNeeded();
+  await p.screenshot({ path: `${out}smoke-lens-corrections.png` });
+  // ⌘Z puts it back.
+  await p.keyboard.press('Control+z');
+  await p.waitForTimeout(150);
+  if ((await seg.getByRole('radio', { name: 'What the camera corrected in its own JPEG' }).getAttribute('data-state')) !== 'on') throw new Error('Undo should put Lens corrections back to As camera');
+  await ctx.close();
+});
+
+await check('smoke-copy-paste-settings', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  const temp = async () => Number((await p.locator('.slider', { hasText: 'Temp' }).first().locator('.val').textContent()).replace('−', '-'));
+  await p.getByTestId('rec-warm-film').click();
+  // ⇧⌘C asks which groups, Lightroom-style; untick White balance and nothing of it travels.
+  await p.keyboard.press('Control+Shift+c');
+  await p.getByTestId('settings-dialog').waitFor();
+  await p.screenshot({ path: `${out}smoke-copy-settings-dialog.png` });
+  await p.getByTestId('paste-wb').click();
+  await p.keyboard.press('Enter');
+  await p.keyboard.press('Control+ArrowRight');
+  await p.waitForTimeout(300);
+  await p.keyboard.press('Control+Shift+v');
+  await p.waitForTimeout(200);
+  if ((await temp()) !== 0) throw new Error(`White balance was unticked but temp is ${await temp()}`);
+  // ⌥⌘V pastes the previous Photo's settings with the groups last chosen; tick wb again first.
+  await p.keyboard.press('Control+Shift+c');
+  await p.getByTestId('paste-wb').click();
+  await p.keyboard.press('Escape');
+  await p.keyboard.press('Control+Alt+v');
+  await p.waitForTimeout(200);
+  if ((await temp()) !== 0) throw new Error('Esc should not have changed the remembered groups');
+  // The dialog remembers the last groups, Lightroom-style: tick White balance and copy.
+  await p.keyboard.press('Control+ArrowLeft');
+  await p.keyboard.press('Control+Shift+c');
+  if ((await p.getByTestId('paste-wb').getAttribute('data-state')) !== 'unchecked') throw new Error('the dialog forgot the last groups');
+  await p.getByTestId('paste-wb').click();
+  await p.keyboard.press('Enter');
+  await p.keyboard.press('Control+ArrowRight');
+  await p.waitForTimeout(300);
+  await p.keyboard.press('Control+Shift+v');
+  await p.waitForTimeout(200);
+  if ((await temp()) === 0) throw new Error('pasting with White balance ticked left temp at 0');
+  await p.keyboard.press('Control+z');
+  await p.waitForTimeout(200);
+  if ((await temp()) !== 0) throw new Error(`Undo left temp at ${await temp()}`);
+  await ctx.close();
+});
+
+await check('smoke-esc-on-a-menu-keeps-the-selection', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').nth(0).click();
+  await p.locator('.tile').nth(2).click({ modifiers: ['Shift'] });
+  const selected = () => p.locator('.tile.sel').count();
+  const before = await selected();
+  await p.locator('.tile').nth(0).click({ button: 'right' });
+  await p.getByRole('menu').waitFor();
+  await p.keyboard.press('Escape');
+  await p.getByRole('menu').waitFor({ state: 'detached' });
+  if ((await selected()) !== before) throw new Error(`Esc on the menu changed the selection (${before} -> ${await selected()})`);
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(100);
+  if ((await selected()) >= before) throw new Error('a second Esc should clear the selection');
+  await ctx.close();
+});
+
+await check('smoke-sync-settings-from-grid', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').nth(0).click();
+  await p.locator('.tile').nth(3).click({ modifiers: ['Shift'] });
+  await p.locator('.tile').nth(0).click({ button: 'right' });
+  await p.getByRole('menuitem', { name: /Sync settings to 3 selected/ }).waitFor();
+  await p.screenshot({ path: `${out}smoke-sync-settings-menu.png` });
+  await p.getByRole('menuitem', { name: /Sync settings to 3 selected/ }).click();
+  await p.getByTestId('settings-dialog').waitFor();
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(200);
+  if (!(await p.getByText('4 selected').count())) throw new Error('Esc on the dialog also cleared the selection');
+  await p.keyboard.press('Control+Shift+s');
+  const title = await p.getByTestId('settings-dialog').locator('h2').textContent();
+  if (!/to 3 Photos/.test(title ?? '')) throw new Error(`sync dialog says ${title}`);
+  await p.keyboard.press('Escape');
+  if (!p.url().includes('#/cull')) throw new Error('Esc left the grid');
+  await ctx.close();
+});
+
 await check('smoke-presets-apply-and-undo', async () => {
   const { p, ctx } = await page('#/edit/p15');
   await p.getByRole('tab', { name: 'Presets' }).click();
+  if ((await p.getByTestId('presets-suggested').locator('.preset').count()) < 4) throw new Error('no Suggested row');
+  await p.getByTestId('section-presets-Black and white').locator('.dev-section-toggle').click();
   await p.getByTestId('preset-bw-contrast').click();
   await p.waitForTimeout(200);
   if ((await p.locator('.preset.on').count()) !== 1) throw new Error('the preset did not apply');
+  const amount = p.getByTestId('preset-amount');
+  if (!/B&W contrast/.test(await amount.textContent())) throw new Error('the Amount slider does not name the preset');
+  await amount.getByRole('slider').focus();
+  await p.keyboard.press('PageDown');
+  if (Number(await amount.locator('.val').textContent()) >= 100) throw new Error('the Amount did not go down');
+  if ((await p.locator('.preset.on').count()) !== 1) throw new Error('changing the Amount took the preset off');
   await p.keyboard.press('Meta+z');
   await p.keyboard.press('Control+z');
   await p.waitForTimeout(200);
@@ -532,11 +696,12 @@ await check('smoke-suggestions-preview-accept-undo', async () => {
   await p.waitForTimeout(200);
   if (await p.locator('[data-testid="previewing"]').count()) throw new Error('still previewing after accept');
   const exposure = await p.getByRole('slider', { name: 'Exposure' }).first().getAttribute('aria-valuenow');
-  if (Number(exposure) !== 0.65) throw new Error(`accepting should set exposure 0.65, got ${exposure}`);
+  // Punchy's own exposure (dummy takes in data/suggestions.ts): accepting at 100% sets it.
+  if (Number(exposure) !== 0.35) throw new Error(`accepting should set exposure 0.35, got ${exposure}`);
   await p.keyboard.press('Control+z');
   await p.waitForTimeout(200);
   const back = await p.getByRole('slider', { name: 'Exposure' }).first().getAttribute('aria-valuenow');
-  if (Number(back) === 0.65) throw new Error('undo did not put the edit back');
+  if (Number(back) === 0.35) throw new Error('undo did not put the edit back');
   await p.keyboard.press('Control+Shift+a');
   await p.waitForTimeout(200);
   const toast = await p.locator('[data-sonner-toast]').first().textContent();
@@ -707,7 +872,17 @@ await check('smoke-zoom-pan', async () => {
   const [u1, v1] = u(r);
   if (Math.abs(u0 - u1) > 0.01 || Math.abs(v0 - v1) > 0.01) throw new Error(`pinch drifted: ${u0.toFixed(3)},${v0.toFixed(3)} -> ${u1.toFixed(3)},${v1.toFixed(3)}`);
   if (!/%$/.test(await readout())) throw new Error(`readout says ${await readout()}`);
+  // The Navigator starts closed in Edit, opens with a click on its title and stays open.
+  const navTitle = p.getByTestId('navigator').locator('.nav-title');
+  if ((await navTitle.getAttribute('aria-expanded')) !== 'false') throw new Error('the Navigator starts open');
+  await navTitle.click();
   if (!(await p.getByTestId('nav-view').count())) throw new Error('the Navigator shows no visible area');
+  await p.reload();
+  await p.waitForSelector(sel);
+  if ((await p.getByTestId('navigator').locator('.nav-title').getAttribute('aria-expanded')) !== 'true') throw new Error('the Navigator forgot it was open');
+  for (let i = 0; i < 10; i++) await fire('wheel', { deltaY: -30, ctrlKey: true, clientX: cx, clientY: cy });
+  await settle();
+  r = await rect();
   // Two-finger scroll pans.
   const before = await rect();
   await fire('wheel', { deltaX: 60, deltaY: 40, clientX: cx, clientY: cy });
@@ -807,6 +982,8 @@ await check('smoke-zoom-pan', async () => {
 await browser.close();
 await server.close();
 console.log(results.join('\n'));
+// What this run shot, so scripts/shot-diff.mjs never compares a stale PNG from an earlier run.
+writeFileSync(`${out}last-run.json`, JSON.stringify({ filters, shots: results.filter((r) => !r.startsWith('ok  ')) }, null, 1) + '\n');
 console.log(`\nShots in ${out}`);
 if (errors.length) {
   console.error('\nProblems:\n' + errors.join('\n'));

@@ -1017,6 +1017,7 @@ mod tests {
             wb: [2.1, 1.0, 1.6],
             xyz_to_cam: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             orientation: Orientation::Normal,
+            lens: None,
         };
         let mut want = normalize(&raw);
         white_balance(&mut want, 6, raw.cfa, raw.wb);
@@ -1043,6 +1044,7 @@ mod tests {
                 wb: [2.1, 1.0, 1.6],
                 xyz_to_cam: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 orientation: Orientation::Normal,
+                lens: None,
             };
             let (cw, ch) = raw.crop_size();
             let want = demosaic_half(&normalize_white_balance(&raw), cw, ch, cfa);

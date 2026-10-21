@@ -305,6 +305,17 @@ fn kill_child_writer() {
     }
 }
 
+/// `committed <photo> <version> <n>` from [`kill_child_writer`]. The first one shares its line
+/// with the test harness's own `test ... ` prefix, so look for it anywhere in the line.
+fn committed_line(line: &str) -> Option<(i64, i64)> {
+    let rest = &line[line.find("committed ")? + "committed ".len()..];
+    let f: Vec<i64> = rest
+        .split_whitespace()
+        .map(|x| x.parse().unwrap())
+        .collect();
+    Some((f[0], f[1]))
+}
+
 #[test]
 fn killing_a_writer_mid_write_loses_nothing_it_committed() {
     let tmp = tempfile::tempdir().unwrap();
@@ -325,28 +336,31 @@ fn killing_a_writer_mid_write_loses_nothing_it_committed() {
             .spawn()
             .unwrap();
         let mut out = BufReader::new(child.stdout.take().unwrap());
-        // Let it write for a while, then SIGKILL it wherever it is.
-        let stop = Instant::now() + Duration::from_millis(150 + round * 37);
+        // Let it write for a while, then SIGKILL it wherever it is. The clock starts at its
+        // first commit, so a slow start under load (a busy `just check`) still gets a full
+        // round instead of being killed before it wrote anything.
+        let mut stop: Option<Instant> = None;
         let mut committed: Vec<(i64, i64)> = Vec::new();
         let mut line = String::new();
-        while Instant::now() < stop {
+        while stop.is_none_or(|s| Instant::now() < s) {
             line.clear();
             if out.read_line(&mut line).unwrap() == 0 {
                 break;
             }
-            if let Some(rest) = line.trim().strip_prefix("committed ") {
-                let f: Vec<i64> = rest.split(' ').map(|x| x.parse().unwrap()).collect();
-                committed.push((f[0], f[1]));
+            if let Some(c) = committed_line(&line) {
+                committed.push(c);
+                stop.get_or_insert_with(|| {
+                    Instant::now() + Duration::from_millis(150 + round * 37)
+                });
             }
         }
         child.kill().unwrap();
         // Anything it printed after we stopped reading was also committed.
-        for line in out.lines().map_while(Result::ok) {
-            if let Some(rest) = line.trim().strip_prefix("committed ") {
-                let f: Vec<i64> = rest.split(' ').map(|x| x.parse().unwrap()).collect();
-                committed.push((f[0], f[1]));
-            }
-        }
+        committed.extend(
+            out.lines()
+                .map_while(Result::ok)
+                .filter_map(|l| committed_line(&l)),
+        );
         child.wait().unwrap();
         assert!(
             !committed.is_empty(),

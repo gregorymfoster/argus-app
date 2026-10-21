@@ -123,7 +123,7 @@ The **UI** is TypeScript and React in a Tauri 2 shell. The visual direction is d
 
 The **Library** is one folder Greg places wherever he likes, holding one SQLite file for all of his photos, like a Lightroom catalog. Card imports copy originals into it; folder imports can read originals where they live. It keeps previews of its own, so it still works when a drive is offline, and stores paths relative to itself so it can move to another disk or Mac (ADR 0011). Each import is recorded as a Shoot. Photos, Verdicts, Stacks, scores, face boxes and image embeddings are tables. A Verdict is Pick, Reject or Unflagged, as in Lightroom. Each Photo's Recipe is a versioned JSON document. Every change appends a Version tagged with who made it (person or AI) and which batch it belonged to. That gives us undo, batch undo and history. Overrides (a person changing an AI Verdict or AI slider value) are logged in their own table from day one, for tuning to Greg's taste later. Sidecars are optional copies. See ADR 0002.
 
-The **Recipe** is a JSON document holding the Photo's global settings, a reference to its Look, its Corrections, and a list of local adjustments, each tied to a Mask. Masks are stored as descriptions of how they were made (a kind such as sky or one face, or hand-drawn dots and shapes), never as pixels. The models' raw Analysis of each Photo is cached next to its preview, and every render refines it against the image's edges (ADR 0012). The schema carries a version number from day one.
+The **Recipe** is a JSON document holding the Photo's global settings, a reference to its Look, its Corrections, and a list of local adjustments, each tied to a Mask, and a list of Heal and Clone Spots. Masks are stored as descriptions of how they were made (a kind such as sky or one face, or hand-drawn dots and shapes), never as pixels. The models' raw Analysis of each Photo is cached next to its preview, and every render refines it against the image's edges (ADR 0012). The schema carries a version number from day one.
 
 The **tool layer** is the single API everything goes through: list_photos, get_preview, get_contact_sheet, read_recipe, write_recipe, undo, score, set_verdict, build_stacks, apply_look, add_mask, export. set_verdict takes many Photos at once. The UI, the in-app Agent and the MCP server all call these same tools. See ADR 0003.
 
@@ -133,7 +133,7 @@ The Agent always works with **Shoot context**. Before it judges any Photo it rea
 
 The **ML models** run locally through ONNX Runtime with the CoreML backend. They cover scoring signals (sharpness, eyes open, exposure), face detection and landmarks, image embeddings for Stacks, and segmentation for Masks (for now three small embedded models run on the CPU through tract, ADR 0012). The vision LLM adds judgment on top ("best expression", the reason text). Both are needed. The local models are fast and run on every Photo, while the LLM is slower and sees fewer, smaller images.
 
-**Retouching** is natural only. It works through face and skin Masks with frequency-separation smoothing, blemish healing, eye and teeth brightening, and face-weighted exposure. There is no reshaping and no warping.
+**Retouching** is natural only. It works through face and skin Masks with frequency-separation smoothing, blemish healing, eye and teeth brightening, and face-weighted exposure, plus Lightroom's Heal and Clone for single spots (a blemish, a stray hair, sensor dust), which copy pixels from elsewhere in the same Photo and generate nothing. There is no reshaping and no warping.
 
 The **MCP server** is local, runs over stdio for Claude Desktop and Claude Code, and also over HTTP on localhost. ChatGPT access goes through whichever route ChatGPT supports for local servers at the time, and that needs its own spike.
 
@@ -161,7 +161,7 @@ Out of scope for v1:
 - the Mac App Store and notarization
 - Apple Photos import and export
 - importing Lightroom catalogs or edits
-- generative fill and object removal
+- generative fill and object removal (Heal and Clone Spots are in: they only copy pixels from elsewhere in the same Photo, for blemishes, stray hairs and dust; Greg, 2026-10-21)
 - face or body reshaping
 - a model runtime built into Argus (Ollama does that job)
 - cloud sync between machines

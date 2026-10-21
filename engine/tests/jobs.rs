@@ -176,16 +176,18 @@ fn a_shoot_gets_suggestions_picks_first_rejects_skipped_and_nothing_changes_unti
     let list = list.as_array().unwrap();
     assert_eq!(list.len(), 3);
     let titles: Vec<&str> = (0..3).map(|i| list[i]["title"].as_str().unwrap()).collect();
-    assert_eq!(titles, ["Natural", "Punchy", "Moody"]);
+    assert_eq!(titles, ["Natural", "Punchy", "Bright"]);
     // Each character starts from its own look, on top of Auto and the Adaptive layer.
     assert!(list[0]["recipe"]["global"]["clarity"].as_f64().unwrap() > 0.0);
-    assert!(
-        list[2]["recipe"]["global"]["grading"]["shadows"]["sat"]
+    let exposure = |i: usize| {
+        list[i]["recipe"]["global"]["exposure"]
             .as_f64()
-            .unwrap()
-            > 0.0
+            .unwrap_or(0.0)
+    };
+    assert!(
+        exposure(2) > exposure(0),
+        "Bright starts brighter than Natural"
     );
-    assert!(list[2]["recipe"]["global"]["vignette"].as_f64().unwrap() < 0.0);
     assert_eq!(list[0]["recipe"]["global"]["shadows"], 25.0);
     assert!(
         list[1]["recipe"].get("made_up").is_none(),
@@ -766,7 +768,7 @@ fn review_rounds_keep_a_better_revision_and_refuse_one_that_blows_out() {
     );
     assert_eq!(exposure(2), 0.3, "the small fix is kept");
     assert_eq!(
-        list[2]["title"], "Moody",
+        list[2]["title"], "Bright",
         "a fresh take keeps its character's name whatever the model calls it"
     );
     let auto = tools
@@ -775,8 +777,8 @@ fn review_rounds_keep_a_better_revision_and_refuse_one_that_blows_out() {
         .global;
     assert_eq!(
         exposure(3),
-        auto.exposure,
-        "a change with no critique is not applied: the take stays at its start"
+        auto.exposure - 0.3,
+        "a change with no critique is not applied: the take stays at its start (Moody's -0.3)"
     );
 }
 

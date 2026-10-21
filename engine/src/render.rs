@@ -70,10 +70,9 @@ pub fn render_photo(
     long_edge: Option<usize>,
     analysis: Option<Arc<Analysis>>,
 ) -> Result<RgbImage> {
-    let mut img = crate::geometry::apply(
-        develop_photo(photo, recipe, long_edge, analysis)?,
-        &recipe.crop,
-    );
+    let mut img = develop_photo(photo, recipe, long_edge, analysis)?;
+    crate::heal::apply(&mut img, &recipe.spots);
+    let mut img = crate::geometry::apply(img, &recipe.crop);
     crate::effects::post_crop(&mut img, &recipe.render_adjust());
     Ok(img)
 }
@@ -92,15 +91,52 @@ fn develop_photo(
         )));
     }
     match photo.kind.as_str() {
-        "raw" => match long_edge {
-            Some(edge) => match demosaiced(path, edge)? {
+        "raw" => {
+            // AI Denoise: blend the denoised base in once it exists (crate::denoise).
+            let amount = crate::denoise::amount(recipe);
+            let base = crate::denoise::ready(photo).filter(|_| amount > 0.0);
+            match long_edge
+                .map(|e| demosaiced(path, e))
+                .transpose()?
+                .flatten()
+            {
                 Some(d) => {
+                    let d = match &base {
+                        Some(b) => {
+                            let den = denoised(b, d.width.max(d.height))?;
+                            Arc::new(blended(&d, &den.rgb, amount)?)
+                        }
+                        None => d,
+                    };
                     Ok(d.finish(&crate::pipeline::Look::DEFAULT, recipe, analysis.as_deref()))
                 }
-                None => full_size(path, recipe, analysis),
-            },
-            None => full_size(path, recipe, analysis),
-        },
+                None => match &base {
+                    Some(b) => {
+                        let raw = decode(path)?;
+                        let (w, h) = raw.crop_size();
+                        let d = Demosaiced {
+                            width: w,
+                            height: h,
+                            rgb: crate::pipeline::demosaic_bilinear(
+                                &crate::pipeline::normalize_white_balance(&raw),
+                                w,
+                                h,
+                                raw.cfa,
+                            ),
+                            camera_to_srgb: crate::pipeline::camera_to_srgb_matrix(raw.xyz_to_cam),
+                            orientation: raw.orientation,
+                            scale: 1.0,
+                            lens: crate::lens::Lens::new(raw.lens.clone()),
+                        };
+                        drop(raw);
+                        let (den, ..) = crate::denoise::base_at(b, None)?;
+                        let d = blended(&d, &den, amount)?;
+                        Ok(d.finish(&crate::pipeline::Look::DEFAULT, recipe, analysis.as_deref()))
+                    }
+                    None => full_size(path, recipe, analysis),
+                },
+            }
+        }
         "jpeg" => {
             let mut img = read_jpeg_upright(path)?;
             let full = img.width().max(img.height()) as f32;
@@ -138,7 +174,30 @@ fn full_size(path: &Path, recipe: &Recipe, analysis: Option<Arc<Analysis>>) -> R
     ))
 }
 
-/// Which RAW at which size: the file's length and modified time stand in for its content.
+/// `d` with the denoised base `den` (same size) blended over it at `amount`.
+fn blended(d: &Demosaiced, den: &[f32], amount: f32) -> Result<Demosaiced> {
+    if den.len() != d.rgb.len() {
+        return Err(Error(format!(
+            "denoised base is {} values, the image {}",
+            den.len(),
+            d.rgb.len()
+        )));
+    }
+    let mut rgb = d.rgb.clone();
+    crate::denoise::blend(&mut rgb, den, amount);
+    Ok(Demosaiced {
+        rgb,
+        width: d.width,
+        height: d.height,
+        camera_to_srgb: d.camera_to_srgb,
+        orientation: d.orientation,
+        scale: d.scale,
+        lens: d.lens.fresh(),
+    })
+}
+
+/// Which RAW (or denoised base) at which size: the file's length and modified time stand in
+/// for its content.
 #[derive(PartialEq, Eq, Clone)]
 struct Key {
     path: PathBuf,
@@ -156,6 +215,36 @@ const CACHE_BYTES: usize = 160 << 20;
 /// Stages 1-3 for `path` at `long_edge`, from the cache when it has them. None when the
 /// RAW is no bigger than `long_edge`.
 fn demosaiced(path: &Path, long_edge: usize) -> Result<Option<Arc<Demosaiced>>> {
+    // Decode outside the lock, so other Photos render meanwhile.
+    cached(path, long_edge, || {
+        Ok(Demosaiced::new(&decode(path)?, long_edge))
+    })
+}
+
+/// The denoised base `file` at the size of a [`demosaiced`] image with long edge
+/// `long_edge` (only `rgb`, `width` and `height` are meaningful).
+fn denoised(file: &Path, long_edge: usize) -> Result<Arc<Demosaiced>> {
+    cached(file, long_edge, || {
+        let (rgb, width, height) = crate::denoise::base_at(file, Some(long_edge))?;
+        Ok(Some(Demosaiced {
+            width,
+            height,
+            rgb,
+            camera_to_srgb: [[0.0; 3]; 3],
+            orientation: crate::Orientation::Normal,
+            scale: 1.0,
+            lens: Default::default(),
+        }))
+    })?
+    .ok_or_else(|| Error("denoised base is empty".into()))
+}
+
+/// `make()` for `path` at `long_edge`, through the cache of recent images.
+fn cached(
+    path: &Path,
+    long_edge: usize,
+    make: impl FnOnce() -> Result<Option<Demosaiced>>,
+) -> Result<Option<Arc<Demosaiced>>> {
     let meta = std::fs::metadata(path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
     let key = Key {
         path: path.to_path_buf(),
@@ -172,8 +261,7 @@ fn demosaiced(path: &Path, long_edge: usize) -> Result<Option<Arc<Demosaiced>>> 
             return Ok(Some(d));
         }
     }
-    // Decode outside the lock, so other Photos render meanwhile.
-    let Some(d) = Demosaiced::new(&decode(path)?, long_edge).map(Arc::new) else {
+    let Some(d) = make()?.map(Arc::new) else {
         return Ok(None);
     };
     let mut cache = DEMOSAICED.lock().unwrap();

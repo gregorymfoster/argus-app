@@ -6,9 +6,10 @@
 
 import { useState, type ReactNode } from 'react';
 import { Check, ChevronDown, Cloud, Contrast, Pipette, RefreshCw, Smile, Sparkles, Sun, Wand2 } from 'lucide-react';
-import type { Adjust, HslBand, HslShift, Look, NumKey, Photo, Recipe } from '../domain/types';
+import type { Adjust, HslBand, HslShift, Look, Photo, Recipe } from '../domain/types';
 import { HSL_BANDS } from '../domain/types';
-import { FIXES, PRESETS, applyPreset, hasFix, recommended, removePreset, type Preset } from '../domain/presets';
+import { FIXES, appliedIn, applyPreset, hasFix, recommended, removePreset, type Preset } from '../domain/presets';
+import { usePresetRanking } from '../data/presetRanking';
 import { fmt, useLibrary } from '../store/library';
 import { PhotoView } from './PhotoView';
 import { Section } from './Develop';
@@ -66,25 +67,6 @@ const WB_PRESETS: { id: string; name: string; k?: number; tint?: number }[] = [
 /** The white balance last picked per Photo, shown while Temp and Tint still match it. */
 const wbPicked = new Map<string, { name: string; temp: number; tint: number }>();
 
-/** Which Look the Recommended row applied to a Photo, the values it replaced, and its Amount. */
-type Rec = { id: string; before: Partial<Record<NumKey, number>>; amount: number };
-const recs = new Map<string, Rec>();
-
-/** The sliders a preset sets, as they are in `r` (missing ones left out). */
-function valuesOf(r: Recipe, p: Preset): Partial<Record<NumKey, number>> {
-  const out: Partial<Record<NumKey, number>> = {};
-  for (const k of Object.keys(p.global ?? {}) as NumKey[]) if (r.global[k] !== undefined) out[k] = r.global[k] as number;
-  return out;
-}
-
-/** `r` with a Recommended Look taken back off: its sliders as they were, its Mask gone. */
-function without(r: Recipe, rec: Rec): Recipe {
-  const p = PRESETS.find((x) => x.id === rec.id);
-  if (!p) return r;
-  const out = removePreset(r, p);
-  return { ...out, global: { ...out.global, ...rec.before } };
-}
-
 interface Props {
   photo: Photo;
   recipe: Recipe;
@@ -104,12 +86,6 @@ interface Props {
 
 export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, onHover, onAuto, onSync, onPick, diff }: Props) {
   const { dispatch } = useLibrary();
-  const [rec, setRecState] = useState<Rec | null>(() => recs.get(p.id) ?? null);
-  const setRec = (r: Rec | null) => {
-    if (r) recs.set(p.id, r);
-    else recs.delete(p.id);
-    setRecState(r);
-  };
   const [band, setBand] = useState<HslBand>(() => HSL_BANDS.find((b) => recipe.global.hsl?.[b]) ?? 'orange');
   const set = (r: Recipe, label: string, key?: string) => dispatch({ type: 'recipe/set', id: p.id, recipe: r, label, by: 'you', key });
   const setGlobal = (g: Adjust, label: string, key?: string) => set({ ...recipe, global: g }, label, key);
@@ -119,24 +95,20 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
   const toggleBw = () => dispatch({ type: 'recipe/global', id: p.id, key: 'saturation', value: bw ? 0 : -100, by: 'you' });
   const edited = Object.values(recipe.global).some((v) => v && (typeof v === 'number' || Object.keys(v).length)) || recipe.local.length > 0;
 
-  // Recommended: one Look at a time, at an Amount; picking another replaces it.
-  const looks = recommended(p);
-  const recOn = rec && looks.some((l) => l.id === rec.id) ? rec : null;
+  // Recommended: one Look at a time, at an Amount; picking another replaces it (the Recipe
+  // remembers which, so the Amount and taking it off work after a reload too). With the
+  // Shoot's AI ranking, its top Looks.
+  const { ranking } = usePresetRanking(p);
+  const looks = recommended(p, ranking);
+  const applied = appliedIn(recipe, 'look');
+  const recOn = applied && looks.some((l) => l.id === applied.preset.id) ? applied : null;
   const pickLook = (l: Preset) => {
-    const from = recOn ? without(recipe, recOn) : recipe;
-    if (recOn?.id === l.id) {
-      setRec(null);
-      return set(from, `Removed ${l.name}`);
-    }
-    const next: Rec = { id: l.id, before: valuesOf(from, l), amount: recOn?.amount ?? 100 };
-    setRec(next);
-    set(applyPreset(from, l, next.amount / 100), `Recommended: ${l.name}`);
+    if (recOn?.preset.id === l.id) return set(removePreset(recipe, l), `Removed ${l.name}`);
+    set(applyPreset(recipe, l, applied?.amount ?? 1), `Recommended: ${l.name}`);
   };
   const setAmount = (v: number) => {
     if (!recOn) return;
-    const l = looks.find((x) => x.id === recOn.id)!;
-    setRec({ ...recOn, amount: v });
-    set(applyPreset(without(recipe, recOn), l, v / 100), `${l.name} amount`, 'rec-amount');
+    set(applyPreset(recipe, recOn.preset, Math.max(0.01, v / 100)), `${recOn.preset.name} amount`, 'rec-amount');
   };
   const toggleFix = (f: Preset) => (hasFix(recipe, f) ? set(removePreset(recipe, f), `Removed ${f.name}`) : set(applyPreset(recipe, f), f.name));
 
@@ -238,9 +210,9 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
         </div>
         <div className="rec-grid">
           {looks.map((l) => {
-            const preview = applyPreset(recOn ? without(recipe, recOn) : recipe, l, (recOn?.amount ?? 100) / 100);
+            const preview = applyPreset(recipe, l, recOn?.preset.id === l.id ? 0 : (applied?.amount ?? 1));
             return (
-              <button key={l.id} className={`preset ${recOn?.id === l.id ? 'on' : ''}`} onMouseEnter={() => onHover(preview)} onFocus={() => onHover(preview)} onClick={() => pickLook(l)} data-testid={`rec-${l.id}`} aria-pressed={recOn?.id === l.id}>
+              <button key={l.id} className={`preset ${recOn?.preset.id === l.id ? 'on' : ''}`} onMouseEnter={() => onHover(preview)} onFocus={() => onHover(preview)} onClick={() => pickLook(l)} data-testid={`rec-${l.id}`} aria-pressed={recOn?.preset.id === l.id} title={l.why}>
                 <PhotoView photo={p} recipe={preview} look={look} />
                 <span>{l.name}</span>
               </button>
@@ -248,7 +220,7 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
           })}
         </div>
         <div className={recOn ? '' : 'dim'}>
-          <Slider label="Amount" min={0} max={200} value={recOn?.amount ?? 100} display={`${recOn?.amount ?? 100}`} onChange={(v) => setAmount(Math.round(v))} />
+          <Slider label="Amount" min={0} max={200} def={100} value={Math.round((recOn?.amount ?? 1) * 100)} display={`${Math.round((recOn?.amount ?? 1) * 100)}`} onChange={(v) => setAmount(Math.round(v))} />
         </div>
         <div className="fix-chips" data-testid="fixes">
           {FIXES.map((f) => {
@@ -317,7 +289,7 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
       <Section id="retouch" title="Retouch" closed aside={retouched.length ? <span className="mono dev-note">{retouched.join(' · ')}</span> : null}>
         <div className="slider-list">{RETOUCH.map(row)}</div>
       </Section>
-      <Detail g={recipe.global} set={setGlobal} />
+      <Detail g={recipe.global} set={setGlobal} photo={p} />
       <Optics g={recipe.global} set={setGlobal} />
       <CalibrationSection g={recipe.global} set={setGlobal} />
       <div className="dev-foot">

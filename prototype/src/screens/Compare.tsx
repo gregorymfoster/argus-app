@@ -12,7 +12,7 @@ import { go } from '../router';
 import { PhotoView } from '../ui/PhotoView';
 import { Stars } from '../ui/Stars';
 import { Button } from '@/components/ui/button';
-import { Kbd, VERDICT_KEYS, VERDICT_LABEL } from '../ui/kit';
+import { Kbd, VERDICT_KEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
 import { LIVE, aiName } from '../data/live';
 
@@ -82,7 +82,7 @@ export function CompareScreen({ ids }: { ids: string[] }) {
   useHotkeys('up', promote, [sel, cand, state]);
   useHotkeys(['p', 'x', 'u'], (e) => flag(VERDICT_KEYS[e.key.toLowerCase()]), [cand, others]);
   useHotkeys('k', keepOnly, [sel, photos]);
-  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }));
+  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
   useHotkeys(['e', 'enter'], () => cand && go({ name: 'loupe', id: cand.id }), [cand]);
   useHotkeys('d', () => cand && go({ name: 'edit', id: cand.id }), [cand]);
 

@@ -2,7 +2,8 @@
 // Works on a temporary copy of the Library, so the original is never changed.
 // Starts the bridge and Vite, opens ?library=live, checks every Photo shows its
 // engine preview, flags one with X or P and confirms the Verdict reached the Library
-// (and that ⌘Z, ⇧⌘Z and star keys are engine writes too),
+// (and that ⌘Z, ⇧⌘Z and star keys are engine writes too, and View › Zoom and pinch zoom the
+// app in the grid and the photo in Loupe),
 // then asks the Agent to cull against a mock Claude endpoint and checks the AI
 // Verdicts and Stacks land. Then it opens a Photo in Edit, asks the Agent for "warmer,
 // less contrast" (the mock answers with an edit_recipe call), checks the new Recipe
@@ -12,6 +13,7 @@
 // out/shots/live-*.png.
 //
 //   node scripts/live.mjs <library-dir>     (build one with `argus import <folder> --library <dir>`)
+//   node scripts/live.mjs <lib> --only zoom,flags   just those steps (or LIVE_ONLY=zoom,flags)
 //   ARGUS_BIN=../target/fast/argus          to pick the binary (default shown)
 //   PW_BROWSER=webkit                       WebKit instead of Chromium
 
@@ -28,6 +30,16 @@ if (!source) {
   console.error('usage: node scripts/live.mjs <library-dir>');
   process.exit(2);
 }
+// --only flags,zoom runs just those steps (each one navigates for itself), for a fast loop.
+const STEPS = ['grid', 'flags', 'zoom', 'cull', 'export', 'agent', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views'];
+const onlyArg = process.argv.indexOf('--only');
+const only = onlyArg > 0 ? process.argv[onlyArg + 1]?.split(',').filter(Boolean) ?? [] : (process.env.LIVE_ONLY?.split(',').filter(Boolean) ?? []);
+const unknown = only.filter((s) => !STEPS.includes(s));
+if (unknown.length) {
+  console.error(`live: unknown step(s) ${unknown.join(', ')}; steps are ${STEPS.join(', ')}`);
+  process.exit(2);
+}
+const run = (step) => !only.length || only.includes(step);
 const bin = process.env.ARGUS_BIN ?? new URL('../../target/fast/argus', import.meta.url).pathname;
 const out = new URL('../out/shots/', import.meta.url).pathname;
 mkdirSync(out, { recursive: true });
@@ -137,315 +149,414 @@ try {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const p = await ctx.newPage();
   p.on('pageerror', (e) => failures.push(`page error: ${e.message}`));
-  await p.goto('http://localhost:5198/?library=live#/cull');
-  await p.waitForSelector('.tile');
-  await p.waitForTimeout(800);
-  await p.screenshot({ path: `${out}live-cull.png` });
-
-  const tiles = await p.locator('.tile').count();
-  check(tiles === Math.min(photos.length, tiles) && tiles > 0, `grid shows Photos from "${shoot.name}" (${tiles} tiles, ${photos.length} in Library)`);
-  const srcs = await p.locator('.tile img').evaluateAll((imgs) => imgs.map((i) => [i.getAttribute('src'), i.naturalWidth]));
-  check(srcs.length > 0 && srcs.every(([s, w]) => s.startsWith('/previews/') && w > 0), 'tiles load engine preview JPEGs');
-
-  // Re-read: the Queue worker may have culled since `photos` was read (an app-imported
-  // Library has a cull queued), and ⌘Z must put back what was there just before the key.
-  const first = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === photos[0].id);
-  const want = first.verdict === 'pick' ? 'reject' : 'pick';
-  await p.locator(`[data-testid="tile-${first.id}"]`).click();
-  await p.keyboard.press(want === 'pick' ? 'p' : 'x');
-  await p.waitForTimeout(500);
-  const after = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === first.id);
-  check(after.verdict === want && after.verdict_by === 'person', `pressing ${want === 'pick' ? 'P' : 'X'} wrote ${want} to the Library (got ${after.verdict} by ${after.verdict_by})`);
-  await p.screenshot({ path: `${out}live-flagged.png` });
-
-  // The Library is the only source of truth: ⌘Z is the engine's undo_batch, ⇧⌘Z undoes the Undo.
   const state = async (id) => (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === id);
-  await p.keyboard.press('ControlOrMeta+z');
-  await p.waitForTimeout(500);
-  const unflagged = await state(first.id);
-  check(unflagged.verdict === first.verdict && unflagged.verdict_by === first.verdict_by, `⌘Z undid the flag in the Library (got ${unflagged.verdict} by ${unflagged.verdict_by})`);
-  await p.keyboard.press('ControlOrMeta+Shift+z');
-  await p.waitForTimeout(500);
-  const redone = await state(first.id);
-  check(redone.verdict === want && redone.verdict_by === 'person', `⇧⌘Z redid it (got ${redone.verdict} by ${redone.verdict_by})`);
-  await p.locator(`[data-testid="tile-${first.id}"]`).click(); // P moved on to the next Photo
-  await p.keyboard.press('3');
-  await p.waitForTimeout(500);
-  const starred = await state(first.id);
-  check(starred.stars === 3 && starred.stars_by === 'person', `pressing 3 wrote three stars to the Library (got ${starred.stars} by ${starred.stars_by})`);
-  // Edit › Undo in the app's menu bar takes the same path as ⌘Z (src/ui/editMenu.ts).
-  await p.evaluate(() => window.dispatchEvent(new CustomEvent('argus:edit-menu', { detail: 'undo' })));
-  await p.waitForTimeout(500);
-  check((await state(first.id)).stars === first.stars, 'Edit › Undo put the stars back');
-  const shown = await p.locator(`[data-testid="tile-${first.id}"]`).getAttribute('data-verdict');
-  check(shown === want, `the tile shows what the Library has (${shown})`);
-
-  // AI cull from the Agent panel, against the mock endpoint. Clear person flags first,
-  // since the cull never overrides them.
-  await api('/api/flag', { method: 'POST', body: JSON.stringify({ ids: photos.map((x) => x.id), verdict: 'unflagged', author: 'ai' }) });
-  await p.reload();
-  await p.waitForSelector('.tile');
-  // Count from here: a Library imported in the app has its own cull and Suggestions
-  // queued, which the bridge's Queue worker runs at start.
-  const callsBefore = mockCalls;
-  await p.getByPlaceholder(/Cull, fix or explain/).fill('cull this shoot');
-  await p.getByRole('button', { name: 'Send' }).click();
-  // The bar moves as the model's answer streams in, Photo by Photo, with an ETA.
-  const bar = p.getByTestId('cull-progress');
-  await bar.getByText(/[1-9]\d* of \d+/).waitFor({ timeout: 10000 });
-  await p.screenshot({ path: `${out}live-cull-progress.png` });
-  check(/Culling/.test(await bar.innerText()), 'the cull bar says what the model is doing');
-  await p.getByText('Mock cull.').waitFor({ timeout: 15000 });
-  await p.screenshot({ path: `${out}live-culled.png` });
-  const culled = await api(`/api/photos?shoot_id=${shoot.id}`);
-  check(mockCalls - callsBefore === 1, 'the Agent sent one Shoot-wide request to the model (Ollama by default)');
-  check(culled[0].verdict === 'unflagged' && culled[0].verdict_by === 'ai' && culled[0].reason === 'best of 2', 'AI Verdicts and reasons reached the Library, and the cautious cull left picking to the person');
-  check(photos.length < 2 || (culled[0].stack != null && culled[0].stack === culled[1].stack), 'the burst was stacked');
-  await p.waitForTimeout(3000); // the panel reloads from the Library
-  await p.waitForSelector('.tile');
-  await p.screenshot({ path: `${out}live-after-cull.png` });
-
-  // Stacks view (N): Enter keeps the AI's best frame of the burst as your Pick, the rest
-  // stay as they were (Unflagged or the AI's Reject), and ⌘Z undoes it in the Library.
-  if (photos.length >= 2) {
-    await p.keyboard.press('n');
-    await p.waitForSelector('.burst-cell');
-    await p.waitForTimeout(600);
-    await p.screenshot({ path: `${out}live-bursts.png` });
-    const stack = culled.filter((x) => x.stack === culled[0].stack).sort((a, b) => a.stack_rank - b.stack_rank);
-    await p.keyboard.press('Enter');
-    await p.waitForTimeout(600);
-    const kept = (await api(`/api/photos?shoot_id=${shoot.id}`)).filter((x) => stack.some((y) => y.id === x.id));
-    const best = kept.find((x) => x.id === stack[0].id);
-    check(best.verdict === 'pick' && best.verdict_by === 'person' && kept.filter((x) => x.verdict === 'pick').length === 1, `Enter in the Stacks view kept the best frame of the burst (got ${kept.map((x) => `${x.verdict}/${x.verdict_by}`)})`);
-    await p.keyboard.press('ControlOrMeta+z');
-    await p.waitForTimeout(500);
-    check((await state(stack[0].id)).verdict_by === 'ai', '⌘Z undid keeping it');
-    await p.keyboard.press('Escape');
-    await p.waitForSelector('.tile');
-  }
-
-  // Export the Picks to a folder chosen in the dialog (a prompt in a browser), with an
-  // XMP-free JPEG preset, and check the files land named by Shoot.
-  const exportDir = mkdtempSync(join(tmpdir(), 'argus-export-'));
-  // The AI never picks (cautious cull), so the person picks the best frame for the rest.
-  await api('/api/flag', { method: 'POST', body: JSON.stringify({ ids: [culled[0].id], verdict: 'pick', author: 'person' }) });
-  await p.reload();
-  await p.waitForSelector('.tile');
-  const picks = (await api(`/api/photos?shoot_id=${shoot.id}`)).filter((x) => x.verdict === 'pick').length;
-  await p.keyboard.press('ControlOrMeta+e');
-  p.once('dialog', (d) => d.accept(exportDir));
-  await p.getByRole('button', { name: 'Choose…' }).click();
-  await p.getByRole('button', { name: /^Web/ }).click();
-  await p.getByTestId('export-start').click();
-  await p.getByText(/^Done\. /).waitFor({ timeout: 60000 });
-  await p.waitForTimeout(300); // let the bar finish its transition
-  await p.screenshot({ path: `${out}live-exported.png` });
-  const shootDir = readdirSync(exportDir);
-  const files = shootDir.length === 1 ? readdirSync(join(exportDir, shootDir[0])) : [];
-  check(files.length === picks && files.every((f) => f.endsWith('.jpg') && !f.includes(' ') && f.startsWith(shootDir[0] + '_')), `Export wrote ${picks} Picks into a Shoot folder (${shootDir.join(', ')}: ${files.join(', ')})`);
-  await p.keyboard.press('Escape');
-
-  // The Agent edits the Photo open in Edit, as one undoable Version.
   const recipeOf = async (id) => (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: id }) }))?.recipe?.global ?? {};
   const target = photos[photos.length - 1].id;
-  await p.goto(`http://localhost:5198/?library=live#/edit/${target}`);
-  await p.getByPlaceholder(/A bit more on the face/).fill('warmer, less contrast');
-  await p.getByRole('button', { name: 'Send' }).click();
-  await p.getByText('Mock edit: Temperature +12, Contrast -15.').waitFor({ timeout: 15000 });
-  const edited = await recipeOf(target);
-  check(agentCalls === 2 && edited.temp === 12 && edited.contrast === -15, `the Agent's edit reached the Library (${JSON.stringify(edited)}, ${agentCalls} model turns)`);
-  await p.waitForTimeout(1500); // the render lands; nothing is saved back as a person Version
-  await p.getByRole('tab', { name: /History/ }).click();
-  await p.getByText('Agent: warmer, less contrast').waitFor({ timeout: 5000 });
-  const versions = await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-  check(versions.length === 1 && versions[0].author === 'ai', `History shows the Agent's Version and nothing else (${versions.map((v) => v.label).join(', ')})`);
-  await p.screenshot({ path: `${out}live-agent-edit.png` });
-  await p.locator('.agent').getByRole('button', { name: 'Undo', exact: true }).click();
-  await p.waitForTimeout(1000);
-  const undone = await recipeOf(target);
-  check(!undone.temp && !undone.contrast, `Undo in the chat put the Recipe back (${JSON.stringify(undone)})`);
-  await p.screenshot({ path: `${out}live-agent-undo.png` });
-
-  // A slider drag is one engine batch: ⌘Z is undo_batch on it, ⇧⌘Z undoes the Undo.
-  const exposure = async () => (await recipeOf(target)).exposure ?? 0;
-  await p.getByRole('tab', { name: 'Edit', exact: true }).click(); // History is open
-  const thumb = p.getByRole('slider', { name: 'Exposure', exact: true });
-  const nudge = async (n) => {
-    await thumb.focus();
-    for (let i = 0; i < n; i++) await p.keyboard.press('ArrowRight');
-    await p.waitForTimeout(1700); // the drag rests, then saves
+  const gotoGrid = async () => {
+    await p.goto('http://localhost:5198/?library=live#/cull');
+    await p.waitForSelector('.tile');
   };
-  const versionsBefore = (await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) })).length;
-  await nudge(4);
-  const dragged = await exposure();
-  await nudge(2);
-  const second = await exposure();
-  const drags = (await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) })).slice(versionsBefore);
-  check(dragged > 0 && second > dragged && drags.length === 2 && drags.every((v) => v.author === 'person' && /^Exposure /.test(v.label ?? '')), `two Exposure drags saved as two Versions (${drags.map((v) => v.label).join(', ')})`);
-  await p.locator('.stage').click();
-  await p.keyboard.press('ControlOrMeta+z');
-  await p.waitForTimeout(800);
-  check((await exposure()) === dragged, `⌘Z undid the last drag in the Library (exposure ${await exposure()}, want ${dragged})`);
-  await p.keyboard.press('ControlOrMeta+z');
-  await p.waitForTimeout(800);
-  check((await exposure()) === 0, `⌘Z again undid the first drag (exposure ${await exposure()})`);
-  await p.keyboard.press('ControlOrMeta+Shift+z');
-  await p.waitForTimeout(800);
-  check((await exposure()) === dragged, `⇧⌘Z redid it (exposure ${await exposure()})`);
-  const label = await p.locator('.slider').filter({ has: p.locator('.slider-label', { hasText: /^Exposure$/ }) }).textContent();
-  check(label?.includes(dragged.toFixed(2)), `the slider shows what the Library has (${label})`);
+  const gotoEdit = async () => {
+    await p.goto(`http://localhost:5198/?library=live#/edit/${target}`);
+    await p.waitForSelector('.stage .photo img');
+    await p.waitForTimeout(1000);
+  };
 
-  // Suggestions: R queues new takes, the bridge's Queue worker asks the model, and the
-  // takes show up under the photo; accepting one saves it as a Version.
-  await p.locator('.stage').click();
-  const suggestBefore = suggestCalls;
-  await p.keyboard.press('r');
-  await p.locator('.take-name', { hasText: 'Punchy' }).waitFor({ timeout: 30000 });
-  // The takes may already show from the start-up Suggestions; wait for R's own requests.
-  for (let i = 0; i < 60 && suggestCalls - suggestBefore < 2; i++) await p.waitForTimeout(500);
-  await p.waitForTimeout(1000);
-  // One proposal plus one Review round (pinned above, the Full default).
-  check(suggestCalls - suggestBefore === 2, `the Queue asked the model for takes and one Review round (${suggestCalls - suggestBefore})`);
-  await p.keyboard.press('Tab');
-  await p.keyboard.press('Tab');
-  await p.getByTestId('previewing').getByText(/Punchy/).waitFor({ timeout: 5000 });
-  await p.waitForTimeout(800); // the take's render
-  await p.screenshot({ path: `${out}live-suggestions.png` });
-  await p.keyboard.press('Enter');
-  await p.waitForTimeout(1200);
-  const accepted = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-  check(accepted?.recipe?.global?.exposure === 0.7 && accepted?.recipe?.crop?.w === 0.8, `accepting a take saved it with its crop (${JSON.stringify(accepted?.recipe)})`);
-  const history = await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-  check(history.at(-1)?.label === 'Suggestion: Punchy', `the take is a Version of its own (${history.at(-1)?.label})`);
+  if (run('grid')) {
+    await p.goto('http://localhost:5198/?library=live#/cull');
+    await p.waitForSelector('.tile');
+    await p.waitForTimeout(800);
+    await p.screenshot({ path: `${out}live-cull.png` });
 
-  // Edit: a Sky Mask is rendered by the engine and its real Mask is tinted on top.
-  await p.goto(`http://localhost:5198/?library=live#/edit/${target}`);
-  await p.waitForSelector('.stage .photo img');
-  await p.waitForTimeout(1500);
-  const before = await p.locator('.stage .photo img').first().getAttribute('src');
-  // Auto: the engine measures the Photo and saves Lightroom's Auto sliders as one batch.
-  await p.getByRole('tab', { name: 'Edit', exact: true }).click(); // History may still be open
-  await p.getByTestId('auto').click();
-  await p.waitForFunction((b) => document.querySelector('.stage .photo img')?.getAttribute('src') !== b, before, { timeout: 20000 });
-  const autoed = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-  const autoKeys = ['exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'temp', 'tint', 'vibrance'].filter((k) => autoed?.recipe?.global?.[k]);
-  check(autoKeys.length >= 3 && autoed?.recipe?.crop?.w === 0.8, `Auto set ${autoKeys.join(', ')} and kept the crop`);
-  const afterAuto = await p.locator('.stage .photo img').first().getAttribute('src');
-  // A preset is the person's own edit: its sliders reach the Library, the rest is kept.
-  await p.getByRole('tab', { name: 'Presets' }).click();
-  await p.getByTestId('preset-warm-film').click();
-  await p.waitForTimeout(1500);
-  const preset = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-  check(preset?.recipe?.global?.temp === 16 && preset?.recipe?.crop?.w === 0.8, `the Warm film preset was saved (temp ${preset?.recipe?.global?.temp})`);
-  const afterPreset = await p.locator('.stage .photo img').first().getAttribute('src');
-  await p.getByRole('tab', { name: 'Masking' }).click();
-  await p.getByRole('button', { name: 'Sky', exact: true }).click();
-  await p.waitForFunction((b) => document.querySelector('.stage .photo img')?.getAttribute('src') !== b, afterPreset, { timeout: 20000 });
-  check(true, 'adding a Sky Mask re-rendered the Photo through the engine');
-  // The Masking tool shows the overlay by itself.
-  const tint = await p.waitForSelector('[data-testid="mask-tint"]', { timeout: 20000 }).then(() => true, () => false);
-  const style = tint ? await p.locator('[data-testid="mask-tint"]').first().getAttribute('style') : '';
-  check(tint && /data:image\/png/.test(style ?? ''), "Masking tints the engine's own Mask (view_mask)");
-  await p.waitForTimeout(800);
-  await p.screenshot({ path: `${out}live-edit-masks.png` });
-  const saved = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-  check(saved?.recipe?.local?.some((l) => l.mask.kind === 'sky'), 'the Sky Mask was saved in the Recipe');
-  // Select People: the engine finds who is there (analyze_photo) and saves a person Mask.
-  await p.getByTestId('mask-create').getByRole('button', { name: 'People' }).click();
-  const found = await p.getByTestId('people-picker').getByText(/found\./).waitFor({ timeout: 30000 }).then(() => true, () => false);
-  await p.waitForTimeout(1500);
-  await p.screenshot({ path: `${out}live-people.png` });
-  const person = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-  check(found && person?.recipe?.local?.some((l) => l.mask.kind === 'person' && l.mask.parts.includes('face_skin')), `the people picker asked the engine and a person Mask was saved (${await p.getByTestId('people-picker').locator('.people-note').textContent().catch(() => '?')})`);
-  // A Recommended Look and a one-click fix from the Edit tool reach the Library.
-  await p.getByRole('tab', { name: 'Edit', exact: true }).click();
-  await p.getByTestId('rec-moody').click();
-  await p.getByTestId('fix-shadows').click();
-  await p.waitForTimeout(1500);
-  const rec = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-  check(rec?.recipe?.global?.contrast === 22 && rec?.recipe?.global?.shadows === 30, `Recommended Moody and Lift shadows were saved (contrast ${rec?.recipe?.global?.contrast}, shadows ${rec?.recipe?.global?.shadows})`);
+    const tiles = await p.locator('.tile').count();
+    check(tiles === Math.min(photos.length, tiles) && tiles > 0, `grid shows Photos from "${shoot.name}" (${tiles} tiles, ${photos.length} in Library)`);
+    const srcs = await p.locator('.tile img').evaluateAll((imgs) => imgs.map((i) => [i.getAttribute('src'), i.naturalWidth]));
+    check(srcs.length > 0 && srcs.every(([s, w]) => s.startsWith('/previews/') && w > 0), 'tiles load engine preview JPEGs');
+  }
 
-  // The Look screen runs on the Library's Looks: a slider drag and Remove Look are batches
-  // of the person's own, and ⌘Z / ⇧⌘Z are undo_batch.
-  const pick = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.verdict === 'pick');
-  const made = await api('/api/set_look', { method: 'POST', body: JSON.stringify({ shoot_id: shoot.id, name: 'Test look', photo_ids: [pick.id] }) });
-  const lookContrast = async () => (await api('/api/list_looks', { method: 'POST', body: JSON.stringify({ shoot_id: shoot.id }) }))[0]?.adjust?.contrast ?? 0;
-  const lookOf = async () => (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: pick.id }) }))?.recipe?.look ?? null;
-  await p.goto('http://localhost:5198/?library=live#/look');
-  await p.getByRole('heading', { name: 'Look: Test look' }).waitFor({ timeout: 10000 });
-  check(true, 'the Look screen shows the Library\'s Look');
-  await p.getByRole('button', { name: 'Adjust' }).click();
-  await p.getByRole('slider', { name: 'Contrast', exact: true }).focus();
-  for (let i = 0; i < 5; i++) await p.keyboard.press('ArrowRight');
-  await p.waitForTimeout(1700);
-  check((await lookContrast()) === 5, `a Look slider drag reached the Library (contrast ${await lookContrast()})`);
-  await p.locator(`[data-testid="batch-${pick.id}"]`).click();
-  await p.keyboard.press('ControlOrMeta+z');
-  await p.waitForTimeout(800);
-  check((await lookContrast()) === 0, `⌘Z undid the Look drag in the Library (contrast ${await lookContrast()})`);
-  await p.keyboard.press('ControlOrMeta+Shift+z');
-  await p.waitForTimeout(800);
-  check((await lookContrast()) === 5, `⇧⌘Z redid it (contrast ${await lookContrast()})`);
-  await p.getByRole('button', { name: 'Remove Look' }).click();
-  await p.waitForTimeout(800);
-  check((await lookOf()) === null, `Remove Look took the Pick out from under it (${await lookOf()})`);
-  await p.locator(`[data-testid="batch-${pick.id}"]`).click();
-  await p.keyboard.press('ControlOrMeta+z');
-  await p.getByRole('heading', { name: 'Look: Test look' }).waitFor({ timeout: 5000 }).catch(() => {});
-  check((await lookOf()) === made.look.id, `⌘Z put the Look back (${await lookOf()})`);
-  check(await p.getByRole('heading', { name: 'Look: Test look' }).isVisible(), 'the Look screen shows it again');
-  await p.screenshot({ path: `${out}live-look.png` });
-  // Renaming the Shoot from the sidebar goes through rename_shoot: the stored name follows
-  // the naming rules and every Photo still finds its original.
-  await p.goto('http://localhost:5198/?library=live#/cull');
-  await p.waitForSelector('.tile');
-  const row = p.getByTestId(`shoot-${shoot.id}`);
-  await row.dblclick();
-  await p.keyboard.press('ControlOrMeta+a');
-  await p.keyboard.type('2026-10-10 Boat tour');
-  await p.keyboard.press('Enter');
-  await p.waitForTimeout(500);
-  const renamed = (await api('/api/list_shoots')).find((s) => s.id === shoot.id);
-  check(renamed.name === '2026-10-10_Boat-tour', `renaming in the sidebar stored the Shoot as ${renamed.name}`);
-  check((await row.textContent()).includes('2026-10-10_Boat-tour'), 'the sidebar shows the new name');
-  const missing = await api('/api/find_missing_originals', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-  check(Array.isArray(missing.missing ?? missing) && (missing.missing ?? missing).length === 0, 'no original went missing after the rename');
+  if (run('flags')) {
+    await gotoGrid();
+    // Re-read: the Queue worker may have culled since `photos` was read (an app-imported
+    // Library has a cull queued), and ⌘Z must put back what was there just before the key.
+    const first = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === photos[0].id);
+    const want = first.verdict === 'pick' ? 'reject' : 'pick';
+    await p.locator(`[data-testid="tile-${first.id}"]`).click();
+    await p.keyboard.press(want === 'pick' ? 'p' : 'x');
+    await p.waitForTimeout(500);
+    const after = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === first.id);
+    check(after.verdict === want && after.verdict_by === 'person', `pressing ${want === 'pick' ? 'P' : 'X'} wrote ${want} to the Library (got ${after.verdict} by ${after.verdict_by})`);
+    await p.screenshot({ path: `${out}live-flagged.png` });
 
-  // Remove from Library: ⌫ asks, Remove takes the Photo out of the Library (originals stay),
-  // ⌘Z right after puts it back with its flag.
-  const inShoot = await api(`/api/photos?shoot_id=${shoot.id}`);
-  const victim = inShoot[0];
-  await p.locator(`[data-testid="tile-${victim.id}"]`).click();
-  await p.keyboard.press('Backspace');
-  await p.getByTestId('remove-dialog').waitFor();
-  await p.screenshot({ path: `${out}live-remove-ask.png` });
-  await p.getByTestId('remove-confirm').click();
-  await p.waitForTimeout(600);
-  const without = await api(`/api/photos?shoot_id=${shoot.id}`);
-  check(without.length === inShoot.length - 1 && !without.some((x) => x.id === victim.id), `Remove took ${victim.file_name} out of the Library (${without.length} left)`);
-  check(existsSync(victim.path), 'its original is still on disk');
-  check((await p.locator(`[data-testid="tile-${victim.id}"]`).count()) === 0, 'the grid dropped it');
-  await p.screenshot({ path: `${out}live-removed.png` });
-  await p.keyboard.press('ControlOrMeta+z');
-  await p.waitForTimeout(800);
-  const back = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === victim.id);
-  check(back && back.verdict === victim.verdict, `⌘Z put it back with its Verdict (${back?.verdict})`);
-  check((await p.locator(`[data-testid="tile-${victim.id}"]`).count()) === 1, 'the grid shows it again');
+    // The Library is the only source of truth: ⌘Z is the engine's undo_batch, ⇧⌘Z undoes the Undo.
+    await p.keyboard.press('ControlOrMeta+z');
+    await p.waitForTimeout(500);
+    const unflagged = await state(first.id);
+    check(unflagged.verdict === first.verdict && unflagged.verdict_by === first.verdict_by, `⌘Z undid the flag in the Library (got ${unflagged.verdict} by ${unflagged.verdict_by})`);
+    await p.keyboard.press('ControlOrMeta+Shift+z');
+    await p.waitForTimeout(500);
+    const redone = await state(first.id);
+    check(redone.verdict === want && redone.verdict_by === 'person', `⇧⌘Z redid it (got ${redone.verdict} by ${redone.verdict_by})`);
+    await p.locator(`[data-testid="tile-${first.id}"]`).click(); // P moved on to the next Photo
+    await p.keyboard.press('3');
+    await p.waitForTimeout(500);
+    const starred = await state(first.id);
+    check(starred.stars === 3 && starred.stars_by === 'person', `pressing 3 wrote three stars to the Library (got ${starred.stars} by ${starred.stars_by})`);
+    // Edit › Undo in the app's menu bar takes the same path as ⌘Z (src/ui/editMenu.ts).
+    await p.evaluate(() => window.dispatchEvent(new CustomEvent('argus:edit-menu', { detail: 'undo' })));
+    await p.waitForTimeout(500);
+    check((await state(first.id)).stars === first.stars, 'Edit › Undo put the stars back');
+    const shown = await p.locator(`[data-testid="tile-${first.id}"]`).getAttribute('data-verdict');
+    check(shown === want, `the tile shows what the Library has (${shown})`);
+  }
 
-  // Library-wide views from the sidebar: every Photo, then every Pick.
-  const everything = await api('/api/photos');
-  await p.getByTestId('nav-all').click();
-  await p.waitForSelector('.tile');
-  await p.waitForTimeout(600);
-  check((await p.locator('h1').first().textContent()) === 'All photos', 'All photos opens a Library-wide grid');
-  check((await p.locator('[data-testid="ai-cull"]').count()) === 0, 'the Library-wide grid hides the Shoot-only AI cull');
-  await p.getByTestId('nav-picks').click();
-  await p.waitForSelector('[data-testid="nav-picks"].active');
-  await p.waitForTimeout(600);
-  const picksShown = Number(await p.getByTestId('nav-picks').locator('.count').textContent());
-  check(picksShown === everything.filter((x) => x.verdict === 'pick').length, `Picks shows every Pick in the Library (${picksShown})`);
-  await p.screenshot({ path: `${out}live-picks.png` });
+  if (run('zoom')) {
+    await gotoGrid();
+    // View › Zoom and pinch, which used to need Greg's eyes on the Mac (src/ui/zoom.ts, zoomPan.ts).
+    // The menu sends the same event the app's Tauri menu does; pinch is ctrl+wheel in Chromium
+    // and gesture events in WebKit, both dispatched straight at the stage.
+    const zoomMenu = (step) => p.evaluate((s) => window.dispatchEvent(new CustomEvent('argus:zoom', { detail: s })), step);
+    const pageZoom = () => p.evaluate(() => document.documentElement.style.zoom || '1');
+    await zoomMenu('in');
+    check((await pageZoom()) === '1.1', `View › Zoom In in the grid zooms the app (${await pageZoom()})`);
+    await zoomMenu('reset');
+    check((await pageZoom()) === '1', `View › Actual Size puts it back (${await pageZoom()})`);
+    await p.locator(`[data-testid="tile-${photos[0].id}"]`).click();
+    await p.keyboard.press('e');
+    await p.waitForSelector('[data-testid="loupe"] img');
+    await p.waitForTimeout(400);
+    const photoZoom = () => p.evaluate(() => Number([...document.querySelectorAll('[data-testid="loupe"] *')].find((n) => n.style?.getPropertyValue('--zoom'))?.style.getPropertyValue('--zoom') ?? 1));
+    await zoomMenu('in');
+    await p.waitForTimeout(300);
+    check((await photoZoom()) > 1 && (await pageZoom()) === '1', `View › Zoom In in Loupe zooms the photo, not the app (photo ${await photoZoom()}, app ${await pageZoom()})`);
+    await zoomMenu('reset');
+    await p.waitForTimeout(300);
+    check((await photoZoom()) === 1, `View › Actual Size fits the photo again (${await photoZoom()})`);
+    await p.evaluate(() => {
+      const st = document.querySelector('[data-testid="loupe"]');
+      const r = st.getBoundingClientRect();
+      st.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -60, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, bubbles: true, cancelable: true }));
+    });
+    await p.waitForTimeout(300);
+    const pinched = await photoZoom();
+    check(pinched > 1, `a trackpad pinch (ctrl+wheel) zooms the photo (${pinched})`);
+    await zoomMenu('reset');
+    await p.evaluate(() => {
+      const st = document.querySelector('[data-testid="loupe"]');
+      const r = st.getBoundingClientRect();
+      const g = (type, scale) => Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 });
+      st.dispatchEvent(g('gesturestart', 1));
+      st.dispatchEvent(g('gesturechange', 2));
+      st.dispatchEvent(g('gestureend', 2));
+    });
+    await p.waitForTimeout(300);
+    check((await photoZoom()) >= 1.9, `a WebKit pinch gesture zooms the photo (${await photoZoom()})`);
+    await p.screenshot({ path: `${out}live-loupe-zoomed.png` });
+    await zoomMenu('reset');
+  }
+
+  if (run('cull')) {
+    await gotoGrid();
+    // AI cull from the Agent panel, against the mock endpoint. Clear person flags first,
+    // since the cull never overrides them.
+    await api('/api/flag', { method: 'POST', body: JSON.stringify({ ids: photos.map((x) => x.id), verdict: 'unflagged', author: 'ai' }) });
+    await p.reload();
+    await p.waitForSelector('.tile');
+    // Count from here: a Library imported in the app has its own cull and Suggestions
+    // queued, which the bridge's Queue worker runs at start.
+    const callsBefore = mockCalls;
+    await p.getByPlaceholder(/Cull, fix or explain/).fill('cull this shoot');
+    await p.getByRole('button', { name: 'Send' }).click();
+    // The bar moves as the model's answer streams in, Photo by Photo, with an ETA.
+    const bar = p.getByTestId('cull-progress');
+    await bar.getByText(/[1-9]\d* of \d+/).waitFor({ timeout: 10000 });
+    await p.screenshot({ path: `${out}live-cull-progress.png` });
+    check(/Culling/.test(await bar.innerText()), 'the cull bar says what the model is doing');
+    await p.getByText('Mock cull.').waitFor({ timeout: 15000 });
+    await p.screenshot({ path: `${out}live-culled.png` });
+    const culled = await api(`/api/photos?shoot_id=${shoot.id}`);
+    check(mockCalls - callsBefore === 1, 'the Agent sent one Shoot-wide request to the model (Ollama by default)');
+    check(culled[0].verdict === 'unflagged' && culled[0].verdict_by === 'ai' && culled[0].reason === 'best of 2', 'AI Verdicts and reasons reached the Library, and the cautious cull left picking to the person');
+    check(photos.length < 2 || (culled[0].stack != null && culled[0].stack === culled[1].stack), 'the burst was stacked');
+    await p.waitForTimeout(3000); // the panel reloads from the Library
+    await p.waitForSelector('.tile');
+    await p.screenshot({ path: `${out}live-after-cull.png` });
+
+    // Stacks view (N): Enter keeps the AI's best frame of the burst as your Pick, the rest
+    // stay as they were (Unflagged or the AI's Reject), and ⌘Z undoes it in the Library.
+    if (photos.length >= 2) {
+      await p.keyboard.press('n');
+      await p.waitForSelector('.burst-cell');
+      await p.waitForTimeout(600);
+      await p.screenshot({ path: `${out}live-bursts.png` });
+      const stack = culled.filter((x) => x.stack === culled[0].stack).sort((a, b) => a.stack_rank - b.stack_rank);
+      await p.keyboard.press('Enter');
+      await p.waitForTimeout(600);
+      const kept = (await api(`/api/photos?shoot_id=${shoot.id}`)).filter((x) => stack.some((y) => y.id === x.id));
+      const best = kept.find((x) => x.id === stack[0].id);
+      check(best.verdict === 'pick' && best.verdict_by === 'person' && kept.filter((x) => x.verdict === 'pick').length === 1, `Enter in the Stacks view kept the best frame of the burst (got ${kept.map((x) => `${x.verdict}/${x.verdict_by}`)})`);
+      await p.keyboard.press('ControlOrMeta+z');
+      await p.waitForTimeout(500);
+      check((await state(stack[0].id)).verdict_by === 'ai', '⌘Z undid keeping it');
+      await p.keyboard.press('Escape');
+      await p.waitForSelector('.tile');
+    }
+  }
+
+  if (run('export')) {
+    await gotoGrid();
+    // Export the Picks to a folder chosen in the dialog (a prompt in a browser), with an
+    // XMP-free JPEG preset, and check the files land named by Shoot.
+    const exportDir = mkdtempSync(join(tmpdir(), 'argus-export-'));
+    // The AI never picks (cautious cull), so the person picks the best frame for the rest.
+    await api('/api/flag', { method: 'POST', body: JSON.stringify({ ids: [photos[0].id], verdict: 'pick', author: 'person' }) });
+    await p.reload();
+    await p.waitForSelector('.tile');
+    const picks = (await api(`/api/photos?shoot_id=${shoot.id}`)).filter((x) => x.verdict === 'pick').length;
+    await p.keyboard.press('ControlOrMeta+e');
+    p.once('dialog', (d) => d.accept(exportDir));
+    await p.getByRole('button', { name: 'Choose…' }).click();
+    await p.getByRole('button', { name: /^Web/ }).click();
+    await p.getByTestId('export-start').click();
+    await p.getByText(/^Done\. /).waitFor({ timeout: 60000 });
+    await p.waitForTimeout(300); // let the bar finish its transition
+    await p.screenshot({ path: `${out}live-exported.png` });
+    const shootDir = readdirSync(exportDir);
+    const files = shootDir.length === 1 ? readdirSync(join(exportDir, shootDir[0])) : [];
+    check(files.length === picks && files.every((f) => f.endsWith('.jpg') && !f.includes(' ') && f.startsWith(shootDir[0] + '_')), `Export wrote ${picks} Picks into a Shoot folder (${shootDir.join(', ')}: ${files.join(', ')})`);
+    await p.keyboard.press('Escape');
+  }
+
+  if (run('agent')) {
+    // The Agent edits the Photo open in Edit, as one undoable Version.
+    await p.goto(`http://localhost:5198/?library=live#/edit/${target}`);
+    await p.getByPlaceholder(/A bit more on the face/).fill('warmer, less contrast');
+    await p.getByRole('button', { name: 'Send' }).click();
+    await p.getByText('Mock edit: Temperature +12, Contrast -15.').waitFor({ timeout: 15000 });
+    const edited = await recipeOf(target);
+    check(agentCalls === 2 && edited.temp === 12 && edited.contrast === -15, `the Agent's edit reached the Library (${JSON.stringify(edited)}, ${agentCalls} model turns)`);
+    await p.waitForTimeout(1500); // the render lands; nothing is saved back as a person Version
+    await p.getByRole('tab', { name: /History/ }).click();
+    await p.getByText('Agent: warmer, less contrast').waitFor({ timeout: 5000 });
+    const versions = await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
+    check(versions.length === 1 && versions[0].author === 'ai', `History shows the Agent's Version and nothing else (${versions.map((v) => v.label).join(', ')})`);
+    await p.screenshot({ path: `${out}live-agent-edit.png` });
+    await p.locator('.agent').getByRole('button', { name: 'Undo', exact: true }).click();
+    await p.waitForTimeout(1000);
+    const undone = await recipeOf(target);
+    check(!undone.temp && !undone.contrast, `Undo in the chat put the Recipe back (${JSON.stringify(undone)})`);
+    await p.screenshot({ path: `${out}live-agent-undo.png` });
+  }
+
+  if (run('sliders')) {
+    await gotoEdit();
+    // A slider drag is one engine batch: ⌘Z is undo_batch on it, ⇧⌘Z undoes the Undo.
+    const exposure = async () => (await recipeOf(target)).exposure ?? 0;
+    await p.getByRole('tab', { name: 'Edit', exact: true }).click(); // History is open
+    const thumb = p.getByRole('slider', { name: 'Exposure', exact: true });
+    const nudge = async (n) => {
+      await thumb.focus();
+      for (let i = 0; i < n; i++) await p.keyboard.press('ArrowRight');
+      await p.waitForTimeout(1700); // the drag rests, then saves
+    };
+    const versionsBefore = (await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) })).length;
+    await nudge(4);
+    const dragged = await exposure();
+    await nudge(2);
+    const second = await exposure();
+    const drags = (await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) })).slice(versionsBefore);
+    check(dragged > 0 && second > dragged && drags.length === 2 && drags.every((v) => v.author === 'person' && /^Exposure /.test(v.label ?? '')), `two Exposure drags saved as two Versions (${drags.map((v) => v.label).join(', ')})`);
+    await p.locator('.stage').click();
+    await p.keyboard.press('ControlOrMeta+z');
+    await p.waitForTimeout(800);
+    check((await exposure()) === dragged, `⌘Z undid the last drag in the Library (exposure ${await exposure()}, want ${dragged})`);
+    await p.keyboard.press('ControlOrMeta+z');
+    await p.waitForTimeout(800);
+    check((await exposure()) === 0, `⌘Z again undid the first drag (exposure ${await exposure()})`);
+    await p.keyboard.press('ControlOrMeta+Shift+z');
+    await p.waitForTimeout(800);
+    check((await exposure()) === dragged, `⇧⌘Z redid it (exposure ${await exposure()})`);
+    const label = await p.locator('.slider').filter({ has: p.locator('.slider-label', { hasText: /^Exposure$/ }) }).textContent();
+    check(label?.includes(dragged.toFixed(2)), `the slider shows what the Library has (${label})`);
+  }
+
+  if (run('suggest')) {
+    await gotoEdit();
+    // Suggestions: R queues new takes, the bridge's Queue worker asks the model, and the
+    // takes show up under the photo; accepting one saves it as a Version.
+    await p.locator('.stage').click();
+    const suggestBefore = suggestCalls;
+    await p.keyboard.press('r');
+    await p.locator('.take-name', { hasText: 'Punchy' }).waitFor({ timeout: 30000 });
+    // The takes may already show from the start-up Suggestions; wait for R's own requests.
+    for (let i = 0; i < 60 && suggestCalls - suggestBefore < 2; i++) await p.waitForTimeout(500);
+    await p.waitForTimeout(1000);
+    // One proposal plus one Review round (pinned above, the Full default).
+    check(suggestCalls - suggestBefore === 2, `the Queue asked the model for takes and one Review round (${suggestCalls - suggestBefore})`);
+    await p.keyboard.press('Tab');
+    await p.keyboard.press('Tab');
+    await p.getByTestId('previewing').getByText(/Punchy/).waitFor({ timeout: 5000 });
+    await p.waitForTimeout(800); // the take's render
+    await p.screenshot({ path: `${out}live-suggestions.png` });
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(1200);
+    const accepted = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
+    check(accepted?.recipe?.global?.exposure === 0.7 && accepted?.recipe?.crop?.w === 0.8, `accepting a take saved it with its crop (${JSON.stringify(accepted?.recipe)})`);
+    const history = await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
+    check(history.at(-1)?.label === 'Suggestion: Punchy', `the take is a Version of its own (${history.at(-1)?.label})`);
+  }
+
+  if (run('masks')) {
+    // Edit: a Sky Mask is rendered by the engine and its real Mask is tinted on top.
+    await p.goto(`http://localhost:5198/?library=live#/edit/${target}`);
+    await p.waitForSelector('.stage .photo img');
+    await p.waitForTimeout(1500);
+    const before = await p.locator('.stage .photo img').first().getAttribute('src');
+    const cropW = (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) }))?.recipe?.crop?.w;
+    // Auto: the engine measures the Photo and saves Lightroom's Auto sliders as one batch.
+    await p.getByRole('tab', { name: 'Edit', exact: true }).click(); // History may still be open
+    await p.getByTestId('auto').click();
+    await p.waitForFunction((b) => document.querySelector('.stage .photo img')?.getAttribute('src') !== b, before, { timeout: 20000 });
+    const autoed = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
+    const autoKeys = ['exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'temp', 'tint', 'vibrance'].filter((k) => autoed?.recipe?.global?.[k]);
+    check(autoKeys.length >= 3 && autoed?.recipe?.crop?.w === cropW, `Auto set ${autoKeys.join(', ')} and kept the crop`);
+    const afterAuto = await p.locator('.stage .photo img').first().getAttribute('src');
+    // A preset is the person's own edit: its sliders reach the Library, the rest is kept.
+    await p.getByRole('tab', { name: 'Presets' }).click();
+    await p.getByTestId('section-presets-Film').locator('.dev-section-toggle').click();
+    await p.getByTestId('preset-warm-film').click();
+    await p.waitForTimeout(1500);
+    const preset = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
+    const warmed = (preset?.recipe?.global?.temp ?? 0) - (autoed?.recipe?.global?.temp ?? 0);
+    check(warmed === 12 && preset?.recipe?.presets?.[0]?.id === 'warm-film' && preset?.recipe?.crop?.w === cropW, `the Warm film preset was saved on top of Auto (temp +${warmed}, remembered as ${preset?.recipe?.presets?.[0]?.id})`);
+    // The first look at the Presets asks the engine to rank them for the Shoot in the background.
+    const ranking = await api('/api/list_jobs', { method: 'POST', body: JSON.stringify({ kind: 'rank_presets', limit: 5 }) });
+    check(ranking?.some((j) => j.args?.shoot_id === shoot.id), 'opening Presets queued rank_presets for the Shoot');
+    const afterPreset = await p.locator('.stage .photo img').first().getAttribute('src');
+    await p.getByRole('tab', { name: 'Masking' }).click();
+    await p.getByRole('button', { name: 'Sky', exact: true }).click();
+    await p.waitForFunction((b) => document.querySelector('.stage .photo img')?.getAttribute('src') !== b, afterPreset, { timeout: 20000 });
+    check(true, 'adding a Sky Mask re-rendered the Photo through the engine');
+    // The Masking tool shows the overlay by itself.
+    const tint = await p.waitForSelector('[data-testid="mask-tint"]', { timeout: 20000 }).then(() => true, () => false);
+    const style = tint ? await p.locator('[data-testid="mask-tint"]').first().getAttribute('style') : '';
+    check(tint && /data:image\/png/.test(style ?? ''), "Masking tints the engine's own Mask (view_mask)");
+    await p.waitForTimeout(800);
+    await p.screenshot({ path: `${out}live-edit-masks.png` });
+    const saved = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
+    check(saved?.recipe?.local?.some((l) => l.mask.kind === 'sky'), 'the Sky Mask was saved in the Recipe');
+    // Select People: the engine finds who is there (analyze_photo) and saves a person Mask.
+    await p.getByTestId('mask-create').getByRole('button', { name: 'People' }).click();
+    const found = await p.getByTestId('people-picker').getByText(/found\./).waitFor({ timeout: 30000 }).then(() => true, () => false);
+    await p.waitForTimeout(1500);
+    await p.screenshot({ path: `${out}live-people.png` });
+    const person = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
+    check(found && person?.recipe?.local?.some((l) => l.mask.kind === 'person' && l.mask.parts.includes('face_skin')), `the people picker asked the engine and a person Mask was saved (${await p.getByTestId('people-picker').locator('.people-note').textContent().catch(() => '?')})`);
+    // A Recommended Look and a one-click fix from the Edit tool reach the Library.
+    await p.getByRole('tab', { name: 'Edit', exact: true }).click();
+    const recId = (await p.locator('[data-testid^="rec-"]').first().getAttribute('data-testid')).slice(4);
+    await p.getByTestId(`rec-${recId}`).click();
+    await p.getByTestId('fix-shadows').click();
+    await p.waitForTimeout(1500);
+    const rec = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
+    const on = (rec?.recipe?.presets ?? []).map((x) => x.id);
+    check(on.includes(recId) && on.includes('fix-shadows') && !on.includes('warm-film'), `a Recommended Look replaced Warm film and Lift shadows stacked on it (${on.join(', ')})`);
+  }
+
+  if (run('look')) {
+    // The Look screen runs on the Library's Looks: a slider drag and Remove Look are batches
+    // of the person's own, and ⌘Z / ⇧⌘Z are undo_batch.
+    if (!(await api(`/api/photos?shoot_id=${shoot.id}`)).some((x) => x.verdict === 'pick')) {
+      await api('/api/flag', { method: 'POST', body: JSON.stringify({ ids: [photos[0].id], verdict: 'pick', author: 'person' }) });
+    }
+    const pick = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.verdict === 'pick');
+    const made = await api('/api/set_look', { method: 'POST', body: JSON.stringify({ shoot_id: shoot.id, name: 'Test look', photo_ids: [pick.id] }) });
+    const lookContrast = async () => (await api('/api/list_looks', { method: 'POST', body: JSON.stringify({ shoot_id: shoot.id }) }))[0]?.adjust?.contrast ?? 0;
+    const lookOf = async () => (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: pick.id }) }))?.recipe?.look ?? null;
+    await p.goto('http://localhost:5198/?library=live#/look');
+    await p.getByRole('heading', { name: 'Look: Test look' }).waitFor({ timeout: 10000 });
+    check(true, 'the Look screen shows the Library\'s Look');
+    await p.getByRole('button', { name: 'Adjust' }).click();
+    await p.getByRole('slider', { name: 'Contrast', exact: true }).focus();
+    for (let i = 0; i < 5; i++) await p.keyboard.press('ArrowRight');
+    await p.waitForTimeout(1700);
+    check((await lookContrast()) === 5, `a Look slider drag reached the Library (contrast ${await lookContrast()})`);
+    await p.locator(`[data-testid="batch-${pick.id}"]`).click();
+    await p.keyboard.press('ControlOrMeta+z');
+    await p.waitForTimeout(800);
+    check((await lookContrast()) === 0, `⌘Z undid the Look drag in the Library (contrast ${await lookContrast()})`);
+    await p.keyboard.press('ControlOrMeta+Shift+z');
+    await p.waitForTimeout(800);
+    check((await lookContrast()) === 5, `⇧⌘Z redid it (contrast ${await lookContrast()})`);
+    await p.getByRole('button', { name: 'Remove Look' }).click();
+    await p.waitForTimeout(800);
+    check((await lookOf()) === null, `Remove Look took the Pick out from under it (${await lookOf()})`);
+    await p.locator(`[data-testid="batch-${pick.id}"]`).click();
+    await p.keyboard.press('ControlOrMeta+z');
+    await p.getByRole('heading', { name: 'Look: Test look' }).waitFor({ timeout: 5000 }).catch(() => {});
+    check((await lookOf()) === made.look.id, `⌘Z put the Look back (${await lookOf()})`);
+    check(await p.getByRole('heading', { name: 'Look: Test look' }).isVisible(), 'the Look screen shows it again');
+    await p.screenshot({ path: `${out}live-look.png` });
+  }
+
+  if (run('rename')) {
+    // Renaming the Shoot from the sidebar goes through rename_shoot: the stored name follows
+    // the naming rules and every Photo still finds its original.
+    await p.goto('http://localhost:5198/?library=live#/cull');
+    await p.waitForSelector('.tile');
+    const row = p.getByTestId(`shoot-${shoot.id}`);
+    await row.dblclick();
+    await p.keyboard.press('ControlOrMeta+a');
+    await p.keyboard.type('2026-10-10 Boat tour');
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(500);
+    const renamed = (await api('/api/list_shoots')).find((s) => s.id === shoot.id);
+    check(renamed.name === '2026-10-10_Boat-tour', `renaming in the sidebar stored the Shoot as ${renamed.name}`);
+    check((await row.textContent()).includes('2026-10-10_Boat-tour'), 'the sidebar shows the new name');
+    const missing = await api('/api/find_missing_originals', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    check(Array.isArray(missing.missing ?? missing) && (missing.missing ?? missing).length === 0, 'no original went missing after the rename');
+  }
+
+  if (run('remove')) {
+    await gotoGrid();
+    // Remove from Library: ⌫ asks, Remove takes the Photo out of the Library (originals stay),
+    // ⌘Z right after puts it back with its flag.
+    const inShoot = await api(`/api/photos?shoot_id=${shoot.id}`);
+    const victim = inShoot[0];
+    await p.locator(`[data-testid="tile-${victim.id}"]`).click();
+    await p.keyboard.press('Backspace');
+    await p.getByTestId('remove-dialog').waitFor();
+    await p.screenshot({ path: `${out}live-remove-ask.png` });
+    await p.getByTestId('remove-confirm').click();
+    await p.waitForTimeout(600);
+    const without = await api(`/api/photos?shoot_id=${shoot.id}`);
+    check(without.length === inShoot.length - 1 && !without.some((x) => x.id === victim.id), `Remove took ${victim.file_name} out of the Library (${without.length} left)`);
+    check(existsSync(victim.path), 'its original is still on disk');
+    check((await p.locator(`[data-testid="tile-${victim.id}"]`).count()) === 0, 'the grid dropped it');
+    await p.screenshot({ path: `${out}live-removed.png` });
+    await p.keyboard.press('ControlOrMeta+z');
+    await p.waitForTimeout(800);
+    const back = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === victim.id);
+    check(back && back.verdict === victim.verdict, `⌘Z put it back with its Verdict (${back?.verdict})`);
+    check((await p.locator(`[data-testid="tile-${victim.id}"]`).count()) === 1, 'the grid shows it again');
+  }
+
+  if (run('views')) {
+    await gotoGrid();
+    // Library-wide views from the sidebar: every Photo, then every Pick.
+    const everything = await api('/api/photos');
+    await p.getByTestId('nav-all').click();
+    await p.waitForSelector('.tile');
+    await p.waitForTimeout(600);
+    check((await p.locator('h1').first().textContent()) === 'All photos', 'All photos opens a Library-wide grid');
+    check((await p.locator('[data-testid="ai-cull"]').count()) === 0, 'the Library-wide grid hides the Shoot-only AI cull');
+    await p.getByTestId('nav-picks').click();
+    await p.waitForSelector('[data-testid="nav-picks"].active');
+    await p.waitForTimeout(600);
+    const picksShown = Number(await p.getByTestId('nav-picks').locator('.count').textContent());
+    check(picksShown === everything.filter((x) => x.verdict === 'pick').length, `Picks shows every Pick in the Library (${picksShown})`);
+    await p.screenshot({ path: `${out}live-picks.png` });
+  }
+
   await ctx.close();
 } finally {
   await browser.close();

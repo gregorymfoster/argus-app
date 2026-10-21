@@ -241,3 +241,72 @@ fn a_v1_library_migrates_and_keeps_working() {
         json!([])
     );
 }
+
+#[test]
+fn paste_settings_copies_chosen_groups_as_one_undoable_batch() {
+    let (_t, tools, ids) = library(3);
+    json1(
+        &tools,
+        "edit_recipe",
+        json!({ "photo_ids": [ids[0]], "set": { "exposure": 0.7, "temp": 15, "clarity": 20 } }),
+    );
+    json1(
+        &tools,
+        "edit_recipe",
+        json!({ "photo_ids": [ids[1]], "set": { "shadows": 30, "temp": -8 } }),
+    );
+    let before = mean(&tools, ids[2]);
+    let p = json1(
+        &tools,
+        "paste_settings",
+        json!({ "from": ids[0], "photo_ids": ids, "groups": ["light", "effects"] }),
+    );
+    assert_eq!(
+        p["versions"].as_object().unwrap().len(),
+        2,
+        "the source is skipped"
+    );
+    let g =
+        |id| json1(&tools, "read_recipe", json!({ "photo_id": id }))["recipe"]["global"].clone();
+    assert_eq!(
+        g(ids[1]),
+        json!({ "exposure": 0.7, "temp": -8.0, "clarity": 20.0 })
+    );
+    assert!(
+        mean(&tools, ids[2]) > before,
+        "pasted exposure renders brighter"
+    );
+    json1(&tools, "undo_batch", json!({ "batch_id": p["batch_id"] }));
+    assert_eq!(g(ids[1]), json!({ "shadows": 30.0, "temp": -8.0 }));
+}
+
+#[test]
+fn paste_settings_across_looks_pastes_what_the_source_looks_like() {
+    let (_t, tools, ids) = library(2);
+    let shoot = json1(&tools, "list_shoots", json!({}))[0]["id"].clone();
+    json1(
+        &tools,
+        "set_look",
+        json!({ "shoot_id": shoot, "name": "Warm", "set": { "temp": 20 }, "photo_ids": [ids[0]] }),
+    );
+    json1(
+        &tools,
+        "edit_recipe",
+        json!({ "photo_ids": [ids[0]], "set": { "temp": 5 } }),
+    );
+    json1(
+        &tools,
+        "paste_settings",
+        json!({ "from": ids[0], "photo_ids": [ids[1]], "groups": ["wb"] }),
+    );
+    let r = json1(&tools, "read_recipe", json!({ "photo_id": ids[1] }))["recipe"].clone();
+    assert_eq!(r["global"]["temp"], 25.0);
+    assert_eq!(r["look"], Value::Null);
+    let e = tools
+        .call(
+            "paste_settings",
+            json!({ "from": ids[0], "photo_ids": [ids[1]], "groups": ["bogus"] }),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("unknown settings group"), "{e}");
+}

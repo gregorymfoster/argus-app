@@ -14,6 +14,8 @@ export default defineConfig(({ mode }) => ({
   // Live mode (?library=live) talks to `argus serve` through these proxies.
   server: {
     port: 5173,
+    // The Preset library is shared with the engine (engine/presets/builtin.json).
+    fs: { allow: ['.', '../engine/presets'] },
     proxy: { '/api': 'http://127.0.0.1:7878', '/previews': 'http://127.0.0.1:7878' },
   },
 }));

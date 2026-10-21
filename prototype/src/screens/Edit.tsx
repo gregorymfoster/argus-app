@@ -1,32 +1,33 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { ArrowLeft, Copy, Crop as CropIcon, History, Layers, SlidersHorizontal, SquareDashedMousePointer } from 'lucide-react';
+import { ArrowLeft, Bandage, Copy, Crop as CropIcon, History, Layers, SlidersHorizontal, SquareDashedMousePointer } from 'lucide-react';
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
-import type { Crop, LocalAdjust, NumKey, Recipe, Version } from '../domain/types';
+import type { Crop, LocalAdjust, NumKey, Recipe, Spot, Version } from '../domain/types';
 import { fmt, recipeOf, useLibrary } from '../store/library';
 import { go } from '../router';
 import { Agent } from '../agent/AgentPanel';
 import { LIVE, asPerson, focusPhoto, wrote } from '../data/live';
-import { loadRecipe, useDetailRender, useEngineMasks, useLiveRender } from '../data/liveEdit';
+import { loadRecipe, pickSpotSource, useDetailRender, useEngineMasks, useLiveRender } from '../data/liveEdit';
 import { listVersions } from '../data/liveAgent';
 import { PhotoView } from '../ui/PhotoView';
 import { SuggestionStrip } from '../ui/Suggestions';
 import { Filmstrip } from '../ui/Filmstrip';
 import { acceptSuggestion, applyToRest, cancelTakes, dismissSuggestion, requestSuggestions, useQueue, useSuggestionImage, useSuggestions, useTakesProgress } from '../data/suggestions';
-import { Kbd, Tip } from '../ui/kit';
+import { Kbd, Tip, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { QueueChip } from '../ui/Queue';
 import { ToolStrip } from '../ui/Develop';
 import { autoAction } from '../data/auto';
 import { PresetsPanel } from '../ui/Presets';
-import { applyPreset, type Preset } from '../domain/presets';
 import { EditPanel, GLOBAL, LIGHT, PRESENCE, WB } from '../ui/EditPanel';
 import { MaskingPanel } from '../ui/MaskingPanel';
 import { MaskHandles } from '../ui/MaskHandles';
 import { PickOverlay, type Picked } from '../ui/EditSections';
 import { CropOverlay, CropPanel, FULL } from '../ui/CropPanel';
+import { HEAL_BRUSH, HealOverlay, HealPanel, SPOT_R, newSpotId, spotsOf, type HealBrush } from '../ui/HealPanel';
 import { Button } from '@/components/ui/button';
 import { longEdge, useNeed, useZoomPan } from '../ui/zoomPan';
 import { Navigator, ZoomReadout } from '../ui/Navigator';
+import { useSettingsKeys } from '../ui/PasteSettings';
 
 /** What a take changes against the current Recipe, for the panel: [label, was, now]. */
 function takeDiff(cur: Recipe, take: Recipe): [string, string, string][] {
@@ -153,9 +154,60 @@ export function EditScreen({ id }: { id: string }) {
   useHotkeys('e', () => setTab('edit'));
   useHotkeys('m', () => setTab((t) => (t === 'masking' ? 'edit' : 'masking')));
   useHotkeys('c', () => setTab((t) => (t === 'crop' ? 'edit' : 'crop')));
+  useHotkeys('h', () => setTab((t) => (t === 'heal' ? 'edit' : 'heal')));
   useHotkeys('shift+p', () => setTab((t) => (t === 'presets' ? 'edit' : 'presets')));
   useHotkeys('b', () => setBrush((b) => !b));
-  useHotkeys('escape', () => (brush ? setBrush(false) : back()), [brush, state.look]);
+  // Heal (H): the next Spot's settings, the selected Spot, and the newest Recipe for picks
+  // that finish after it changed.
+  const [healBrush, setHealBrush] = useState<HealBrush>(HEAL_BRUSH);
+  const [selSpot, setSelSpot] = useState<string | null>(null);
+  useEffect(() => setSelSpot(null), [p.id]);
+  const latest = useRef(recipe);
+  latest.current = recipe;
+  const saveSpots = (spots: Spot[], label: string, key?: string) => dispatch({ type: 'recipe/set', id: p.id, recipe: { ...latest.current, spots }, label, by: 'you', key });
+  /** Where a Spot should copy from: the engine's pick when live, else beside it. */
+  // Sources each Spot has had, so / keeps finding new ones as Lightroom's does.
+  const tried = useRef(new Map<string, { x: number; y: number }[]>());
+  const pickFrom = async (x: number, y: number, r: number, without?: Spot) => {
+    const base = { ...latest.current, spots: spotsOf(latest.current).filter((s) => s.id !== without?.id) };
+    const avoid = without ? [...(tried.current.get(without.id) ?? []), without.from] : [];
+    if (without) tried.current.set(without.id, avoid);
+    if (LIVE) return pickSpotSource(p.id, base, x, y, r, avoid);
+    const side = without ? -1 : 1;
+    return { x: Math.min(1, Math.max(0, x + side * 3 * r)), y };
+  };
+  const addSpot = async (x: number, y: number) => {
+    const { mode, r, feather, opacity } = healBrush;
+    try {
+      const from = await pickFrom(x, y, r);
+      const spot: Spot = { id: newSpotId(latest.current), mode, x, y, r, from, feather, opacity, source: 'you' };
+      saveSpots([...spotsOf(latest.current), spot], mode === 'heal' ? 'Healed a spot' : 'Cloned a spot');
+      setSelSpot(spot.id);
+    } catch (e) {
+      dispatch({ type: 'toast', text: `Couldn't heal there: ${String(e).replace(/^Error: /, '')}` });
+    }
+  };
+  const repick = async (id: string) => {
+    const s = spotsOf(latest.current).find((x) => x.id === id);
+    if (!s) return;
+    const from = await pickFrom(s.x, s.y, s.r, s);
+    saveSpots(spotsOf(latest.current).map((x) => (x.id === id ? { ...x, from } : x)), 'New source');
+  };
+  const sizeBy = (k: number) => {
+    const r = Math.min(SPOT_R.max, Math.max(SPOT_R.min, Math.round(healBrush.r * k * 1e4) / 1e4));
+    setHealBrush({ ...healBrush, r });
+    if (selSpot) saveSpots(spotsOf(recipe).map((x) => (x.id === selSpot ? { ...x, r } : x)), 'Spot size', `spot:${selSpot}:r`);
+  };
+  // Lightroom's keys: [ and ] size the brush, / picks a new source, Delete removes the Spot.
+  useHotkeys('bracketleft', () => tab === 'heal' && sizeBy(1 / 1.15), [tab, healBrush, selSpot, recipe]);
+  useHotkeys('bracketright', () => tab === 'heal' && sizeBy(1.15), [tab, healBrush, selSpot, recipe]);
+  useHotkeys('slash', () => tab === 'heal' && selSpot && void repick(selSpot), [tab, selSpot]);
+  useHotkeys('delete', () => {
+    if (tab !== 'heal' || !selSpot) return;
+    saveSpots(spotsOf(recipe).filter((x) => x.id !== selSpot), 'Removed a Spot');
+    setSelSpot(null);
+  }, [tab, selSpot, recipe]);
+  useHotkeys('escape', () => (brush ? setBrush(false) : tab === 'heal' && selSpot ? setSelSpot(null) : back()), ESC_OUTSIDE_DIALOGS, [brush, state.look, tab, selSpot]);
   // Lightroom's Sync: fold this photo's sliders into the Shoot's Look.
   const hasGlobal = Object.values(recipe.global).some((v) => v);
   const reload = async () => {
@@ -178,6 +230,7 @@ export function EditScreen({ id }: { id: string }) {
     dispatch({ type: 'recipe/set', id: p.id, recipe: v.recipe, label: `Restored v${v.n}`, by: 'you' });
   };
   useHotkeys('shift+s', () => hasGlobal && sync(), [hasGlobal, p.id]);
+  useSettingsKeys(p.id, []);
   const auto = () => {
     dispatch(autoAction([p.id], (id) => recipeOf(state, id)));
     dispatch({ type: 'toast', text: `Auto on ${p.file}` });
@@ -221,18 +274,16 @@ export function EditScreen({ id }: { id: string }) {
   useHotkeys('r', () => void more(), [p.id]);
   useHotkeys('mod+shift+a', (e) => (e.preventDefault(), void toRest()), [p.id, recipe]);
 
-  const pickPreset = (pr: Preset) => {
-    setHover(null);
-    dispatch({ type: 'recipe/set', id: p.id, recipe: applyPreset(recipe, pr), label: `Preset: ${pr.name}`, by: 'you' });
-  };
+  const setFromPreset = (r: Recipe, label: string, key?: string) => dispatch({ type: 'recipe/set', id: p.id, recipe: r, label, by: 'you', key });
   // While a handle is dragged (a Linear or Radial Mask, the crop box) the preview follows it;
   // the Recipe changes once, on release.
-  const [placing, setPlacing] = useState<{ local?: LocalAdjust; crop?: Crop } | null>(null);
+  const [placing, setPlacing] = useState<{ local?: LocalAdjust; crop?: Crop; spot?: Spot } | null>(null);
   const [shown, setShown] = useState({ light: true, color: true });
   let drawn: Recipe = stroke
     ? { ...recipe, local: [...recipe.local.filter((l) => l.id !== 'live-brush'), { id: 'live-brush', name: 'Brush', mask: { kind: 'brush', dots: stroke }, adjust: { exposure: 0.5 }, source: 'you' }] }
     : recipe;
   if (placing?.local) drawn = { ...drawn, local: drawn.local.map((l) => (l.id === placing.local!.id ? placing.local! : l)) };
+  if (placing?.spot) drawn = { ...drawn, spots: spotsOf(drawn).map((s) => (s.id === placing.spot!.id ? placing.spot! : s)) };
   let live = hover ?? drawn;
   // The section eyes show the photo without Light or Color; Crop shows the whole frame.
   const off = [...(shown.light ? [] : LIGHT), ...(shown.color ? [] : [...WB, ...PRESENCE])];
@@ -243,6 +294,8 @@ export function EditScreen({ id }: { id: string }) {
   }
   const crop = placing?.crop ?? recipe.crop ?? FULL;
   if (tab === 'crop') live = { ...live, crop: { ...FULL, angle: crop.angle } };
+  // Spots sit on the whole upright frame, so Heal shows it uncropped.
+  if (tab === 'heal') live = { ...live, crop: undefined };
   const render = useLiveRender(p.id, loaded ? live : null, LIVE);
   const engineMasks = useEngineMasks(p.id, recipe.local, LIVE && (masks || brush || tab === 'masking'));
   const selLocal = tab === 'masking' ? recipe.local.find((l) => l.id === selMask) : undefined;
@@ -256,7 +309,7 @@ export function EditScreen({ id }: { id: string }) {
   }, [p.preview]);
 
   // Lightroom's zoom and pan; a click zooms unless it paints a Mask or moves the crop.
-  const zp = useZoomPan({ photoKey: p.id, natural: longEdge(p), click: !brush && tab !== 'crop' });
+  const zp = useZoomPan({ photoKey: p.id, natural: longEdge(p), click: !brush && tab !== 'crop' && tab !== 'heal' });
   const need = useNeed(zp.z);
   const detail = useDetailRender(p.id, live, need, 1536, longEdge(p), LIVE && loaded && !take && !before);
 
@@ -332,8 +385,9 @@ export function EditScreen({ id }: { id: string }) {
     <div className="dev-scroll" role="tabpanel" aria-label={tab}>
       {tab === 'edit' && <EditPanel key={p.id} photo={p} recipe={recipe} look={state.look} versions={versions.length} shown={shown} onShown={setShown} onHover={setHover} onAuto={auto} onSync={sync} onPick={(label, then) => setPicking({ label, then })} diff={diff} />}
       {tab === 'crop' && <CropPanel photoId={p.id} recipe={recipe} frame={frame} />}
+      {tab === 'heal' && <HealPanel photoId={p.id} recipe={recipe} sel={selSpot} onSel={setSelSpot} brush={healBrush} onBrush={setHealBrush} onRepick={(id) => void repick(id)} />}
       {tab === 'masking' && <MaskingPanel photo={p} recipe={recipe} overlay={masks} onOverlay={setMasks} sel={selMask} onSel={setSelMask} brush={brush} onBrush={setBrush} />}
-      {tab === 'presets' && <PresetsPanel photo={p} recipe={recipe} look={state.look} onHover={setHover} onApply={pickPreset} onAuto={auto} />}
+      {tab === 'presets' && <PresetsPanel photo={p} recipe={recipe} look={state.look} onHover={setHover} onSet={setFromPreset} onAuto={auto} />}
       {tab === 'history' && historyPanel}
     </div>
     </>
@@ -345,6 +399,7 @@ export function EditScreen({ id }: { id: string }) {
       tools={[
         { id: 'edit', label: 'Edit', icon: SlidersHorizontal, keys: 'E' },
         { id: 'crop', label: 'Crop', icon: CropIcon, keys: 'C' },
+        { id: 'heal', label: 'Heal', icon: Bandage, keys: 'H', badge: spotsOf(recipe).length || undefined },
         { id: 'masking', label: 'Masking', icon: SquareDashedMousePointer, keys: 'M', badge: recipe.local.length || undefined },
         { id: 'presets', label: 'Presets', icon: Layers, keys: '⇧P' },
         { id: 'history', label: 'History', icon: History, badge: versions.length || undefined },
@@ -407,6 +462,21 @@ export function EditScreen({ id }: { id: string }) {
                 onPick={(at) => {
                   setPicking(null);
                   picking.then(at);
+                }}
+              />
+            )}
+            {tab === 'heal' && !before && !take && (
+              <HealOverlay
+                spots={spotsOf(drawn)}
+                sel={selSpot}
+                frame={frame}
+                r={healBrush.r}
+                onAdd={(x, y) => void addSpot(x, y)}
+                onSel={setSelSpot}
+                onChange={(spot, done) => {
+                  if (!done) return setPlacing({ spot });
+                  saveSpots(spotsOf(recipe).map((s) => (s.id === spot.id ? spot : s)), 'Moved a Spot');
+                  setPlacing(null);
                 }}
               />
             )}

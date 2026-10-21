@@ -24,6 +24,7 @@
 //! never loses anything.
 
 use crate::geometry::Crop;
+use crate::heal::Spot;
 use crate::masks::Mask;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -178,6 +179,7 @@ pub const MORE_SLIDERS: &[More] = &[
     more("grainSize", 0.0, 100.0, 25.0),
     more("grainRoughness", 0.0, 100.0, 50.0),
     // Detail
+    more("denoise", 0.0, 100.0, 0.0),
     more("sharpen", 0.0, 150.0, 0.0),
     more("sharpenRadius", 0.5, 3.0, 1.0),
     more("sharpenDetail", 0.0, 100.0, 25.0),
@@ -688,6 +690,9 @@ pub struct Recipe {
     /// Crop and straighten, applied after colour and tone.
     #[serde(skip_serializing_if = "Crop::is_identity")]
     pub crop: Crop,
+    /// Heal and Clone Spots, applied in order after the Masks and before the crop.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spots: Vec<Spot>,
     #[serde(flatten)]
     pub other: Map<String, Value>,
 }
@@ -701,6 +706,7 @@ impl Default for Recipe {
             correction: Correction::default(),
             local: Vec::new(),
             crop: Crop::default(),
+            spots: Vec::new(),
             other: Map::new(),
         }
     }
@@ -848,9 +854,19 @@ impl Recipe {
             "pointColor" => {
                 g.point_color = serde_json::from_value(value.clone()).map_err(bad)?;
             }
+            // Lens corrections from the camera's data (crate::lens); "camera" is the default.
+            "lensCorrections" => match value.as_str() {
+                Some("camera") => {
+                    g.other.remove(path);
+                }
+                Some(v @ ("on" | "off")) => {
+                    g.other.insert(path.into(), v.into());
+                }
+                _ => return Err(Error(format!("{path}: one of \"camera\", \"on\", \"off\""))),
+            },
             _ => {
                 return Err(Error(format!(
-                    "{path}: expected a number (only curve.<rgb|red|green|blue> and pointColor take lists)"
+                    "{path}: expected a number (only curve.<rgb|red|green|blue> and pointColor take lists, lensCorrections a word)"
                 )))
             }
         }

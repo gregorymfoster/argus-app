@@ -7,10 +7,18 @@ const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;
 const DialogClose = DialogPrimitive.Close;
 
+/** The last Esc a dialog or menu closed on. Radix closes before the screens' own Esc runs, so they check this. */
+let dialogEscape: KeyboardEvent | null = null;
+export const escClosedDialog = (e: KeyboardEvent) => e === dialogEscape;
+export const markEscape = (e: KeyboardEvent) => {
+  dialogEscape = e;
+};
+
 function DialogContent({
   className,
   children,
   closable = true,
+  onEscapeKeyDown,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   closable?: boolean;
@@ -24,6 +32,10 @@ function DialogContent({
           "anim-pop fixed left-1/2 top-[14vh] z-50 flex w-[min(520px,calc(100%-32px))] -translate-x-1/2 flex-col gap-4 rounded-[10px] border border-border-strong bg-panel p-5 shadow-pop outline-none",
           className,
         )}
+        onEscapeKeyDown={(e) => {
+          dialogEscape = e;
+          onEscapeKeyDown?.(e);
+        }}
         {...props}
       >
         {children}

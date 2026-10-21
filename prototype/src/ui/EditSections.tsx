@@ -3,10 +3,14 @@
 // Each is a thin view over the Recipe's `global` (engine/src/recipe.rs), so the Agent and
 // the person change the same settings.
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Slider as SliderPrimitive } from 'radix-ui';
 import { Pipette, Plus, X } from 'lucide-react';
-import type { Adjust, Calibration, CurveChannel, GradeRange, Grading, NumKey, PointColor, Points, Wheel } from '../domain/types';
+import type { Adjust, Calibration, CurveChannel, GradeRange, Grading, NumKey, Photo, PointColor, Points, Wheel } from '../domain/types';
+import { LIVE } from '../data/live';
+import { baseChanged } from '../data/liveEdit';
+import { usePoll } from '../data/poll';
+import { ProgressBar } from './Progress';
 import { fmt } from '../store/library';
 import { Section } from './Develop';
 import { Seg, Slider } from './kit';
@@ -34,6 +38,7 @@ export const GRAIN: Def[] = [
   { key: 'grainSize', label: 'Size', name: 'Grain size', min: 0, max: 100, def: 25 },
   { key: 'grainRoughness', label: 'Roughness', name: 'Grain roughness', min: 0, max: 100, def: 50 },
 ];
+export const DENOISE: Def[] = [{ key: 'denoise', label: 'Denoise', name: 'AI Denoise amount', min: 0, max: 100 }];
 export const SHARPEN: Def[] = [
   { key: 'sharpen', label: 'Sharpening', min: 0, max: 150 },
   { key: 'sharpenRadius', label: 'Radius', name: 'Sharpening radius', min: 0.5, max: 3, step: 0.1, def: 1 },
@@ -488,9 +493,42 @@ export function Effects({ g, set }: { g: Adjust; set: SetGlobal }) {
   );
 }
 
-export function Detail({ g, set }: { g: Adjust; set: SetGlobal }) {
+interface DenoiseStatus {
+  raw: boolean;
+  ready: boolean;
+  job: { status: 'queued' | 'running'; done: number; total: number; eta_s: number | null } | null;
+}
+
+/** AI Denoise's base for the open Photo: a bar with an ETA while the model runs over it. */
+function DenoiseProgress({ photo, on }: { photo: Photo; on: boolean }) {
+  const s = usePoll<DenoiseStatus>(LIVE && on ? 'denoise_status' : null, { photo_id: Number(photo.id) }, 1000);
+  const ready = Boolean(s?.ready);
+  const was = useRef(ready);
+  useEffect(() => {
+    if (ready && !was.current) baseChanged();
+    was.current = ready;
+  }, [ready]);
+  if (!on || !s?.job) return null;
+  const j = s.job;
+  const pct = j.total ? Math.floor((j.done / j.total) * 100) : 0;
   return (
-    <Section id="detail" title="Detail" closed aside={<Note n={changed(g, [...SHARPEN, ...NOISE, ...COLOR_NOISE])} />}>
+    <div style={{ margin: '2px 0 10px' }}>
+      <ProgressBar label={j.status === 'running' ? `Denoising ${pct}%` : 'Denoise queued'} done={j.total ? j.done : undefined} total={j.total || undefined} eta={j.eta_s} count={false} testId="denoise-progress" />
+    </div>
+  );
+}
+
+export function Detail({ g, set, photo }: { g: Adjust; set: SetGlobal; photo: Photo }) {
+  // Lightroom's Denoise works on RAWs only.
+  const raw = !/\.jpe?g$/i.test(photo.file);
+  return (
+    <Section id="detail" title="Detail" closed aside={<Note n={changed(g, [...(raw ? DENOISE : []), ...SHARPEN, ...NOISE, ...COLOR_NOISE])} />}>
+      {raw ? (
+        <>
+          <Rows g={g} defs={DENOISE} set={set} />
+          <DenoiseProgress photo={photo} on={Boolean(g.denoise)} />
+        </>
+      ) : null}
       <Rows g={g} defs={SHARPEN} set={set} dimUnless="sharpen" />
       <div className="dev-sub faint sub-head">Noise reduction</div>
       <Rows g={g} defs={NOISE} set={set} dimUnless="noise" />
@@ -502,10 +540,26 @@ export function Detail({ g, set }: { g: Adjust; set: SetGlobal }) {
   );
 }
 
+const LENS_PROFILE: { value: NonNullable<Adjust['lensCorrections']>; label: string; title: string; undo: string }[] = [
+  { value: 'camera', label: 'As camera', title: 'What the camera corrected in its own JPEG', undo: 'Lens corrections as the camera' },
+  { value: 'on', label: 'On', title: 'Distortion, vignetting and chromatic aberration from the lens data in the RAW', undo: 'Lens corrections on' },
+  { value: 'off', label: 'Off', title: 'No lens corrections', undo: 'Lens corrections off' },
+];
+
 export function Optics({ g, set }: { g: Adjust; set: SetGlobal }) {
   const ca = Boolean(g.removeCA);
+  const profile = g.lensCorrections ?? 'camera';
+  const setProfile = (v: (typeof LENS_PROFILE)[number]['value']) => {
+    const next = { ...g };
+    if (v === 'camera') delete next.lensCorrections;
+    else next.lensCorrections = v;
+    set(next, LENS_PROFILE.find((p) => p.value === v)!.undo, 'lensCorrections');
+  };
   return (
-    <Section id="optics" title="Optics" closed aside={<Note n={changed(g, [...DEFRINGE, ...LENS]) + (ca ? 1 : 0)} />}>
+    <Section id="optics" title="Optics" closed aside={<Note n={changed(g, [...DEFRINGE, ...LENS]) + (ca ? 1 : 0) + (profile !== 'camera' ? 1 : 0)} />}>
+      <div className="dev-sub faint sub-head">Lens corrections</div>
+      <Seg value={profile} onChange={setProfile} label="Lens corrections" className="lens-profile" items={LENS_PROFILE} />
+      <div className="dev-note faint">From the lens data Sony cameras write into each RAW.</div>
       <label className="dev-check">
         <input type="checkbox" checked={ca} onChange={(e) => set(setIn(g, ['removeCA'], e.target.checked ? 1 : 0), e.target.checked ? 'Remove chromatic aberration' : 'Keep chromatic aberration')} />
         Remove chromatic aberration

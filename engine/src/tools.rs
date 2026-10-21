@@ -15,7 +15,7 @@ use crate::library::{
 };
 use crate::masks::{Canvas, Mask, Shape};
 use crate::recipe::{Local, Recipe};
-use crate::{export, render, Error, Result};
+use crate::{export, heal, render, Error, Result};
 use rayon::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -478,6 +478,44 @@ impl Tools {
             }
             "render_photo" => render_parts(&lib, parse(args)?, MAX_PREVIEW_EDGE),
             "auto_edit" => auto_edit(&mut lib, parse(args)?, batch),
+            "list_presets" => {
+                let a: OptShoot = parse(args)?;
+                list_presets(&lib, a.shoot_id)
+            }
+            "apply_preset" => apply_preset(&mut lib, parse(args)?, batch),
+            "rank_presets" => {
+                let a: RankPresets = parse(args)?;
+                shoot_photos(&lib, a.shoot_id)?;
+                if !a.refresh {
+                    if let Some(r) = crate::preset_rank::cached(&lib, a.shoot_id)? {
+                        return one(json!({ "status": "ready", "ranking": r }));
+                    }
+                }
+                if a.wait {
+                    let compute = Compute::from_env();
+                    let task = crate::progress::Task::start(
+                        "rank_presets",
+                        "Ranking Presets".to_string(),
+                        crate::preset_rank::PHOTOS,
+                    );
+                    let r = crate::preset_rank::rank(
+                        &lib,
+                        a.shoot_id,
+                        a.provider.as_deref(),
+                        compute,
+                        &|_, _| task.tick(),
+                    )?;
+                    return one(json!({ "status": "ready", "ranking": r }));
+                }
+                let mut args = json!({ "shoot_id": a.shoot_id });
+                if let Some(p) = &a.provider {
+                    args["provider"] = json!(p);
+                }
+                let priority = a.now.then_some(jobs::PRIORITY_FOCUS);
+                let (job_id, created) =
+                    jobs::enqueue(&mut lib, "rank_presets", &args, priority, None)?;
+                one(json!({ "status": "queued", "job_id": job_id, "created": created }))
+            }
             "white_balance" => white_balance(&mut lib, parse(args)?, batch),
             "export_photos" => {
                 let a: ExportPhotos = parse(args)?;
@@ -513,6 +551,7 @@ impl Tools {
                 let a: SyncToLook = parse(args)?;
                 sync_to_look(&mut lib, a, batch)
             }
+            "paste_settings" => paste_settings(&mut lib, parse(args)?, batch),
             "remove_look" => {
                 let a: RemoveLook = parse(args)?;
                 let under = photos_under(&lib, a.shoot_id, &a.look_id)?;
@@ -542,6 +581,19 @@ impl Tools {
                 one(json!({ "batch_id": batch, "version": version, "local": r.local }))
             }
             "view_mask" => view_mask(&lib, parse(args)?),
+            "add_spot" => add_spot(&mut lib, parse(args)?, batch),
+            "edit_spot" => edit_spot(&mut lib, parse(args)?, batch),
+            "remove_spot" => remove_spot(&mut lib, parse(args)?, batch),
+            "pick_spot_source" => {
+                let a: PickSpotSource = parse(args)?;
+                let photo = find_photo(&lib, a.photo_id)?;
+                let recipe = match &a.recipe {
+                    Some(v) => Recipe::from_value(v)?,
+                    None => current_recipe(&lib, a.photo_id)?,
+                };
+                let from = spot_source(&lib, &photo, &recipe, (a.x, a.y, a.r), &a.avoid)?;
+                one(json!({ "from": from }))
+            }
             "enqueue_job" => {
                 let a: EnqueueJob = parse(args)?;
                 let (job_id, created) = jobs::enqueue(
@@ -947,8 +999,33 @@ fn specs() -> Vec<ToolSpec> {
             input_schema: json!({ "type": "object", "required": ["photo_id"], "properties": {
                 "photo_id": id,
                 "long_edge": { "type": "integer", "minimum": 64, "maximum": MAX_PREVIEW_EDGE },
-                "recipe": { "type": "object", "description": "Try a Recipe without saving it" } } }),
+                "recipe": { "type": "object", "description": "Try a Recipe without saving it" },
+                "preset": { "type": "string", "description": "Try a Preset (list_presets) on top, without saving it" },
+                "amount": { "type": "number", "minimum": 0, "maximum": 200, "description": "The Preset's Amount, percent (default 100)" } } }),
             read_only: true,
+        },
+        ToolSpec {
+            name: "list_presets",
+            description: "Argus's built-in Presets, as in Lightroom's Presets panel: groups (Essentials, Portrait, Landscape, Film, Cinematic, Vintage, Black and white, Seasons, Subject, and Adaptive ones that add Masks for faces, sky or subject) with each Preset's id, name and what it suits. With shoot_id, also the order the AI suggests for that Shoot when one has been worked out (rank_presets).",
+            input_schema: json!({ "type": "object", "properties": { "shoot_id": id } }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "rank_presets",
+            description: "The AI's suggested order of the Presets for a Shoot: a few representative Photos (Best Photos, then Picks) are each rendered with every Preset and the model picks what suits them, best first, with a few words why. A suggestion order, not a verdict. Returns the cached order when there is one; otherwise queues it in the background (a few model calls) unless wait is true, which runs it now and returns it. refresh redoes it; now puts the queued job first.",
+            input_schema: json!({ "type": "object", "required": ["shoot_id"], "properties": {
+                "shoot_id": id, "refresh": { "type": "boolean" }, "wait": { "type": "boolean" }, "now": { "type": "boolean" },
+                "provider": { "type": "string", "enum": ["ollama", "claude-code", "claude-api"] } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "apply_preset",
+            description: "Apply a Preset (list_presets) to Photos at an Amount, as one undoable batch, like clicking it in Lightroom. Its settings add to each Photo's own edit (so it stacks on Auto); B&W ones set saturation. A Look-style Preset replaces the one applied before; Adaptive ones (Masks) stack. amount 0..200 percent (default 100); applying again with another amount re-scales it; remove takes it off, leaving the person's own changes.",
+            input_schema: json!({ "type": "object", "required": ["photo_ids", "preset"], "properties": {
+                "photo_ids": ids, "preset": { "type": "string" },
+                "amount": { "type": "number", "minimum": 0, "maximum": 200 },
+                "remove": { "type": "boolean" } } }),
+            read_only: false,
         },
         ToolSpec {
             name: "auto_edit",
@@ -1012,6 +1089,15 @@ fn specs() -> Vec<ToolSpec> {
             name: "sync_to_look",
             description: "Lightroom's Sync: fold one Photo's own sliders into its Shoot's Look so every Photo under that Look gets them, and clear them on that Photo. Creates a Look for the Shoot's Picks if there is none.",
             input_schema: json!({ "type": "object", "required": ["photo_id"], "properties": { "photo_id": id } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "paste_settings",
+            description: "Lightroom's Copy and Paste settings, and Sync settings: put groups of one Photo's settings on other Photos as one undoable batch, leaving their other settings as they are. A slider the source never moved is reset in a pasted group. Groups: wb, light, color, effects, detail, optics, calibration, retouch, masks, spots, crop; by default all but masks, spots and crop. When the source is under a different Look than a target, the target gets the settings as they render (Look included) and leaves its Look.",
+            input_schema: json!({ "type": "object", "required": ["from", "photo_ids"], "properties": {
+                "from": { "type": "integer", "description": "The Photo to copy from" },
+                "photo_ids": ids,
+                "groups": { "type": "array", "items": { "enum": ["wb", "light", "color", "effects", "detail", "optics", "calibration", "retouch", "masks", "spots", "crop"] } } } }),
             read_only: false,
         },
         ToolSpec {
@@ -1209,6 +1295,47 @@ fn specs() -> Vec<ToolSpec> {
                     "description": "overlay (default): tinted over the render; weights: the Mask alone as greyscale, white = full" } } }),
             read_only: true,
         },
+        ToolSpec {
+            name: "add_spot",
+            description: ADD_SPOT_DOC,
+            input_schema: json!({ "type": "object", "required": ["photo_ids", "x", "y", "r"], "properties": {
+                "photo_ids": ids,
+                "x": { "type": "number", "minimum": 0, "maximum": 1, "description": "Centre, 0..1 of the uncropped upright image's width" },
+                "y": { "type": "number", "minimum": 0, "maximum": 1, "description": "Centre, 0..1 of its height" },
+                "r": { "type": "number", "minimum": heal::MIN_R, "maximum": heal::MAX_R, "description": "Radius as a fraction of the long edge (0.01 is a blemish on a half-body portrait)" },
+                "mode": { "type": "string", "enum": ["heal", "clone"], "description": "heal (default) blends into the surroundings; clone copies exactly" },
+                "from": { "type": "object", "description": "Source centre {x, y}; omit to let Argus pick one nearby" },
+                "feather": { "type": "number", "minimum": 0, "maximum": 100, "description": "Soft edge (default 50)" },
+                "opacity": { "type": "number", "minimum": 0, "maximum": 100, "description": "Default 100" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "edit_spot",
+            description: "Change one Heal or Clone Spot: move it (x, y), resize it (r), move its source (from {x, y}) or pick a different source (repick), switch mode, or change feather and opacity. Ids are in read_recipe's spots list.",
+            input_schema: json!({ "type": "object", "required": ["photo_id", "spot_id"], "properties": {
+                "photo_id": id, "spot_id": { "type": "string" },
+                "x": { "type": "number" }, "y": { "type": "number" }, "r": { "type": "number" },
+                "from": { "type": "object" }, "repick": { "type": "boolean" },
+                "mode": { "type": "string", "enum": ["heal", "clone"] },
+                "feather": { "type": "number" }, "opacity": { "type": "number" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "remove_spot",
+            description: "Remove one Heal or Clone Spot by id, or every Spot with all: true, as a new undoable Version.",
+            input_schema: json!({ "type": "object", "required": ["photo_id"], "properties": {
+                "photo_id": id, "spot_id": { "type": "string" }, "all": { "type": "boolean" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "pick_spot_source",
+            description: "Where Argus would copy from for a Spot at x, y with radius r: a nearby patch of the Photo (rendered with recipe, or its saved Recipe) that continues the spot's surroundings. Changes nothing.",
+            input_schema: json!({ "type": "object", "required": ["photo_id", "x", "y", "r"], "properties": {
+                "photo_id": id, "x": { "type": "number" }, "y": { "type": "number" }, "r": { "type": "number" },
+                "recipe": { "type": "object", "description": "A draft Recipe to pick against instead of the saved one" },
+                "avoid": { "type": "array", "items": { "type": "object" }, "description": "Sources {x, y} to skip, for a different pick" } } }),
+            read_only: true,
+        },
     ]
 }
 
@@ -1220,6 +1347,12 @@ brush {dots: [{x, y, r}], erase?: [{x, y, r}]}, linear {from: {x, y}, to: {x, y}
 radial {x, y, rx, ry, feather? 0..1 (default 0.5)}. \
 Add \"invert\": true to flip any Mask. x and y are 0..1 of the upright image's width and height; rx is a fraction of the width, ry of the height, a dot's r of the long edge. \
 AI kinds come from local models on this Mac and follow the image's edges.";
+
+const ADD_SPOT_DOC: &str = "Lightroom's Heal and Clone: cover a small circle (a blemish, a stray hair, sensor dust, a speck in the sky) \
+with pixels copied from elsewhere in the same Photo. Nothing is generated. heal keeps the source's texture and matches the colour and light around the spot; \
+clone copies it exactly (for edges and patterns). Argus picks a nearby source unless from is given. \
+Several photo_ids put the same Spot on each, with its own source (sensor dust in the same place on every frame). \
+Coordinates are on the uncropped upright image, like Masks. One undoable batch; check it with render_photo.";
 
 const ADD_MASK_DOC: &str = "Add a local adjustment to one or many Photos as one undoable batch: slider deltas that apply only inside a Mask, \
 added to the global sliders (e.g. sky {\"exposure\": -0.4, \"highlights\": -30, \"dehaze\": 20}; a face {\"exposure\": 0.3, \"skin\": 30, \"texture\": -15}). \
@@ -1244,7 +1377,8 @@ vignette -100..100 (post-crop: - darker corners, + lighter) with vignetteMidpoin
 grain 0..100 with grainSize 0..100 (default 25) and grainRoughness 0..100 (default 50). \
 DETAIL: sharpen 0..150 (Lightroom applies 40 to RAWs), sharpenRadius 0.5..3 px (default 1), sharpenDetail 0..100 (default 25), sharpenMasking 0..100 (higher = edges only); \
 noise 0..100 luminance noise reduction with noiseDetail (default 50) and noiseContrast; colorNoise 0..100 with colorNoiseDetail and colorNoiseSmoothness (default 50). Detail shows at full size more than in a small render. \
-OPTICS: removeCA 1 removes lateral chromatic aberration; defringePurple, defringeGreen 0..20 take colour out of fringes at strong edges; distortion -100..100 (+ straightens barrel); lensVignette -100..100 (+ brightens dark lens corners) with lensVignetteMidpoint (default 50). \
+denoise 0..100 is AI Denoise (RAW only, like Lightroom's Denoise; 0 = off, 50 is a good start for high-ISO indoor and night shots, higher looks smoother and waxier): far cleaner than noise, which it replaces. The first time it runs the model over the whole frame as a background job (minutes); renders show it once that finishes. \
+OPTICS: lensCorrections \"camera\" (default: the corrections the camera made to its own JPEG, from the lens data Sony writes into each ARW), \"on\" (distortion, vignetting and chromatic aberration from that data) or \"off\"; removeCA 1 removes lateral chromatic aberration; defringePurple, defringeGreen 0..20 take colour out of fringes at strong edges; distortion -100..100 (+ straightens barrel); lensVignette -100..100 (+ brightens dark lens corners) with lensVignetteMidpoint (default 50). \
 CALIBRATION: calibration.shadowsTint -100..100 (+ magenta); calibration.<red|green|blue>.<hue|sat> -100..100 shift the camera primaries (blue sat +30 is a popular richer-colour trick). \
 RETOUCH: skin (natural smoothing of every person's skin), eyes (brighter, crisper eyes) and teeth (whiter teeth), 0..100, found by local models. \
 correction.exposure (stops) and correction.wbK (Kelvin) for the per-Photo baseline under a Look, and correction.face (stops of light on faces). \
@@ -1423,6 +1557,68 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     one(json!({ "batch_id": batch, "photos": out, "failed": failed }))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RankPresets {
+    shoot_id: ShootId,
+    #[serde(default)]
+    refresh: bool,
+    #[serde(default)]
+    wait: bool,
+    #[serde(default)]
+    now: bool,
+    provider: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OptShoot {
+    shoot_id: Option<ShootId>,
+}
+
+fn list_presets(lib: &Library, shoot: Option<ShootId>) -> Result<Vec<Part>> {
+    let presets: Vec<Value> = crate::presets::builtin()
+        .iter()
+        .map(|p| {
+            json!({ "id": p.id, "name": p.name, "group": p.group, "why": p.why,
+            "masks": p.local.iter().map(|l| l.mask.clone()).collect::<Vec<_>>() })
+        })
+        .collect();
+    let ranking = match shoot {
+        Some(s) => crate::preset_rank::cached(lib, s)?.map(|r| json!(r)),
+        None => None,
+    };
+    one(json!({ "groups": crate::presets::groups(), "presets": presets, "ranking": ranking }))
+}
+
+fn apply_preset(lib: &mut Library, a: ApplyPreset, batch: Option<BatchId>) -> Result<Vec<Part>> {
+    let p = crate::presets::find(&a.preset)?;
+    let amount = a.amount.unwrap_or(100.0).clamp(0.0, 200.0) / 100.0;
+    let mut todo = Vec::new();
+    for &id in &a.photo_ids {
+        find_photo(lib, id)?;
+        let own = current_recipe(lib, id)?;
+        let r = if a.remove {
+            crate::presets::remove(&own, p)?
+        } else {
+            crate::presets::apply(&own, p, amount)?
+        };
+        todo.push((id, r));
+    }
+    let label = if a.remove {
+        format!("Removed {}", p.name)
+    } else {
+        format!("Preset: {}", p.name)
+    };
+    let batch = batch_or(lib, batch, &label)?;
+    let mut out = BTreeMap::new();
+    for (id, r) in todo {
+        let version = lib.write_recipe(id, &r.to_value(), Author::Ai, Some(batch))?;
+        out.insert(id, json!({ "version": version }));
+    }
+    one(json!({ "batch_id": batch, "preset": p.id, "amount": amount * 100.0, "photos": out }))
+}
+
 fn batch_or(lib: &mut Library, batch: Option<BatchId>, label: &str) -> Result<BatchId> {
     match batch {
         Some(b) => Ok(b),
@@ -1432,7 +1628,7 @@ fn batch_or(lib: &mut Library, batch: Option<BatchId>, label: &str) -> Result<Ba
 
 /// What the renderer sees: the Recipe with its Look's sliders underneath its own. A Look
 /// this Shoot doesn't have (one from the prototype's demo set) is ignored.
-fn with_look(lib: &Library, photo: &Photo, recipe: &Recipe) -> Result<Recipe> {
+pub(crate) fn with_look(lib: &Library, photo: &Photo, recipe: &Recipe) -> Result<Recipe> {
     let mut r = recipe.clone();
     if let Some(id) = &recipe.look {
         if let Some(look) = lib.look(photo.shoot_id, id)? {
@@ -1592,6 +1788,56 @@ fn sync_to_look(lib: &mut Library, a: SyncToLook, batch: Option<BatchId>) -> Res
     one(json!({ "batch_id": batch, "look": look, "created": created, "photos_under_look": under }))
 }
 
+/// Copy and paste settings ([`crate::paste`]). Under the same Look (or none) the source's
+/// own sliders are pasted and the target keeps its Look; otherwise both are taken as they
+/// render, so the target looks like the source and stops following its old Look.
+fn paste_settings(
+    lib: &mut Library,
+    a: PasteSettings,
+    batch: Option<BatchId>,
+) -> Result<Vec<Part>> {
+    let groups = crate::paste::groups(a.groups.as_deref())?;
+    if groups.is_empty() {
+        return Err(Error("choose at least one settings group".into()));
+    }
+    let src_photo = find_photo(lib, a.from)?;
+    let src = current_recipe(lib, src_photo.id)?;
+    let mut next = Vec::new();
+    for &id in a.photo_ids.iter().filter(|&&id| id != a.from) {
+        let photo = find_photo(lib, id)?;
+        let own = current_recipe(lib, id)?;
+        let same_look = src.look == own.look && src_photo.shoot_id == photo.shoot_id;
+        let r = if same_look || (src.look.is_none() && own.look.is_none()) {
+            crate::paste::paste(&src, &own, &groups)?
+        } else {
+            let mut flat = with_look(lib, &photo, &own)?;
+            flat.look = None;
+            crate::paste::paste(&with_look(lib, &src_photo, &src)?, &flat, &groups)?
+        };
+        next.push((id, r));
+    }
+    if next.is_empty() {
+        return Err(Error(
+            "paste onto at least one Photo other than the source".into(),
+        ));
+    }
+    let batch = batch_or(
+        lib,
+        batch,
+        &format!("Paste settings from {}", src_photo.file_name),
+    )?;
+    let author = lib.batch_author(batch)?;
+    let mut versions = BTreeMap::new();
+    for (id, mut r) in next {
+        r.global = r.global.clamped();
+        versions.insert(
+            id,
+            lib.write_recipe(id, &r.to_value(), author, Some(batch))?,
+        );
+    }
+    one(json!({ "batch_id": batch, "versions": versions, "groups": groups }))
+}
+
 /// The Photo's current Recipe, or an empty one if it was never edited.
 fn current_recipe(lib: &Library, id: PhotoId) -> Result<Recipe> {
     match lib.read_recipe(id)? {
@@ -1659,6 +1905,56 @@ fn export_photos(lib: &Library, a: ExportPhotos) -> Result<Vec<Part>> {
 struct LocalArg {
     photo_id: PhotoId,
     local_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddSpot {
+    photo_ids: Vec<PhotoId>,
+    x: f64,
+    y: f64,
+    r: f64,
+    mode: Option<heal::SpotMode>,
+    from: Option<heal::Point>,
+    feather: Option<f64>,
+    opacity: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EditSpot {
+    photo_id: PhotoId,
+    spot_id: String,
+    x: Option<f64>,
+    y: Option<f64>,
+    r: Option<f64>,
+    from: Option<heal::Point>,
+    #[serde(default)]
+    repick: bool,
+    mode: Option<heal::SpotMode>,
+    feather: Option<f64>,
+    opacity: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoveSpot {
+    photo_id: PhotoId,
+    spot_id: Option<String>,
+    #[serde(default)]
+    all: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PickSpotSource {
+    photo_id: PhotoId,
+    x: f64,
+    y: f64,
+    r: f64,
+    recipe: Option<Value>,
+    #[serde(default)]
+    avoid: Vec<heal::Point>,
 }
 
 #[derive(Deserialize)]
@@ -1843,6 +2139,19 @@ struct RenderPhoto {
     photo_id: PhotoId,
     long_edge: Option<u32>,
     recipe: Option<Value>,
+    /// Try a Preset on top (not saved), at `amount` percent (default 100).
+    preset: Option<String>,
+    amount: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplyPreset {
+    photo_ids: Vec<PhotoId>,
+    preset: String,
+    amount: Option<f64>,
+    #[serde(default)]
+    remove: bool,
 }
 
 #[derive(Deserialize)]
@@ -2040,6 +2349,14 @@ struct SyncToLook {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PasteSettings {
+    from: PhotoId,
+    photo_ids: Vec<PhotoId>,
+    groups: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RemoveLook {
     shoot_id: ShootId,
     look_id: String,
@@ -2111,10 +2428,14 @@ fn one(v: impl Serialize) -> Result<Vec<Part>> {
 /// `render_photo` at most `max_edge` on the long edge.
 fn render_parts(lib: &Library, a: RenderPhoto, max_edge: u32) -> Result<Vec<Part>> {
     let photo = find_photo(lib, a.photo_id)?;
-    let recipe = match &a.recipe {
+    let mut recipe = match &a.recipe {
         Some(v) => Recipe::from_value(v)?,
         None => current_recipe(lib, a.photo_id)?,
     };
+    if let Some(id) = &a.preset {
+        let amount = a.amount.unwrap_or(100.0) / 100.0;
+        recipe = crate::presets::apply(&recipe, crate::presets::find(id)?, amount)?;
+    }
     let edge = a.long_edge.unwrap_or(1024).clamp(64, max_edge);
     let img = render::render_in(
         lib,
@@ -2161,6 +2482,10 @@ pub fn edited_previews(
         let mut h = blake3::Hasher::new();
         h.update(recipe.to_value().to_string().as_bytes());
         h.update(env!("CARGO_PKG_VERSION").as_bytes());
+        // A Denoise Amount shows once its base exists, so the base is part of what it shows.
+        if crate::denoise::amount(&recipe) > 0.0 && crate::denoise::ready(photo).is_some() {
+            h.update(b"denoised");
+        }
         let key = &h.finalize().to_hex()[..16];
         let rel = format!("{EDITED_DIR}/{:02x}/{id}-{edge}-{key}.jpg", id % 256);
         if lib.root().join(&rel).is_file() {
@@ -2417,7 +2742,7 @@ const DIGITS: [[u8; 5]; 10] = [
 ];
 
 /// Draw `n` as white digits on a black tag, so a model can read cell numbers.
-fn draw_number(img: &mut image::RgbImage, x: u32, y: u32, n: usize) {
+pub(crate) fn draw_number(img: &mut image::RgbImage, x: u32, y: u32, n: usize) {
     const SCALE: u32 = 4;
     let digits: Vec<usize> = n.to_string().bytes().map(|b| (b - b'0') as usize).collect();
     let (w, h) = (digits.len() as u32 * 4 * SCALE + SCALE, 7 * SCALE);
@@ -2570,6 +2895,151 @@ fn edit_mask(lib: &mut Library, a: EditMask, batch: Option<BatchId>) -> Result<V
     let batch = batch_or(lib, batch, "edit_mask")?;
     let version = lib.write_recipe(a.photo_id, &r.to_value(), Author::Ai, Some(batch))?;
     one(json!({ "batch_id": batch, "version": version, "local": local }))
+}
+
+/// Long edge of the render a Spot's source is picked on: plenty for a nearby match, and
+/// quick from the Edit screen's cache of demosaiced RAWs.
+const SPOT_PICK_EDGE: usize = 1024;
+
+/// Where a Spot at `x`, `y`, `r` should copy from, judged on the Photo rendered with
+/// `recipe` uncropped (Spots live on the whole frame, earlier Spots included).
+fn spot_source(
+    lib: &Library,
+    photo: &Photo,
+    recipe: &Recipe,
+    (x, y, r): (f64, f64, f64),
+    avoid: &[heal::Point],
+) -> Result<heal::Point> {
+    let whole = Recipe {
+        crop: Default::default(),
+        ..recipe.clone()
+    };
+    let img = render::render_in(lib, photo, &whole, Some(SPOT_PICK_EDGE))?;
+    Ok(heal::find_source_except(&img, x, y, r, avoid))
+}
+
+/// A Spot id not yet used in this Recipe: `spot`, `spot-2`, ...
+fn new_spot_id(r: &Recipe) -> String {
+    (1..)
+        .map(|n| {
+            if n == 1 {
+                "spot".to_string()
+            } else {
+                format!("spot-{n}")
+            }
+        })
+        .find(|id| r.spots.iter().all(|s| &s.id != id))
+        .expect("an unused id")
+}
+
+fn spot_mut<'a>(r: &'a mut Recipe, id: &str) -> Result<&'a mut heal::Spot> {
+    let ids: Vec<String> = r.spots.iter().map(|s| s.id.clone()).collect();
+    r.spots
+        .iter_mut()
+        .find(|s| s.id == id)
+        .ok_or_else(|| Error(format!("no Spot {id:?}; this Recipe has {ids:?}")))
+}
+
+fn check_point(what: &str, x: f64, y: f64) -> Result<()> {
+    if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return Err(Error(format!(
+            "{what} ({x}, {y}) is outside the Photo: x and y are 0..1 of the upright image"
+        )));
+    }
+    Ok(())
+}
+
+fn add_spot(lib: &mut Library, a: AddSpot, batch: Option<BatchId>) -> Result<Vec<Part>> {
+    check_point("the Spot", a.x, a.y)?;
+    if let Some(f) = a.from {
+        check_point("from", f.x, f.y)?;
+    }
+    if !(heal::MIN_R..=heal::MAX_R).contains(&a.r) {
+        return Err(Error(format!(
+            "r {} is out of range {}..{} (a fraction of the long edge); Spots are for small things, not object removal",
+            a.r,
+            heal::MIN_R,
+            heal::MAX_R
+        )));
+    }
+    let mut next = Vec::new();
+    for &id in &a.photo_ids {
+        let photo = find_photo(lib, id)?;
+        let mut r = current_recipe(lib, id)?;
+        let from = match a.from {
+            Some(f) => f,
+            None => spot_source(lib, &photo, &r, (a.x, a.y, a.r), &[])?,
+        };
+        let spot = heal::Spot {
+            id: new_spot_id(&r),
+            mode: a.mode.unwrap_or_default(),
+            x: a.x,
+            y: a.y,
+            r: a.r,
+            from,
+            feather: a.feather.unwrap_or(heal::DEFAULT_FEATHER),
+            opacity: a.opacity.unwrap_or(100.0),
+            source: Some("ai".into()),
+        }
+        .clamped();
+        r.spots.push(spot.clone());
+        next.push((id, spot, r));
+    }
+    let batch = batch_or(lib, batch, "add_spot")?;
+    let mut out = BTreeMap::new();
+    for (id, spot, r) in next {
+        let version = lib.write_recipe(id, &r.to_value(), Author::Ai, Some(batch))?;
+        out.insert(id, json!({ "version": version, "spot": spot }));
+    }
+    one(json!({ "batch_id": batch, "photos": out }))
+}
+
+fn edit_spot(lib: &mut Library, a: EditSpot, batch: Option<BatchId>) -> Result<Vec<Part>> {
+    let photo = find_photo(lib, a.photo_id)?;
+    let mut r = current_recipe(lib, a.photo_id)?;
+    let s = spot_mut(&mut r, &a.spot_id)?;
+    s.x = a.x.unwrap_or(s.x);
+    s.y = a.y.unwrap_or(s.y);
+    s.r = a.r.unwrap_or(s.r);
+    s.mode = a.mode.unwrap_or(s.mode);
+    s.feather = a.feather.unwrap_or(s.feather);
+    s.opacity = a.opacity.unwrap_or(s.opacity);
+    if let Some(f) = a.from {
+        s.from = f;
+    }
+    check_point("the Spot", s.x, s.y)?;
+    check_point("from", s.from.x, s.from.y)?;
+    *s = s.clone().clamped();
+    if a.repick {
+        let (x, y, rad, id, was) = (s.x, s.y, s.r, s.id.clone(), s.from);
+        // Pick against everything but this Spot, so it doesn't copy its own patch.
+        let without = Recipe {
+            spots: r.spots.iter().filter(|s| s.id != id).cloned().collect(),
+            ..r.clone()
+        };
+        let from = spot_source(lib, &photo, &without, (x, y, rad), &[was])?;
+        spot_mut(&mut r, &id)?.from = from;
+    }
+    let spot = spot_mut(&mut r, &a.spot_id)?.clone();
+    let batch = batch_or(lib, batch, "edit_spot")?;
+    let version = lib.write_recipe(a.photo_id, &r.to_value(), Author::Ai, Some(batch))?;
+    one(json!({ "batch_id": batch, "version": version, "spot": spot }))
+}
+
+fn remove_spot(lib: &mut Library, a: RemoveSpot, batch: Option<BatchId>) -> Result<Vec<Part>> {
+    find_photo(lib, a.photo_id)?;
+    let mut r = current_recipe(lib, a.photo_id)?;
+    match (&a.spot_id, a.all) {
+        (Some(id), false) => {
+            spot_mut(&mut r, id)?;
+            r.spots.retain(|s| &s.id != id);
+        }
+        (None, true) => r.spots.clear(),
+        _ => return Err(Error("pass either spot_id or all: true".into())),
+    }
+    let batch = batch_or(lib, batch, "remove_spot")?;
+    let version = lib.write_recipe(a.photo_id, &r.to_value(), Author::Ai, Some(batch))?;
+    one(json!({ "batch_id": batch, "version": version, "spots": r.spots }))
 }
 
 fn mean(p: &[f32]) -> f64 {

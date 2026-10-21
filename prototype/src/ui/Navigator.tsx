@@ -20,12 +20,13 @@ function current(z: ZoomPan, s: number): Preset | null {
   return PRESETS.find((p) => Math.abs(z.presetScale(p) - s) / s < 0.01) ?? null;
 }
 
+// Closed until the person opens it, so Edit's sliders get the room (Greg, 2026-10-21).
 const OPEN = "argus-navigator";
 function remembered() {
   try {
-    return localStorage.getItem(OPEN) !== "closed";
+    return localStorage.getItem(OPEN) === "open";
   } catch {
-    return true;
+    return false;
   }
 }
 
