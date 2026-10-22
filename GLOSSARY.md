@@ -21,8 +21,20 @@ A Shoot's date and title with no spaces, `2026-10-18_Boat-Trip`, which is also i
 _Avoid_: Slug, folder name
 
 **Keyword**:
-A hierarchical tag on a Photo under one of five Facets (People, Places, Events, Activities, Subjects), such as `Places|Portugal|Lisbon`, written to XMP the way Lightroom does. The AI suggests them and the person confirms.
+A hierarchical tag on a Photo under one of five Facets (People, Places, Events, Activities, Subjects), such as `Places|Portugal|Lisbon`, written to XMP the way Lightroom does. The AI suggests them and the person confirms; the AI never adds People.
 _Avoid_: Tag, label
+
+**Person**:
+Someone the person named in the People view. Faces across the Library are grouped by who they look like (on the Mac, never sent anywhere), and the person names a group once; every named face keeps the Keyword `People|<name>` on its Photo. The AI groups and asks ("Is this Maya?") but never names anyone. A face can also be hidden (a stranger, not someone to name).
+_Avoid_: Contact, face tag, identity (except the `identity` Analyzer that makes the face vectors)
+
+**Album**:
+A saved search shown in the sidebar above the Shoots, like Lightroom's smart collections. It finds its Photos again each time, so it keeps up with Imports and new Keywords. A Photo can be in many Albums and stays in its Shoot.
+_Avoid_: Collection, smart collection, folder
+
+**Caption**:
+One or two plain sentences on a Photo saying who, what and where, written to XMP as IPTC Description. The AI suggests one and the person keeps or rewrites it.
+_Avoid_: Description (in the UI), alt text
 
 **Import**:
 Bringing photos from a folder or memory card into a Library.
@@ -97,7 +109,7 @@ The AI inside Argus that plans and carries out edits and culls through the same 
 _Avoid_: Assistant, bot, copilot
 
 **Provider**:
-The model that powers the Agent, either a local open-source model or a cloud model on the user's key.
+The model that powers the Agent, the cull and Suggestions: a local open-source model through Ollama (the default), the person's Claude subscription through the official `claude` CLI, or a cloud model on their own key (`ollama`, `claude-code`, `claude-api`; ADR 0006).
 _Avoid_: Backend, LLM, engine
 
 **Compute level**:
@@ -130,8 +142,12 @@ _Avoid_: QC, quality check
 The cull's second stage, how likely the person is to keep a frame that passed the Technical check. It comes from Facts, not the model (the main faces: smiles, and anyone who looks off; plus the Taste head once the person has flagged enough), and sets the stars, the best frame of each Stack and the Best Photos (`engine::taste`).
 _Avoid_: Aesthetics, quality score
 
+**Doubtful frame**:
+A frame the Technical check keeps but isn't sure of: soft, streaky as if shaken, or a main face's eyes shut without a laugh. A model's second opinion sees only these (`engine::technical::doubtful`).
+_Avoid_: Borderline, uncertain
+
 **Taste head**:
-What the person's own Picks and Rejects teach Taste: the direction in the image embedding from the frames they reject to the frames they pick, learned afresh at every cull from their flags on other Shoots and on the Shoot itself. It speaks once there are five Picks and five Rejects; the AI's own flags never count (`engine::taste::Head`).
+What the person's own Picks and Rejects teach Taste: the direction in the image embedding from the frames they reject to the frames they pick, learned afresh at every cull from their flags on other Shoots and on the Shoot itself. It speaks once there are five Picks and five Rejects; the AI's own flags never count (`engine::taste::Head`). As the person flags, `rerate_shoot` refreshes the AI's stars from it (learn as you cull).
 _Avoid_: Taste model, aesthetic model, classifier
 
 **Signals**:
@@ -156,9 +172,16 @@ _Avoid_: Preset, filter, style
 A per-Photo adjustment (exposure, white balance, light on faces) that brings each frame to the same baseline under a Look.
 _Avoid_: Auto fix, adjustment
 
+**Exemplar**:
+One of the person's own finished hand edits of a similar scene (nearest by embedding), shown to the model beside a fresh Suggestion so its takes lean toward the person's taste. Up to two per Photo (`engine/src/exemplars.rs`).
+
 **Suggestion**:
-A complete edit (sliders, Masks, crop and straighten) the AI proposes for one Photo, usually two or three to tab through, each with its own character (Natural, Punchy, Moody, then Black and white and Airy) under that name. It changes nothing until the person accepts it, at its Amount, which saves it as a new Version.
+A complete edit (sliders, Masks, crop and straighten) the AI proposes for one Photo, usually two or three to tab through, each with its own character (Natural, Punchy, Bright, then Moody, Black and white and Airy) under that name. It changes nothing until the person accepts it, at its Amount, which saves it as a new Version.
 _Avoid_: Proposal, auto edit, preset
+
+**Take**:
+One Suggestion as the Edit strip shows it (Take 1, 2, 3), named by its character (Natural, Punchy, Bright, Moody; `suggest.rs` CHARACTERS). The take the person accepts is the kept take, which the Usage log and the Style profile learn from.
+_Avoid_: Option, variant, attempt
 
 **Adaptive layer**:
 What every fresh Suggestion starts from on top of Auto, like Lightroom's Adaptive presets: a little presence (Clarity, Texture, Dehaze) and, through the AI Masks for what the Photo has, the people lifted, the background let down a touch and a bright sky held.
@@ -173,11 +196,11 @@ How the person usually finishes a take they kept, learned from the Usage log: th
 _Avoid_: Preset, taste model, personal Look
 
 **Edit head**:
-How the person finishes their own edits, as a step on top of Auto: a small regression from cheap facts about the unedited Photo (brightness, clipping, colour cast, skin and sky) and Auto's own sliders to the offset their finished edits have from Auto. Trained on Greg's finished bench edits (`bench/edit_head.py`); it moves the Basic sliders of a RAW only, and only when a variant turns it on (`auto.edit_head`, `engine::edit_head`). The Style profile is its constant cousin, learned from kept takes.
+How the person finishes their own edits, as a step on top of Auto: a small regression from cheap facts about the unedited Photo (brightness, clipping, colour cast) and its scene (how bright the faces, people and sky sit, and whether the light is behind them, from the Mask models), plus Auto's own sliders, to the offset their finished edits have from Auto. Shipped trained on Greg's finished bench edits (`bench/edit_scene.py`); each Library then learns its own on top of it from the RAWs the person exports (`learn_edit_head`). It moves the Basic sliders of a RAW only, and is part of Auto by default since 2026-10-22 (a variant can turn it off with `auto.edit_head`; `engine::edit_head`). The Style profile is its constant cousin, learned from kept takes.
 _Avoid_: Edit model, style model, auto style
 
 **Review round**:
-One pass in which the AI looks at its own Suggestions rendered, with their light measured in numbers, and fixes each one's biggest remaining problem. Suggestions get one at the Full Compute level, none otherwise.
+One pass in which the AI looks at its own Suggestions rendered, with their light measured in numbers, and fixes each one's biggest remaining problem. Off at every Compute level since 2026-10-20, when benches saw them make takes slightly worse; a variant's `rounds` or `ARGUS_REFINE_ROUNDS` turns them on.
 _Avoid_: Iteration, self-critique, refine step
 
 **Hero Photo**:
@@ -185,11 +208,11 @@ The Photo the person edited by hand and wants the rest of the Shoot to match ("a
 _Avoid_: Reference image, master, source
 
 **Queue**:
-The AI work waiting to run in the background (Suggestions, "apply to the rest", culls), kept in the Library so it survives a quit, and worked at the Compute level.
+The AI work waiting to run in the background (Suggestions, "apply to the rest", culls), kept in the Library so it survives a quit, and worked at the Compute level. Each item in it is a job of one kind (`jobs::KINDS`, the `jobs` table, `enqueue_job`).
 _Avoid_: Tasks, jobs list, pipeline
 
 **Mask**:
-A region of a Photo (subject, face, skin, hair, sky, background, chosen parts of one person, or one drawn by the person as a brush, linear or radial shape) that a local adjustment applies to. A Recipe stores how a Mask is made, never its pixels. A People Mask is Lightroom's Select People: any of face skin, body skin, eyes, teeth, hair or the whole person, for one person or everyone.
+A region of a Photo (subject, face, skin, hair, sky, background, chosen parts of one person, or one drawn by the person as a brush, linear or radial shape) that a local adjustment applies to. A Recipe stores how a Mask is made, never its pixels. A People Mask is Lightroom's Select People: any of face skin, body skin, eyes, teeth, hair or the whole person, for one person or everyone. A Mask can also be a range: the tones (Luminance range) or colours (Color range) of the Photo as it renders. Like Lightroom's, a Mask combines more Masks into itself as components, each one added, subtracted or intersected, and has an Amount (0 to 200%) that scales its whole local adjustment.
 _Avoid_: Selection, layer
 
 **Local adjustment**:
@@ -212,12 +235,16 @@ _Avoid_: Detection, segmentation result
 Lightroom's AI Denoise: a learned model (SCUNet) runs once over a RAW's full-size image in the background and the result is kept as the Photo's denoised base in the Library's cache. The Recipe's Denoise Amount (0-100, 0 is off) blends that base over the plain image, so the slider moves instantly once the base exists. RAW only. Separate from the manual Noise reduction sliders.
 _Avoid_: Noise reduction (that's the manual sliders), enhance, clean up
 
+**Lens Blur**:
+Lightroom's Lens Blur: a fake shallow depth of field. A depth model (Depth Anything V2 Small) estimates how near each pixel is, once per Photo and only when Lens Blur is first turned on, and the render blurs whatever lies outside the focal range with a bokeh shape (Circle, Bubble, Blade or Ring), more the further from it. The focal range is the Subject's depth by default, or a Custom range picked on the depth bar or by clicking a point. Refine brushes paint what stays sharp (Focus) or goes to the background (Blur). A Recipe setting and a Settings group; it never invents pixels.
+_Avoid_: Portrait mode, bokeh filter, background blur (that's a Mask with negative Sharpness)
+
 **Auto**:
 Lightroom's Auto button: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temp, Tint and Vibrance set from a Photo's own light by a fast, deterministic measurement (no model). It replaces only those sliders and keeps the rest of the Recipe.
 _Avoid_: Auto-enhance, magic fix
 
 **Settings group**:
-One of the groups Copy, Paste and Sync settings move between Photos, as in Lightroom's Copy Settings dialog: White balance, Light, Color, Effects, Detail, Optics, Calibration, Retouch, Masks, Spot removal and Crop (`engine/src/paste.rs`). Pasting a group replaces those settings on the target and leaves the rest of its Recipe alone.
+One of the groups Copy, Paste and Sync settings move between Photos, as in Lightroom's Copy Settings dialog: White balance, Light, Color, Effects, Detail, Optics, Calibration, Retouch, Lens Blur, Masks, Spot removal and Crop (`engine/src/paste.rs`). Pasting a group replaces those settings on the target and leaves the rest of its Recipe alone.
 _Avoid_: Category, section
 
 **Lens corrections**:
@@ -225,5 +252,5 @@ Distortion, vignetting and chromatic aberration fixes taken from the lens data t
 _Avoid_: Lens profile (we have no profile database)
 
 **Preset**:
-A one-click starting point from the Presets tool, as in Lightroom: a built-in set of settings in a group (Essentials, Portrait, Film, Black and white...; `engine/presets/builtin.json`), or an adaptive one that adds a Mask the engine finds by itself (Subject, Sky, People). Applied at an Amount (0 to 200%), its numbers add to the Photo's Recipe, so it stacks on Auto, and the Recipe remembers what it changed so it can come off again. Unlike a Look, it belongs to no Shoot and is copied into the Photo's Recipe. The AI suggests an order of Presets per Shoot ("Suggested for this Shoot"), a suggestion, never applied by itself.
+A one-click starting point from the Presets tool, as in Lightroom: a built-in set of settings in a group (Essentials, Portrait, Film, Black and white...; `engine/presets/builtin.json`), or an adaptive one that adds a Mask the engine finds by itself (Subject, Sky, People). Applied at an Amount (0 to 200%), its numbers add to the Photo's Recipe, so it stacks on Auto, and the Recipe remembers what it changed so it can come off again. Unlike a Look, it belongs to no Shoot and is copied into the Photo's Recipe. The AI suggests an order of Presets per Shoot ("Suggested for this Shoot"), a suggestion, never applied by itself. The person's own Presets (group Yours) are saved from a Photo with Create Preset (⇧⌘N): they hold the Settings groups the person ticks, set those settings instead of adding to them, and live in the Library.
 _Avoid_: Filter, style

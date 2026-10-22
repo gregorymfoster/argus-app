@@ -5,11 +5,15 @@
 // settings are set, point curves replace. What it changed is kept in `recipe.presets`, so
 // a new Amount or taking it off undoes exactly that and keeps the person's own moves since.
 // Look-style Presets replace each other; Adaptive ones (Masks) and the Edit panel's fixes stack.
+// The person's own Presets (group Yours, engine `save_preset`) set values instead of adding
+// them, and send the rest of their Settings groups back to neutral, as a paste does.
+// `npm run preset-parity` checks this copy against the engine on every built-in Preset.
 
 import builtin from '../../../engine/presets/builtin.json';
 import type { Adjust, AppliedPreset, LocalAdjust, MaskRef, Photo, Recipe } from './types';
+import { groupOf } from './settings';
 
-export interface PresetLocal {
+interface PresetLocal {
   name: string;
   mask: MaskRef;
   adjust: Adjust;
@@ -27,7 +31,24 @@ export interface Preset {
   absolute?: string[];
   /** Local adjustments it adds, each on a Mask the engine finds. */
   local?: PresetLocal[];
+  /** The person's own only: the Settings groups it holds (engine Preset `groups`). */
+  settings?: string[];
 }
+
+/** The group of the person's own Presets, above the built-ins. */
+export const YOURS = 'Yours';
+/** Settings groups a Preset can hold: spots and crop belong to one frame. */
+export const PRESET_SETTINGS = ['wb', 'light', 'color', 'effects', 'detail', 'optics', 'calibration', 'retouch', 'masks'] as const;
+/** Ticked when the person doesn't choose: all but White balance and Masks. */
+export const DEFAULT_PRESET_SETTINGS: string[] = PRESET_SETTINGS.filter((g) => g !== 'wb' && g !== 'masks');
+
+let yours: Preset[] = [];
+/** The person's own Presets, as the Library has them (data/yourPresets keeps this current). */
+export const yourPresets = () => yours;
+export function setYourPresets(list: Preset[]) {
+  yours = list;
+}
+const isYours = (p: Preset) => !!p.settings?.length;
 
 export const PRESETS: Preset[] = builtin.presets as unknown as Preset[];
 export const PRESET_GROUPS: string[] = builtin.groups;
@@ -44,13 +65,18 @@ export const FIXES: (Preset & { icon: 'sky' | 'face' | 'skin' | 'shadows' })[] =
   { id: 'fix-shadows', name: 'Lift shadows', group: 'Fixes', icon: 'shadows', global: { shadows: 30, blacks: 8 } },
 ];
 
-const byId = (id: string) => presetById(id) ?? FIXES.find((f) => f.id === id);
+const byId = (id: string) => yours.find((p) => p.id === id) ?? presetById(id) ?? FIXES.find((f) => f.id === id);
+/** A Preset's slot by id; one of the person's since deleted still holds the Look slot. */
+const slotOf = (id: string) => {
+  const p = byId(id);
+  return p ? slot(p) : id.startsWith('yours-') ? 'look' : null;
+};
 
 /** A ranking's order, best first (engine `rank_presets`), or null. */
 export type Ranking = { ranked: { id: string; score: number; why?: string }[]; photos: number[]; provider: string; at: string };
 
 /**
- * The Recommended row: four Looks for this Photo. With the Shoot's AI ranking, its top
+ * Four Looks for this Photo (Presets' Suggested row until the AI ranks the Shoot). With the Shoot's AI ranking, its top
  * Look-style Presets; without one, a guess from the Photo's light and people.
  */
 export function recommended(photo: Photo, ranking?: Ranking | null): Preset[] {
@@ -149,15 +175,27 @@ const localId = (p: Preset, i: number) => `preset-${p.id}-${i}`;
 function putOn(r: Recipe, p: Preset, amount: number): Recipe {
   const entry: AppliedPreset = { id: p.id, amount, before: {}, after: {} };
   let global = r.global as Obj;
-  for (const [path, x] of leaves(p.global ?? {})) {
+  const named = leaves(p.global ?? {});
+  const todo: [string[], unknown][] = [];
+  if (isYours(p)) {
+    // A setting in its groups that it leaves out goes back to neutral, as a paste does.
+    for (const [path, x] of leaves(global)) {
+      const g = groupOf(path[0]);
+      const covered = g != null && p.settings!.includes(g);
+      if (covered && (typeof x === 'number' || isPoints(path)) && !named.some(([n]) => n.join('.') === path.join('.'))) todo.push([path, undefined]);
+    }
+  }
+  todo.push(...named);
+  for (const [path, x] of todo) {
     const old = get(global, path);
     let next: unknown;
-    if (isPoints(path)) next = scalePoints(x, amount);
+    if (isPoints(path)) next = x === undefined ? [[0, 0], [255, 255]] : isYours(p) ? x : scalePoints(x, amount);
+    else if (x !== undefined && typeof x !== 'number') next = x;
     else {
       const cur = typeof old === 'number' ? old : neutral(path);
       const last = path[path.length - 1];
-      const v = x as number;
-      const to = last === 'hue' ? v : neutral(path) !== 0 || (path.length === 1 && p.absolute?.includes(last)) ? cur + (v - cur) * amount : cur + v * amount;
+      const v = x === undefined ? neutral(path) : (x as number);
+      const to = last === 'hue' ? v : isYours(p) || neutral(path) !== 0 || (path.length === 1 && p.absolute?.includes(last)) ? cur + (v - cur) * amount : cur + v * amount;
       next = round(clamp(path, to));
     }
     const key = path.join('.');
@@ -181,14 +219,14 @@ function putOn(r: Recipe, p: Preset, amount: number): Recipe {
 
 const same = (a: unknown, b: unknown) => (typeof a === 'number' && typeof b === 'number' ? Math.abs(a - b) < 1e-6 : JSON.stringify(a) === JSON.stringify(b));
 
-function takeOff(r: Recipe, p: Preset): Recipe {
-  const e = r.presets?.find((x) => x.id === p.id);
+function takeOff(r: Recipe, id: string): Recipe {
+  const e = r.presets?.find((x) => x.id === id);
   if (!e) return r;
   let global = r.global as Obj;
   for (const [key, after] of Object.entries(e.after)) {
     const path = key.split('.');
     const before = e.before[key] ?? null;
-    const cur = get(global, path);
+    const cur = get(global, path) ?? (typeof after === 'number' ? neutral(path) : undefined);
     let back: unknown;
     if (cur !== undefined && same(cur, after)) back = before === null ? undefined : before;
     else if (typeof cur === 'number' && typeof after === 'number' && !isPoints(path)) {
@@ -197,8 +235,8 @@ function takeOff(r: Recipe, p: Preset): Recipe {
     } else back = cur;
     global = set(global, path, back);
   }
-  const prefix = `preset-${p.id}-`;
-  const rest = (r.presets ?? []).filter((x) => x.id !== p.id);
+  const prefix = `preset-${id}-`;
+  const rest = (r.presets ?? []).filter((x) => x.id !== id);
   const out: Recipe = { ...r, global: prune(global) as Adjust, local: r.local.filter((l) => !l.id.startsWith(prefix)) };
   if (rest.length) out.presets = rest;
   else delete out.presets;
@@ -211,16 +249,23 @@ function takeOff(r: Recipe, p: Preset): Recipe {
  */
 export function applyPreset(base: Recipe, p: Preset, amount = 1): Recipe {
   let r = base;
-  for (const e of base.presets ?? []) {
-    const other = byId(e.id);
-    if (other && slot(other) === slot(p)) r = takeOff(r, other);
-  }
+  for (const e of base.presets ?? []) if (slotOf(e.id) === slot(p)) r = takeOff(r, e.id);
   return amount > 0 ? putOn(r, p, Math.min(2, amount)) : r;
 }
 
 /** `recipe` without the preset: what it changed taken back off, its Masks gone. */
 export function removePreset(recipe: Recipe, p: Preset): Recipe {
-  return takeOff(recipe, p);
+  return takeOff(recipe, p.id);
+}
+
+/** A Preset named `name` from `recipe`'s settings in `groups` (engine `presets::from_recipe`), for dummy data. */
+export function presetFromRecipe(name: string, recipe: Recipe, groups: string[]): Preset {
+  const global = Object.fromEntries(Object.entries(recipe.global).filter(([k]) => {
+    const g = groupOf(k);
+    return g != null && groups.includes(g);
+  })) as Adjust;
+  const local = groups.includes('masks') ? recipe.local.map((l) => ({ name: l.name || 'Mask', mask: l.mask, adjust: l.adjust })) : [];
+  return { id: '', name: name.trim(), group: YOURS, why: '', global, local, settings: groups };
 }
 
 /** The applied Preset in `p`'s slot, if any, with its Amount. */

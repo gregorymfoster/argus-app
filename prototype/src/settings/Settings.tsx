@@ -20,11 +20,12 @@ import { IN_APP } from '../data/backend';
 import { Seg } from '../ui/kit';
 import { LibrarySection } from './LibrarySection';
 import { Row } from './Row';
+import { MeaningRow } from './MeaningRow';
 import { GeneralSection } from './GeneralSection';
 import { ImportSection } from './ImportSection';
 import { ExportSection } from './ExportSection';
 
-export interface SettingsSection {
+interface SettingsSection {
   id: string;
   title: string;
   icon: ReactNode;
@@ -233,33 +234,86 @@ function AiSection() {
           </DropdownMenu>
         </Row>
       )}
+
+      <h3>Search</h3>
+      <MeaningRow />
     </div>
   );
 }
 
-const KEYS: [string, string][] = [
-  ['P  X  U', 'Pick, Reject, Unflag'],
-  ['E', 'Loupe'],
-  ['C', 'Compare'],
-  ['D', 'Edit'],
-  ['⇧⌘C  ⇧⌘V', 'Copy and paste settings'],
-  ['⌥⌘V', 'Paste the previous Photo’s settings'],
-  ['⇧⌘S', 'Sync settings to the selection'],
-  ['⌘K', 'Search or ask'],
-  ['⌘Z  ⇧⌘Z', 'Undo, Redo'],
-  ['⌘,', 'Settings'],
-  ['Esc', 'Close a dialog'],
+// Every shortcut, grouped by where it works, so ⌘/ answers "what's the key for…" without hunting
+// through footers. Keep in step with the screens' useHotkeys and their footer Hints.
+const KEYS: [string, [string, string][]][] = [
+  ['Everywhere', [
+    ['G  E  C  N  D', 'Grid, Loupe, Compare, Stacks, Edit'],
+    ['⌘K', 'Search, jump or ask the Agent'],
+    ['⌘L', 'Ask the Agent about this Photo'],
+    ['⌘Z  ⇧⌘Z', 'Undo, Redo'],
+    ['⇧⌘I', 'Import'],
+    ['⌘E', 'Export'],
+    ['⌘+  ⌘−  ⌘0', 'Zoom the app'],
+    ['⌘,', 'Settings'],
+    ['⌘/  ?', 'This list'],
+    ['Esc', 'Close a dialog, or back to the grid'],
+  ]],
+  ['Grid and Loupe', [
+    ['P  X  U', 'Pick, Reject, Unflag (and move on)'],
+    ['0–5', 'Stars (and move on)'],
+    ['← →', 'Previous, next Photo'],
+    ['S', 'Expand or collapse a Stack'],
+    ['=  −', 'Bigger, smaller thumbnails'],
+    ['J', 'Cycle what the tiles show'],
+    ['⇧S', 'Sort by Stars, or back to capture time'],
+    ['⇧A', 'Auto (the selection, or every Photo)'],
+    ['A', 'Accept the first Suggestion'],
+    ['L', 'Set a Look for the Picks'],
+    ['⌘A', 'Select all'],
+    ['⌫', 'Remove from Library'],
+    ['Z  F  \\', 'Loupe: 100%, faces, before'],
+    ['K  ⇧↵', 'Loupe: add a Keyword, keep every AI suggestion'],
+  ]],
+  ['Compare and Stacks', [
+    ['← →', 'Next candidate, or frame'],
+    ['↑', 'Swap the candidate in (Compare)'],
+    ['↑ ↓', 'Previous, next Stack (Stacks)'],
+    ['K', 'Keep only the Select'],
+    ['↵', 'Keep and go to the next Stack'],
+  ]],
+  ['Edit', [
+    ['E  C  H  M  ⇧P', 'Edit, Crop, Heal, Masking, Presets'],
+    ['\\', 'Hold for before'],
+    ['⇧A  V', 'Auto, Black and white'],
+    ['Tab  ↵  ⌫', 'Preview, accept, dismiss a Suggestion'],
+    ['R', 'New takes'],
+    ['⌘← ⌘→', 'Previous, next Photo'],
+    ['Z', 'Zoom to 100%'],
+    ['O  B', 'Show Masks, brush'],
+    ['[  ]  /', 'Brush size, new heal source'],
+    ['F  ⇧Z', 'Lens Blur: focus on a point, visualize depth'],
+  ]],
+  ['Copy and paste settings', [
+    ['⇧⌘C  ⇧⌘V', 'Copy, paste settings'],
+    ['⌥⌘V', 'Paste the previous Photo’s settings'],
+    ['⇧⌘S', 'Sync settings to the selection'],
+  ]],
 ];
 
 function KeysSection() {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', rowGap: 8, fontSize: 13 }}>
-      {KEYS.map(([k, what]) => (
-        <div key={k} style={{ display: 'contents' }}>
-          <span className="mono faint">{k}</span>
-          <span>{what}</span>
+    <div className="set-page" data-testid="keys-section">
+      <div style={{ display: 'grid', gridTemplateColumns: '132px 1fr', rowGap: 7, fontSize: 13 }}>
+      {KEYS.map(([group, rows]) => (
+        <div key={group} style={{ display: 'contents' }}>
+          <h3 style={{ gridColumn: '1 / -1', marginTop: group === KEYS[0][0] ? 0 : 10 }}>{group}</h3>
+          {rows.map(([k, what]) => (
+            <div key={k + what} style={{ display: 'contents' }}>
+              <span className="mono faint">{k}</span>
+              <span>{what}</span>
+            </div>
+          ))}
         </div>
       ))}
+      </div>
     </div>
   );
 }
@@ -308,7 +362,7 @@ function UpdatesSection() {
   );
 }
 
-export const SECTIONS: SettingsSection[] = [
+const SECTIONS: SettingsSection[] = [
   { id: 'general', title: 'General', icon: <Settings2 size={14} />, render: () => <GeneralSection /> },
   { id: 'library', title: 'Library', icon: <Library size={14} />, render: () => <LibrarySection /> },
   { id: 'ai', title: 'AI and Compute', icon: <Sparkles size={14} />, render: () => <AiSection /> },
@@ -373,7 +427,7 @@ export function SettingsDialog() {
             <DialogDescription className="sr-only">Argus settings</DialogDescription>
             <span className="grow" />
             <button className="import-link" onClick={() => setOpen(false)}>
-              <Kbd>esc</Kbd> close
+              <Kbd quiet>esc</Kbd> close
             </button>
           </header>
           <div className="set-body">{current.render()}</div>

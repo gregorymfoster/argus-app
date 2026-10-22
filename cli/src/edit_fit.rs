@@ -13,6 +13,11 @@
 //! - `fit` (with `"fit": true`): the global Basic sliders that bring the render closest to
 //!   the person's edit, by coordinate descent from Auto (the "oracle" a heuristic tries to
 //!   predict);
+//! - `scene` (with `"scene": true`): the Mask models' facts about the unedited render;
+//! - `fit_local` (with `"fit_local": true`): AI-Mask settings on top of the global fit
+//!   (or Auto), by the same descent on the whole frame's dE plus the faces' and the sky's;
+//! - `face_scores`, `sky_scores` (with `"scene": true`): the same dE over only the blocks in
+//!   face boxes or the sky, where a Photo has enough of them;
 //! - `scores`: dE76 to the edit for each named Recipe in the job (flat `{"exposure": 0.3}`
 //!   settings, as `argus edit` takes them), rendered to `save_dir` when given.
 //!
@@ -33,6 +38,19 @@ pub struct Job {
     cases: Vec<Case>,
     #[serde(default)]
     fit: bool,
+    /// Also run the Mask models on the unedited render: `scene` facts
+    /// (engine::edit_head::scene_features), and `local.<kind>.<slider>` settings in Recipes
+    /// render through them.
+    #[serde(default)]
+    scene: bool,
+    /// After the global fit, the AI-Mask exposures (faces, subject, background, sky) that
+    /// bring it closer still: where the person's edit differs locally (`fit_local`).
+    #[serde(default)]
+    fit_local: bool,
+    /// Also the image embedding of the unedited render (engine::analyzers::embedding, 1280
+    /// floats, unit length) as `embedding`, for learned scene types.
+    #[serde(default)]
+    embed: bool,
     /// Named Recipes per case id: `{"id": {"auto+head": {"exposure": 0.2}}}`. The name
     /// "auto" in a Recipe's settings is not special; Auto's own values come back in `auto`.
     #[serde(default)]
@@ -121,6 +139,11 @@ fn to_image(img: &RgbImage) -> image::RgbImage {
 
 /// dE, dL, da, db of `img` against the target, as score.py's distance() at rot 0.
 fn distance(img: &RgbImage, t: &Target) -> [f64; 4] {
+    weighted_distance(img, t, None)
+}
+
+/// [`distance`] over the blocks `weight` (one per block, 0..1) picks out, such as the faces.
+fn weighted_distance(img: &RgbImage, t: &Target, weight: Option<&[f32]>) -> [f64; 4] {
     let mut im = to_image(img);
     let (ta, ia) = (
         t.w as f64 / t.h as f64,
@@ -139,16 +162,57 @@ fn distance(img: &RgbImage, t: &Target) -> [f64; 4] {
         image::imageops::FilterType::Lanczos3,
     );
     let b = blocks(&im);
-    let (mut de, mut off) = (0f64, [0f64; 3]);
-    for (x, y) in b.iter().zip(&t.lab) {
+    let (mut de, mut off, mut n) = (0f64, [0f64; 3], 0f64);
+    for (i, (x, y)) in b.iter().zip(&t.lab).enumerate() {
+        let w = weight.map_or(1.0, |w| w[i] as f64);
         let d = [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
-        de += ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) as f64).sqrt();
+        de += w * ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) as f64).sqrt();
         for c in 0..3 {
-            off[c] += d[c] as f64;
+            off[c] += w * d[c] as f64;
         }
+        n += w;
     }
-    let n = b.len().max(1) as f64;
+    let n = n.max(1e-9);
     [de / n, off[0] / n, off[1] / n, off[2] / n]
+}
+
+/// Per-block weights for the faces and the sky of an Analysis, on the target's block grid
+/// (None when the Photo has too little of either to score).
+fn region_weights(a: &argus_engine::masks::Analysis, t: &Target) -> [Option<Vec<f32>>; 2] {
+    let (bw, bh) = (t.w / BLOCK, t.h / BLOCK);
+    let centre = |i: usize| {
+        (
+            ((i % bw) as f32 + 0.5) / bw as f32,
+            ((i / bw) as f32 + 0.5) / bh as f32,
+        )
+    };
+    let faces: Vec<f32> = (0..bw * bh)
+        .map(|i| {
+            let (u, v) = centre(i);
+            let inside = a
+                .faces
+                .iter()
+                .any(|f| u >= f.x && u <= f.x + f.w && v >= f.y && v <= f.y + f.h);
+            if inside {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let sky: Vec<f32> = (0..bw * bh)
+        .map(|i| {
+            let (u, v) = centre(i);
+            let x = ((u * a.sky_w as f32) as usize).min(a.sky_w - 1);
+            let y = ((v * a.sky_h as f32) as usize).min(a.sky_h - 1);
+            a.sky[y * a.sky_w + x]
+        })
+        .collect();
+    let enough = |w: &[f32]| w.iter().sum::<f32>() >= 4.0;
+    [
+        Some(faces).filter(|w| enough(w)),
+        Some(sky).filter(|w| enough(w)),
+    ]
 }
 
 fn adjust_json(a: &Adjust) -> Value {
@@ -184,11 +248,25 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
         };
         d.finish(&Look::DEFAULT, &r, None)
     };
-    let auto =
-        argus_engine::auto::auto_adjust(|a| Ok(render(&small, a)), true).map_err(|x| e(&x))?;
+    // Plain Auto, without the Edit head: the head is what's learned on top of it.
+    let plain = argus_engine::auto::Params {
+        edit_head: false,
+        ..argus_engine::auto::Params::current().map_err(|x| e(&x))?
+    };
+    let auto = argus_engine::auto::auto_adjust_with(|a| Ok(render(&small, a)), true, &plain)
+        .map_err(|x| e(&x))?;
+    let none_small = render(&small, &Adjust::default());
+    let analysis = if job.scene || job.fit_local {
+        Some(argus_engine::masks::Analysis::of(&none_small).map_err(|x| e(&x))?)
+    } else {
+        None
+    };
     let mut out = json!({
         "id": c.id,
         "camera": format!("{} {}", raw.make, raw.model),
+        "exposure": std::fs::read(&c.raw)
+            .map(|b| argus_engine::library::exposure_of(&b))
+            .ok(),
         "as_shot_wb": raw.wb,
         // At Auto's measuring size, as the Edit head reads them in the app.
         "features": Map::from_iter(
@@ -196,9 +274,29 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
                 .into_iter()
                 .map(|(k, v)| (k, json!((v * 1000.0).round() / 1000.0)))
         ),
-        "head": adjust_json(&argus_engine::edit_head::offset(&render(&small, &Adjust::default()), &auto)),
+        "head": adjust_json(&argus_engine::edit_head::offset(&none_small, &auto, analysis.as_ref())),
         "auto": adjust_json(&auto),
     });
+    if job.embed {
+        let img = image::RgbImage::from_raw(
+            none_small.width as u32,
+            none_small.height as u32,
+            none_small.data.clone(),
+        )
+        .ok_or_else(|| "render size".to_string())?;
+        let v = argus_engine::analyzers::embedding::embed(&img).map_err(|x| e(&x))?;
+        out["embedding"] = json!(v
+            .iter()
+            .map(|x| (x * 1e5).round() / 1e5)
+            .collect::<Vec<_>>());
+    }
+    if let Some(a) = &analysis {
+        out["scene"] = Value::Object(Map::from_iter(
+            argus_engine::edit_head::scene_features(&none_small, a)
+                .into_iter()
+                .map(|(k, v)| (k, json!((v * 1000.0).round() / 1000.0))),
+        ));
+    }
     let score = |a: &Adjust| distance(&render(&d, a), &target);
     let rnd = |v: [f64; 4]| v.map(|x| (x * 100.0).round() / 100.0);
     out["none"] = json!(rnd(score(&Adjust::default())));
@@ -231,23 +329,106 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
         out["fit"] = adjust_json(&x);
         out["fit_dE"] = json!(rnd(score(&x)));
     }
+    if let (true, Some(a)) = (job.fit_local, &analysis) {
+        let global = match out.get("fit") {
+            Some(f) => {
+                let mut g = Adjust::default();
+                for (k, ..) in FIT {
+                    *slot(&mut g, k) = f[*k].as_f64().unwrap_or(0.0);
+                }
+                g
+            }
+            None => auto.clone(),
+        };
+        let c = a.coverage();
+        let mut keys: Vec<(&str, f64, f64)> = Vec::new();
+        if c.people >= 0.02 {
+            keys.push(("local.subject.exposure", 0.2, 1.0));
+            keys.push(("local.background.exposure", 0.2, 1.0));
+            if c.faces > 0 {
+                keys.push(("local.faces.exposure", 0.2, 1.0));
+            }
+        }
+        if c.sky >= 0.04 {
+            keys.push(("local.sky.exposure", 0.2, 1.0));
+            keys.push(("local.sky.saturation", 15.0, 60.0));
+        }
+        let regions = region_weights(a, &target);
+        let local_score = |v: &BTreeMap<&str, f64>| -> Result<f64, String> {
+            let mut r = Recipe {
+                global: base.global.plus(&global),
+                ..base.clone()
+            };
+            for (k, x) in v {
+                argus_engine::suggest::apply_setting(&mut r, k, *x, false).map_err(|x| e(&x))?;
+            }
+            // The whole frame plus faces and sky on their own: a face is a small share of
+            // the frame, so the whole-frame dE alone barely sees a face tweak.
+            let img = d.finish(&Look::DEFAULT, &r, Some(a));
+            let mut s = distance(&img, &target)[0];
+            for w in regions.iter().flatten() {
+                s += weighted_distance(&img, &target, Some(w))[0];
+            }
+            Ok(s)
+        };
+        let mut x: BTreeMap<&str, f64> = keys.iter().map(|k| (k.0, 0.0)).collect();
+        let mut best = local_score(&x)?;
+        for round in 0..4 {
+            let scale = 0.5f64.powi(round);
+            for (k, step, lim) in &keys {
+                for sign in [1.0, -1.0] {
+                    loop {
+                        let mut y = x.clone();
+                        let v = (x[k] + sign * step * scale).clamp(-lim, *lim);
+                        if v == x[k] {
+                            break;
+                        }
+                        y.insert(k, v);
+                        let s = local_score(&y)?;
+                        if s < best - 0.005 {
+                            (x, best) = (y, s);
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        out["fit_local"] = json!(x
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), json!((v * 1000.0).round() / 1000.0)))
+            .collect::<Map<_, _>>());
+        out["fit_local_score"] = json!((best * 100.0).round() / 100.0);
+    }
     if let Some(rs) = job.recipes.get(&c.id) {
         let big = match (job.save_dir.is_some(), job.save_edge) {
             (true, Some(e)) if e > edge => Demosaiced::new(&raw, e),
             _ => None,
         };
         let mut scores = Map::new();
+        let regions = analysis.as_ref().map(|a| region_weights(a, &target));
+        let (mut face_scores, mut sky_scores) = (Map::new(), Map::new());
         for (name, settings) in rs {
             let mut r = Recipe::default();
             for (k, v) in settings {
-                r.set(k, *v, false).map_err(|x| e(&x))?;
+                argus_engine::suggest::apply_setting(&mut r, k, *v, false).map_err(|x| e(&x))?;
             }
-            let img = d.finish(&Look::DEFAULT, &r, None);
+            let img = d.finish(&Look::DEFAULT, &r, analysis.as_ref());
             scores.insert(name.clone(), json!(rnd(distance(&img, &target))));
+            if let Some([faces, sky]) = &regions {
+                if let Some(w) = faces {
+                    let d = weighted_distance(&img, &target, Some(w));
+                    face_scores.insert(name.clone(), json!(rnd(d)));
+                }
+                if let Some(w) = sky {
+                    let d = weighted_distance(&img, &target, Some(w));
+                    sky_scores.insert(name.clone(), json!(rnd(d)));
+                }
+            }
             let wanted = job.save.as_ref().is_none_or(|s| s.contains(name));
             if let (Some(dir), true) = (&job.save_dir, wanted) {
                 let img = match &big {
-                    Some(b) => b.finish(&Look::DEFAULT, &r, None),
+                    Some(b) => b.finish(&Look::DEFAULT, &r, analysis.as_ref()),
                     None => img,
                 };
                 let path = dir.join(format!("{}_{name}.jpg", c.id));
@@ -259,6 +440,12 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
             }
         }
         out["scores"] = Value::Object(scores);
+        if !face_scores.is_empty() {
+            out["face_scores"] = Value::Object(face_scores);
+        }
+        if !sky_scores.is_empty() {
+            out["sky_scores"] = Value::Object(sky_scores);
+        }
     }
     Ok(out)
 }

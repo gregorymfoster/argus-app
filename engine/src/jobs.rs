@@ -33,12 +33,21 @@ use std::time::Duration;
 /// - `render_previews` {shoot_id?}: Argus's own previews over the camera's, queued by `import_folder`
 /// - `analyze` {shoot_id?, photo_ids?}: the specialist models' Facts (ADR 0013), queued after Import
 /// - `rank_presets` {shoot_id, provider?}: the AI's suggested order of the Presets for a Shoot
+/// - `tag_photos` {shoot_id?, photo_ids?, provider?, redo?}: the AI's suggested caption and
+///   Keywords for each Photo ([`crate::tagging`]), rejects skipped; Import queues it with the cull
+/// - `learn_edits` {}: the Library's own Edit head from the person's exported RAWs
+///   ([`crate::edit_head::learn_library`]), queued after an export
+/// - `download_model` {}: the search-by-meaning model into the models folder
+///   ([`crate::meaning::download`], progress in MB), then an `analyze` of the whole Library
 /// - `denoise` {photo_id}: AI Denoise's base for one RAW ([`crate::denoise`]), queued when a
 ///   Recipe with a Denoise Amount is saved
 pub const KINDS: &[&str] = &[
+    "learn_edits",
     "rank_presets",
+    "tag_photos",
     "analyze",
     "denoise",
+    "download_model",
     "suggest",
     "suggest_shoot",
     "match_hero",
@@ -299,9 +308,25 @@ pub fn enqueue(
             format!("analyze:{}", id("shoot_id").unwrap_or(0)),
             PRIORITY_ANALYZE,
         ),
+        "learn_edits" => (
+            "Learning from your edits".to_string(),
+            "learn_edits".to_string(),
+            PRIORITY_OTHER,
+        ),
         "rank_presets" => (
             shoot("Ranking Presets"),
             format!("rank_presets:{}", id("shoot_id").unwrap_or(0)),
+            PRIORITY_OTHER,
+        ),
+        "tag_photos" => (
+            shoot("Keywords and captions"),
+            format!(
+                "tag_photos:{}:{}",
+                id("shoot_id").unwrap_or(0),
+                args.get("photo_ids")
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            ),
             PRIORITY_OTHER,
         ),
         "denoise" => {
@@ -312,6 +337,11 @@ pub fn enqueue(
                 PRIORITY_OTHER,
             )
         }
+        "download_model" => (
+            "Downloading search by meaning".to_string(),
+            "download_model".to_string(),
+            PRIORITY_MATCH,
+        ),
         "render_previews" => (
             shoot("Previews"),
             format!("render_previews:{}", id("shoot_id").unwrap_or(0)),
@@ -535,6 +565,11 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             }
             Ok(json!({ "photos": photos.len(), "analyzers": ids, "stacks": stacked }))
         }
+        "learn_edits" => {
+            let lib = Library::open(tools.library())?;
+            let l = crate::edit_head::learn_library(&lib)?;
+            serde_json::to_value(l).map_err(|e| Error(format!("learn_edits: {e}")))
+        }
         "rank_presets" => {
             #[derive(Deserialize)]
             struct A {
@@ -557,6 +592,47 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             Ok(
                 json!({ "top": r.ranked.iter().take(6).map(|x| &x.id).collect::<Vec<_>>(), "photos": r.photos }),
             )
+        }
+        "download_model" => {
+            let progress = Library::open(tools.library())?;
+            let id = job.id;
+            const MB: u64 = 1 << 20;
+            crate::meaning::download(&|done, total| {
+                let _ = progress.job_progress(id, (done / MB) as i64, total.div_ceil(MB) as i64);
+            })?;
+            // Every Photo needs its vector before search can find it by meaning.
+            let mut lib = Library::open(tools.library())?;
+            crate::analyzers::enqueue(&mut lib, None, None)?;
+            Ok(json!({ "installed": crate::meaning::available(), "folder": crate::meaning::dir() }))
+        }
+        "tag_photos" => {
+            #[derive(Deserialize)]
+            struct A {
+                shoot_id: Option<ShootId>,
+                photo_ids: Option<Vec<PhotoId>>,
+                provider: Option<String>,
+                #[serde(default)]
+                redo: bool,
+            }
+            let a: A = args(job)?;
+            let photos = crate::tagging::photos(
+                &Library::open(tools.library())?,
+                a.shoot_id,
+                a.photo_ids.as_deref(),
+                a.redo,
+            )?;
+            let chat = tools.chat(
+                a.provider.as_deref(),
+                Some(compute),
+                crate::tagging::schema(),
+            )?;
+            let progress = Library::open(tools.library())?;
+            let id = job.id;
+            let n =
+                crate::tagging::tag(tools.library(), chat.as_ref(), &photos, &|done, total| {
+                    let _ = progress.job_progress(id, done as i64, total as i64);
+                })?;
+            Ok(json!({ "tagged": n, "photos": photos.len() }))
         }
         "denoise" => {
             #[derive(Deserialize)]
@@ -808,21 +884,16 @@ pub const MODEL_KINDS: &[&str] = &[
     "match_hero",
     "cull_shoot",
     "rank_presets",
+    "tag_photos",
     "denoise",
 ];
 
-/// Long model jobs: a whole-Shoot cull, or a Shoot's Suggestions fanning out.
-const LONG_KINDS: &[&str] = &["suggest_shoot", "cull_shoot"];
+/// Long model jobs: a whole-Shoot cull, a Shoot's Suggestions fanning out, or its tagging.
+const LONG_KINDS: &[&str] = &["suggest_shoot", "cull_shoot", "tag_photos"];
 
 /// The most per-Photo model jobs (a few minutes each on a local model) the idle boost runs
 /// back to back; a bigger backlog is a long run and waits for overnight, like a cull.
 pub const IDLE_BATCH: usize = 3;
-
-/// Whether model work waits for the person to step away: idle_only, not overridden, and
-/// neither idle long enough nor overnight (`boost` is [`boost`]'s answer).
-pub fn waits_for_idle(c: &QueueConfig, boost: Option<&str>) -> bool {
-    c.idle_only && !c.go_ahead && boost.is_none()
-}
 
 /// The job kinds the queue passes over now (the open Photo's always run). With idle_only,
 /// model work waits for the person to step away, and long runs (a cull, a Shoot's

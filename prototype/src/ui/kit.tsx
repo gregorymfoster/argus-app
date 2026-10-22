@@ -21,11 +21,18 @@ export function Kbd({ children, quiet }: { children: ReactNode; quiet?: boolean 
   return <kbd className={quiet ? 'quiet' : undefined}>{children}</kbd>;
 }
 
-/** A menu item's shortcut, one key cap per key, pushed to the right. */
+/** macOS modifier order (Apple HIG): Control, Option, Shift, Command, so ⇧⌘C, never Command first. */
+const MOD_ORDER = ['⌃', '⌥', '⇧', '⌘'];
+function macKeys(keys: string[]) {
+  const rank = (k: string) => (MOD_ORDER.includes(k) ? MOD_ORDER.indexOf(k) : MOD_ORDER.length);
+  return [...keys].sort((a, b) => rank(a) - rank(b));
+}
+
+/** A menu item's shortcut, one key cap per key in macOS modifier order, pushed to the right. */
 export function MenuKeys({ keys }: { keys: string[] }) {
   return (
     <span className="menu-keys">
-      {keys.map((k) => (
+      {macKeys(keys).map((k) => (
         <kbd key={k}>{k}</kbd>
       ))}
     </span>

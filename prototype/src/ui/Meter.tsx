@@ -77,7 +77,7 @@ function demo(): Meter {
 
 /** The meter: every 2 s while the panel is open (the engine samples faster while someone
  *  looks), every 10 s for the sidebar line with only the points its sparkline draws. */
-export function useMeter(open: boolean): Meter | null {
+function useMeter(open: boolean): Meter | null {
   const m = usePoll<Meter>(LIVE ? 'resource_usage' : null, open ? { watch: true } : { watch: false, points: 90 }, open ? 2000 : 10000);
   const [d] = useState(() => (LIVE ? null : demo()));
   return LIVE ? (m ?? null) : d;

@@ -19,21 +19,56 @@ const steps = [
   ['-presets', async (p) => {
     await p.getByRole('tab', { name: 'Presets' }).click();
     await p.waitForTimeout(300);
-    await p.getByTestId('preset-moody').hover();
+    await p.getByTestId('preset-moody').first().hover();
   }],
   ['-presets-on', async (p) => {
     await p.getByRole('tab', { name: 'Presets' }).click();
     await p.getByTestId('presets-suggested').getByTestId('preset-film-portrait').click();
     await p.locator('.dev-scroll').evaluate((e) => (e.scrollTop = 0));
   }],
+  // Create Preset (+ or ⇧⌘N): the dialog, then the Yours group and its right-click menu.
+  ['-preset-create', async (p) => {
+    await p.getByRole('tab', { name: 'Presets' }).click();
+    await p.getByTestId('preset-create').click();
+    await p.getByTestId('preset-name').fill('Tahoe evening');
+  }],
+  ['-preset-yours', async (p) => {
+    await p.getByTestId('presets-suggested').waitFor().catch(() => {});
+    await p.getByRole('tab', { name: 'Presets' }).click();
+    await p.getByTestId('presets-suggested').getByTestId('preset-film-portrait').click();
+    await p.keyboard.press('Meta+Shift+N').catch(() => {});
+    if (!(await p.getByTestId('preset-dialog').count())) await p.keyboard.press('Control+Shift+N');
+    await p.getByTestId('preset-name').fill('Tahoe evening');
+    await p.keyboard.press('Enter');
+    await p.getByTestId('presets-yours').waitFor();
+    await p.locator('.dev-scroll').evaluate((e) => (e.scrollTop = 0));
+    await p.getByTestId('presets-yours').getByTestId('preset-yours-tahoe-evening').click({ button: 'right' });
+  }],
   ['-masking', async (p) => (await p.getByRole('tab', { name: 'Masking' }).count()) && p.getByRole('tab', { name: 'Masking' }).click()],
-  ['-recommended', async (p) => {
-    await p.getByTestId('rec-warm-film').click();
+  // The AI takes first in the panel, a take previewed with its Amount and diff, and a fix on.
+  ['-takes-panel', async (p) => {
     await p.getByTestId('fix-faces').click();
+    if (await p.getByTestId('take').count() > 1) await p.keyboard.press('Tab');
   }],
   ['-crop', async (p) => {
     await p.getByRole('tab', { name: 'Crop' }).click();
     await p.getByRole('radio', { name: '4:5' }).click();
+  }],
+  // Straighten tool: a line drawn 5° off level turns the photo 5°, and the tool goes away.
+  ['-straighten', async (p) => {
+    await p.getByRole('tab', { name: 'Crop' }).click();
+    await p.getByTestId('crop-straighten').click();
+    const b = await p.getByTestId('crop-overlay').boundingBox();
+    const [x, y] = [b.x + b.width * 0.2, b.y + b.height * 0.6];
+    await p.mouse.move(x, y);
+    await p.mouse.down();
+    await p.mouse.move(x + 200, y - 17.5, { steps: 5 });
+    await p.mouse.move(x + 400, y - 35, { steps: 5 });
+    await p.screenshot({ path: `${out}${prefix}-straighten-drawing.png` });
+    await p.mouse.up();
+    const panel = await p.getByTestId('crop-panel').innerText();
+    if (!/5\.0°/.test(panel)) throw new Error(`straighten: ${panel}`);
+    if ((await p.getByTestId('crop-straighten').getAttribute('aria-pressed')) !== 'false') throw new Error('straighten: tool still out');
   }],
   ['-people', async (p) => {
     await p.getByRole('tab', { name: 'Masking' }).click();
@@ -42,6 +77,35 @@ const steps = [
   ['-radial', async (p) => {
     await p.getByRole('tab', { name: 'Masking' }).click();
     await p.getByTestId('mask-create').getByRole('button', { name: 'Radial' }).click();
+  }],
+  // Lightroom's Add, Subtract and Intersect: Sky minus a Radial, only its bright tones, at 150%.
+  ['-mask-combine', async (p) => {
+    await p.getByRole('tab', { name: 'Masking' }).click();
+    await p.getByTestId('mask-new-sky').click();
+    await p.getByTestId('mask-subtract').click();
+    await p.getByTestId('mask-subtract-radial').click();
+    await p.getByTestId('mask-intersect').click();
+    await p.getByTestId('mask-intersect-luminance').click();
+    if ((await p.locator('.mask-part').count()) !== 2) throw new Error('mask-combine: expected 2 components');
+    await p.getByTestId('mask-luminance').waitFor();
+    const amount = p.getByRole('slider', { name: 'Mask amount' });
+    await amount.focus();
+    for (let i = 0; i < 50; i++) await p.keyboard.press('ArrowRight');
+    const v = await amount.getAttribute('aria-valuenow');
+    if (v !== '150') throw new Error(`mask-combine: amount ${v}`);
+  }],
+  // Color range: pick a colour on the photo, then add a second one.
+  ['-mask-color', async (p) => {
+    await p.getByRole('tab', { name: 'Masking' }).click();
+    await p.getByTestId('mask-new-color').click();
+    let s = await p.getByTestId('pick-overlay').boundingBox();
+    await p.mouse.click(s.x + s.width * 0.5, s.y + s.height * 0.15);
+    await p.getByTestId('mask-color').waitFor();
+    await p.getByTestId('mask-color-add').click();
+    s = await p.getByTestId('pick-overlay').boundingBox();
+    await p.mouse.click(s.x + s.width * 0.3, s.y + s.height * 0.1);
+    const panel = await p.getByTestId('masking-panel').innerText();
+    if (!/2 colours picked/.test(panel)) throw new Error(`mask-color: ${panel}`);
   }],
   ['-curve', async (p) => {
     await sec(p, 'light');
@@ -113,7 +177,7 @@ const steps = [
 ];
 const only = process.env.ONLY;
 for (const width of [1500, 1280]) {
-  if (only && width !== 1500) continue;
+  if (only && !process.env.BOTH && width !== 1500) continue;
   for (const [suffix, act] of steps) {
     if (only && !suffix.includes(only)) continue;
     const ctx = await browser.newContext({ viewport: { width, height: 900 }, deviceScaleFactor: 2 });

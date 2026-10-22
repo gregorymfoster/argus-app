@@ -47,6 +47,8 @@ When there's an open design question, add a `Decision` in `src/store/variants.ts
 ```sh
 npm run check      # typecheck + screenshots + smoke tests
 npm run shots look # only shots whose name contains "look"
+npm run dead-code  # knip: unused files, exports and dependencies (config in knip.json)
+npm run preset-parity  # src/domain/presets.ts against the engine's apply_preset, every built-in Preset
 ```
 
 `scripts/shots.mjs` starts Vite, drives Chromium with Playwright, writes PNGs of every screen to `out/shots/`, and runs smoke checks through the real UI (flag keys and jump-to-next, click to clear, multi-select and batch undo, Compare keep-best, Look slider changes the render, Sync to Look, Agent creates Masks, no spaces in the import path). It exits non-zero on any page error or React warning.

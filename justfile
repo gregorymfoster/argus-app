@@ -1,4 +1,4 @@
-# Argus task runner. See CLAUDE.md "Commands".
+# Argus task runner. See docs/commands.md (CLAUDE.md "Commands" has the short version).
 
 default:
     @just --list
@@ -9,14 +9,15 @@ status:
     @scripts/progress status
 
 # What the Rust checks depend on: `scripts/cached` skips clippy and tests when none of it changed since they last passed (docs-only changes, re-runs after a failed push). ARGUS_NO_CACHE=1 forces them.
-rust_inputs := "--in Cargo.toml --in Cargo.lock --in engine --in cli --in fixtures --stat fixtures/raw --stat fixtures/raw-a7rv --key 'rustc -vV' --key 'env | grep -e ^ARGUS_ -e ^RUSTFLAGS | sort'"
+rust_inputs := "--in Cargo.toml --in Cargo.lock --in engine --in cli --in fixtures --stat fixtures/raw --stat fixtures/raw-a7rv --stat fixtures/bench-raw --key 'rustc -vV' --key 'env | grep -e ^ARGUS_ -e ^RUSTFLAGS | sort'"
 
 # Format, lint and test everything (incl. golden images).
 # Uses the `fast` profile (release speed, no LTO): a one-file engine edit rebuilds in seconds, not minutes.
 check:
+    @scripts/cloud-ensure
     scripts/progress fmt -- cargo fmt --all -- --check
     scripts/cached clippy {{rust_inputs}} -- scripts/progress clippy -- cargo clippy --workspace --all-targets --profile fast -- -D warnings
-    scripts/cached test {{rust_inputs}} -- scripts/progress test -- cargo test --workspace --profile fast
+    scripts/cached test {{rust_inputs}} --in scripts/test-parallel -- scripts/progress test -- scripts/test-parallel --workspace --profile fast
     scripts/cached install-sh --in scripts/release/install.sh --in scripts/release/install.test.sh --in scripts/release/stamp-install.sh -- scripts/release/install.test.sh
     scripts/cached design-lint --in prototype/src --in prototype/scripts/design-lint.mjs --in prototype/scripts/design-lint-baseline.json -- node prototype/scripts/design-lint.mjs
     @ls fixtures/raw/*.ARW >/dev/null 2>&1 || echo "warning: fixtures/raw is empty, so golden and RAW tests were SKIPPED (see CLAUDE.md for getting the RAWs)"
@@ -41,7 +42,6 @@ fuzz library seed="1" steps="300":
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
     cd prototype && ../scripts/progress fuzz -- node scripts/fuzz.mjs {{library}} {{seed}} {{steps}}
 
-# Every main screen at Greg's window widths (1280, 1500 px), demo data: fails when a header or footer wraps or clips. Shots in prototype/out/shots/layout-*.png.
 # Dummy-data screenshots of every screen, then a pixel diff against the blessed set (cloud only: Linux Chromium baselines in /mnt/project-files/baselines/shots). e.g. `just shots cull`
 shots *filters:
     cd prototype && ../scripts/progress shots -- node scripts/shots.mjs {{filters}}
@@ -51,6 +51,7 @@ shots *filters:
 shots-bless *names:
     cd prototype && node scripts/shot-diff.mjs --bless {{names}}
 
+# Every main screen at Greg's window widths (1280 and 1500 px, and 1280 at 125% zoom), demo data: fails when a header or footer wraps or clips. Shots in prototype/out/shots/layout-*.png.
 layout:
     cd prototype && ../scripts/progress layout -- node scripts/layout.mjs
 
@@ -71,7 +72,7 @@ speed *args:
 
 # Re-accept golden references after a deliberate pipeline change. View the PNGs before committing!
 bless:
-    ARGUS_BLESS=1 scripts/progress bless -- cargo test --profile fast -p argus-engine --test engine golden::
+    ARGUS_BLESS=1 scripts/progress bless -- cargo test --profile fast --test engine golden::
     git status --short fixtures/golden
 
 # Gut-check Argus against Greg's past Lightroom picks and edits (fixtures/bench). Runs the AI cull: heavy, prefer overnight. e.g. `just bench --shoot 2024-10-19`, `just bench --no-model`
@@ -138,11 +139,11 @@ mac-e2e *raws:
     {{ if os() == "macos" { "cd prototype && npx playwright install webkit" } else { "true" } }}
     cd prototype && ../scripts/progress mac-e2e -- ../scripts/timeout 900 node scripts/mac-e2e.mjs {{raws}}
 
-# Rebase onto origin/main, run `just check`, push to main (retries; works from any branch). LAND_SKIP_CHECK=1 for docs-only changes.
 # Native menu bar check on the Mac: launches Argus.app on a throwaway Library and clicks its menus through System Events (needs Accessibility for the terminal, once). e.g. `just mac-menus`
 mac-menus *args:
     scripts/progress build-cli -- {{ if os() == "macos" { "taskpolicy -c utility nice -n 10" } else { "" } }} cargo build --profile fast -p argus-cli
     scripts/progress mac-menus -- scripts/timeout 300 scripts/mac-menu-check {{args}}
 
+# Rebase onto origin/main, run `just check`, push to main (retries; works from any branch). LAND_SKIP_CHECK=1 for docs-only changes.
 land:
     scripts/land

@@ -206,3 +206,58 @@ CREATE TABLE usage_events (
   at       TEXT NOT NULL
 );
 CREATE INDEX usage_by_photo ON usage_events(photo_id, id);
+
+-- Keywords and captions (docs/naming.md): hierarchical Keywords on each Photo, stored as
+-- the full path ('Places|Portugal|Lisbon'), and one caption (IPTC Description). The AI's
+-- stay 'suggested' until the person keeps them; a dismissed one stays as a row so the AI
+-- doesn't offer it again. Written to XMP on export.
+CREATE TABLE photo_keywords (
+  photo_id INTEGER NOT NULL REFERENCES photos(id),
+  keyword  TEXT NOT NULL,
+  author   TEXT NOT NULL,             -- 'person' | 'ai'
+  state    TEXT NOT NULL,             -- 'kept' | 'suggested' | 'dismissed'
+  at       TEXT NOT NULL,
+  PRIMARY KEY (photo_id, keyword)
+);
+CREATE INDEX keywords_by_name ON photo_keywords(keyword);
+CREATE TABLE captions (
+  photo_id INTEGER PRIMARY KEY REFERENCES photos(id),
+  text     TEXT NOT NULL,
+  author   TEXT NOT NULL,             -- 'person' | 'ai'
+  state    TEXT NOT NULL,             -- 'kept' | 'suggested'
+  at       TEXT NOT NULL
+);
+
+-- Albums: saved searches, like Lightroom's smart collections. `query` is JSON
+-- ({"text": "autumn friends"}); the Photos are found again each time, so an Album keeps
+-- up with Imports and new Keywords.
+CREATE TABLE albums (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL,
+  query      TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- People (the People view): faces the person named. `face` is the face's number in the
+-- Photo's `faces` Fact, left to right. A face with no person is one the person hid (not
+-- someone to name); `face_not` remembers "not this person" so it isn't asked again. Naming
+-- a face also keeps the Keyword `People|<name>` on its Photo. The AI never names anyone.
+CREATE TABLE people (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE face_names (
+  photo_id  INTEGER NOT NULL REFERENCES photos(id),
+  face      INTEGER NOT NULL,
+  person_id INTEGER REFERENCES people(id),   -- NULL: hidden
+  at        TEXT NOT NULL,
+  PRIMARY KEY (photo_id, face)
+);
+CREATE INDEX face_names_by_person ON face_names(person_id);
+CREATE TABLE face_not (
+  photo_id  INTEGER NOT NULL REFERENCES photos(id),
+  face      INTEGER NOT NULL,
+  person_id INTEGER NOT NULL REFERENCES people(id),
+  PRIMARY KEY (photo_id, face, person_id)
+);

@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react';
-import { Slider } from '@/components/ui/slider';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Check, Sparkles, X } from 'lucide-react';
 import type { Look, Photo, Recipe, Suggestion } from '../domain/types';
 import { useSuggestionImage, type TakesJob } from '../data/suggestions';
 import { PhotoView } from './PhotoView';
-import { Kbd } from './kit';
+import { Kbd, Slider } from './kit';
 import { Button } from '@/components/ui/button';
 
 function Tile({ photo, recipe, look, s, label, title, why, selected, onPick }: { photo: Photo; recipe: Recipe; look: Look | null; s: Suggestion | null; label: string; title: string; why: string; selected: boolean; onPick: () => void }) {
@@ -74,15 +73,9 @@ function jobLine(job: TakesJob, held: string | null): string {
   return `${what} · waiting behind ${job.behind ?? 'other work'}${job.ahead > 1 ? ` and ${job.ahead - 1} more` : ''}`;
 }
 
-/** "New takes", or while they're on their way a progress bar with the stage, ETA and Cancel. */
-function TakesButton({ job, held, onMore, onCancel }: { job: TakesJob | null; held: string | null; onMore: () => void; onCancel: () => void }) {
+/** While takes are on their way: a progress bar with the stage, ETA and Cancel. */
+function TakesProgress({ job, held, onCancel }: { job: TakesJob; held: string | null; onCancel: () => void }) {
   const { progress, eta, elapsed } = useLive(job);
-  if (!job)
-    return (
-      <Button size="sm" variant="ghost" onClick={onMore} data-testid="new-takes">
-        New takes <Kbd quiet>R</Kbd>
-      </Button>
-    );
   const running = job.status === 'running';
   const status = held ?? (running ? job.stage : job.ahead ? `Queued · ${job.ahead} ahead` : 'Starting');
   const time = eta != null ? left(eta) : elapsed != null ? `${Math.round(elapsed)} s so far` : 'no timing yet';
@@ -103,11 +96,11 @@ function TakesButton({ job, held, onMore, onCancel }: { job: TakesJob | null; he
 }
 
 /**
- * The takes under the photo in Edit, like Lightroom's preset previews: your edit first,
- * then the AI's Suggestions. Picking one previews it on the photo; nothing is saved until
- * it's accepted.
+ * The AI takes, first in Edit's panel (Greg 2026-10-22: one place for the AI, the photo keeps
+ * its height): your edit, then the AI's Suggestions, like Lightroom's preset previews. Picking
+ * one previews it on the photo at its Amount; nothing is saved until it's accepted.
  */
-export function SuggestionStrip({ photo, recipe, look, list, pick, onPick, onAccept, amount, onAmount, onDismiss, onMore, onCancel, job, held, waiting }: {
+export function TakesPanel({ photo, recipe, look, list, pick, onPick, onAccept, amount, onAmount, onDismiss, onMore, onCancel, job, held, waiting, diff }: {
   photo: Photo;
   recipe: Recipe;
   look: Look | null;
@@ -128,41 +121,51 @@ export function SuggestionStrip({ photo, recipe, look, list, pick, onPick, onAcc
   held: string | null;
   /** Shown when there are no takes yet. */
   waiting: string | null;
+  /** What the picked take changes against your edit. */
+  diff?: ReactNode;
 }) {
   const current = list[pick] ?? null;
   return (
-    <section className="takes" aria-label="Suggestions">
-      <div className="row" style={{ gap: 10 }}>
-        <span style={{ fontWeight: 500 }}>Suggestions</span>
-        <span className="faint" style={{ fontSize: 12 }} data-testid="takes-line">{job ? jobLine(job, held) : list.length ? 'Nothing changes until you accept one' : waiting ?? 'None yet'}</span>
+    <section className="dev-block takes-panel" aria-label="AI takes" data-testid="takes">
+      <div className="dev-sub">
+        <Sparkles size={12} className="acc" />
+        <span style={{ marginLeft: 6, fontWeight: 500 }}>AI takes</span>
         <span className="grow" />
-        {current ? (
-          <>
-            <label className="row faint" style={{ gap: 8, fontSize: 12 }} title="How strong the take is: 0 is your edit, 100 the take. Double-click for 100." onDoubleClick={() => onAmount(100)}>
-              Amount
-              <Slider className="w-[120px]" min={0} max={150} step={5} value={[amount]} onValueChange={([v]) => onAmount(v)} aria-label="Amount" data-testid="take-amount" />
-              <span className="mono" style={{ width: 34, textAlign: 'right', color: 'var(--text)' }}>{amount}%</span>
-            </label>
-            <Button size="sm" onClick={onAccept} data-testid="accept-take">
-              Accept <Kbd>↵</Kbd>
-            </Button>
-            <Button size="sm" variant="ghost" onClick={onDismiss}>
-              Dismiss <Kbd>⌫</Kbd>
-            </Button>
-          </>
-        ) : (
-          list.length > 0 && <span className="faint" style={{ fontSize: 12 }}><Kbd quiet>Tab</Kbd> to preview a take</span>
+        {!job && (
+          <Button size="sm" variant="ghost" onClick={onMore} data-testid="new-takes">
+            New takes <Kbd quiet>R</Kbd>
+          </Button>
         )}
-        <TakesButton job={job} held={held} onMore={onMore} onCancel={onCancel} />
       </div>
-      {/* With nothing to compare it to, "Your edit" alone would only take height from the photo. */}
-      {(list.length > 0 || job) && <div className="takes-row">
-        <Tile photo={photo} recipe={recipe} look={look} s={null} label="0" title="Your edit" why="What you have now" selected={pick < 0} onPick={() => onPick(-1)} />
-        {list.map((s, i) => (
-          <Tile key={s.id} photo={photo} recipe={s.recipe} look={look} s={s} label={String(i + 1)} title={s.title} why={s.why} selected={pick === i} onPick={() => onPick(i)} />
-        ))}
-        {job && Array.from({ length: job.takes }, (_, i) => <Pending key={`${job.id}-${i}`} photo={photo} recipe={recipe} look={look} n={i + 1} stage={held ?? (job.status === 'running' ? job.stage : 'Queued')} delay={i * 90} />)}
-      </div>}
+      {job && <TakesProgress job={job} held={held} onCancel={onCancel} />}
+      <span className="dev-note" data-testid="takes-line" hidden={!!job} title={job ? jobLine(job, held) : undefined}>
+        {job ? jobLine(job, held) : current ? current.why : list.length ? <><Kbd quiet>Tab</Kbd> previews a take. Nothing changes until you accept one.</> : waiting ?? 'None yet'}
+      </span>
+      {(list.length > 0 || job) && (
+        <div className="takes-grid">
+          <Tile photo={photo} recipe={recipe} look={look} s={null} label="0" title="Your edit" why="What you have now" selected={pick < 0} onPick={() => onPick(-1)} />
+          {list.map((s, i) => (
+            <Tile key={s.id} photo={photo} recipe={s.recipe} look={look} s={s} label={String(i + 1)} title={s.title} why={s.why} selected={pick === i} onPick={() => onPick(i)} />
+          ))}
+          {job && Array.from({ length: job.takes }, (_, i) => <Pending key={`${job.id}-${i}`} photo={photo} recipe={recipe} look={look} n={i + 1} stage={held ?? (job.status === 'running' ? job.stage : 'Queued')} delay={i * 90} />)}
+        </div>
+      )}
+      {list.length > 0 && (
+        <div className={current ? '' : 'dim'} data-testid="take-amount" title="How strong the take is: 0 is your edit, 100 the take. Double-click for 100.">
+          <Slider label="Amount" name="Take amount" min={0} max={150} step={5} def={100} value={amount} display={`${amount}%`} onChange={(v) => current && onAmount(Math.round(v))} />
+        </div>
+      )}
+      {current && (
+        <div className="row" style={{ gap: 6 }}>
+          <Button size="sm" onClick={onAccept} data-testid="accept-take">
+            Accept <Kbd>↵</Kbd>
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onDismiss}>
+            Dismiss <Kbd>⌫</Kbd>
+          </Button>
+        </div>
+      )}
+      {current && diff}
     </section>
   );
 }

@@ -1,6 +1,6 @@
 # Lightroom parity: what's still missing
 
-Written 2026-10-21 against main at the time, by reading the engine's tool layer, the Recipe, the prototype's screens and hotkeys, and the schema. It compares Argus with modern Lightroom (cloud and Classic) on the flows Greg actually uses, and ranks the gaps by his four goals: import a batch of about 100, cull it, fix the light and make people look good, and go deep on one Photo. Bugs and UX problems are out of scope here; the "Bug hunt and UX audit" thread owns those.
+Refreshed 2026-10-22 (ranking below). First written 2026-10-21 against main at the time, by reading the engine's tool layer, the Recipe, the prototype's screens and hotkeys, and the schema. It compares Argus with modern Lightroom (cloud and Classic) on the flows Greg actually uses, and ranks the gaps by his four goals: import a batch of about 100, cull it, fix the light and make people look good, and go deep on one Photo. Bugs and UX problems are out of scope here; the "UX sweep and polish" thread owns those (2026-10-22).
 
 Constraints that shape the list: Mac only, no generative fill, no face or body reshaping, model licences Apache, MIT or BSD only (so no lensfun, which is CC-BY-SA, and no InsightFace or Depth Anything Base/Large weights, which are non-commercial).
 
@@ -8,29 +8,34 @@ Constraints that shape the list: Mac only, no generative fill, no face or body r
 
 Import from a card with New only, RAW+JPEG pairing, dated Shoot names and verified copies is on par. Culling is ahead: P/X/U flags that advance, 0-5 stars where the person always wins, Stacks for bursts, Compare (Lightroom's Survey), a Library-wide Picks view, and an AI that rates the Shoot and rejects broken frames. The Develop panel now covers Lightroom's Basic, Tone curve (parametric and point), Color mixer, Point color, Color grading, Effects, Detail (sharpening and manual noise reduction), Optics (CA, defringe, manual distortion and vignetting) and Calibration, plus WB presets and an eyedropper. Masks cover subject, background, sky, people with parts (face skin, body skin, eyes, teeth, hair), brush with erase, linear, radial and gradient, each invertible. Version history, batch undo, before/after on `\`, crop with aspect ratios and straighten, Looks shared across a Shoot, and export to JPEG, TIFF or original plus XMP are all there. Lightroom has nothing like Suggestions, the Agent or MCP.
 
-## The gaps, ranked
+## The gaps, ranked (refreshed 2026-10-22)
+
+Since the first pass, five items have landed: copy, paste and sync settings, lens corrections from the camera's own data, AI Denoise (Core ML, about 28 s per 61 MP frame on the Mac), Heal and Clone Spots, and 57 built-in Presets with an AI order per Shoot. Stacks and the shared progress row also shipped. The list below is what's left on main at fd63fca, re-ranked for Greg's flow: import about 100 RAWs, cull, fix the light and the people, go deep on one frame, then deliver to a phone or Instagram. Two gaps are new to this pass (Auto straighten and Upright, a filter bar for the grid), and one item rose (own presets) because the built-in library made its absence obvious.
 
 Size is a rough guess: S is a day or less for one thread, M a few days, L a week or more or a new model.
 
 | # | Gap | Goal it serves | Size | Notes |
 |---|---|---|---|---|
-| 1 | Copy, paste and sync settings | batch fix | S-M | ⌘⇧C / ⌘⇧V with a checklist of groups, ⌥⌘V paste previous, Sync across a selection |
-| 2 | Lens corrections from the camera's own data | fix light, every Photo | M | Sony ARWs carry distortion, vignetting and CA coefficients; no lensfun needed |
-| 3 | AI Denoise | fix light (indoor, night, high ISO) | L | NAFNet (MIT) or SCUNet (Apache-2.0) through the Analyzer seam |
-| 4 | Spot heal and clone | make people look good, dust | M | Manual, non-generative; needs a scope call (see below) |
-| 5 | Mask combine, Amount and range masks | deep edit | M | Add, subtract, intersect; luminance, color and depth range; per-Mask Amount |
-| 6 | Saved develop presets across Shoots | batch fix | S | Looks belong to one Shoot today |
-| 7 | Keywords, title, caption, Collections | find photos later | M | Naming rules for Keywords exist, storage does not |
-| 8 | Search by content and metadata | find photos later | M | ⌘K only jumps; Lightroom cloud searches "dog on beach" |
-| 9 | Export options | delivery | S each | HEIC (the spec promises it), output sharpening, color space, short edge or megapixels, watermark |
-| 10 | Rotate 90° and flip | edge case | S-M | Only EXIF orientation today; masks are in upright coordinates, so it touches them |
-| 11 | Virtual copies | deep edit | M | Color and B&W of one frame side by side; needs a schema step |
-| 12 | Snapshots | deep edit | S | Named points in the History list Argus already keeps |
-| 13 | Develop odds and ends | deep edit | S each | W eyedropper, J clipping overlay, crop resize handles, more Profiles |
-| 14 | People view | find photos later, cull | M | Face recognition with SFace (Apache-2.0) on the YuNet faces we already detect |
-| 15 | Lens Blur | deep edit (portraits) | L | Depth Anything V2 Small is Apache-2.0; the larger ones are not |
-| 16 | Import extras | import | S each | Second copy to a backup drive, eject the card when done, Keywords on import |
-| 17 | Color labels | cull | S | 6 to 9 in Classic; no sign Greg uses them, so last |
+| 1 | Your own Presets (built 2026-10-22: `save_preset`, `delete_preset`, ⇧⌘N, Yours group) | batch fix | S | "Create Preset" from the open Photo with a group checklist, a Yours group above the built-ins, rename and delete. Shares the Settings groups `paste.rs` already has |
+| 2 | Export for phones and the web (built 2026-10-22: HEIC on macOS through `sips`, short edge, megapixels, screen sharpening, Instagram and Phone presets; HEIC itself still needs a Mac run of `cargo test heic`; Display P3 left out because the pipeline clips to sRGB primaries early) | delivery | S each | HEIC (promised in the spec), Display P3, output sharpening for screen, short edge and megapixels, export presets, optional text watermark |
+| 3 | Auto straighten and Upright (2026-10-22: a model-free detector failed on Greg's photos, see the results log; the manual Straighten tool shipped in Crop. Auto needs a learned horizon or vanishing-point model) | fix every Photo | M | Level a horizon or straighten verticals from detected lines; Auto proposes it, the Crop tool shows it. Not on the first list |
+| 4 | Mask Amount, combine and range | fix people, deep edit | M | **Built 2026-10-22.** Amount per Mask (0 to 200); add, subtract and intersect components; Luminance and Color range Masks, alone or as components. Depth range waits on a depth model (Lens Blur row) |
+| 5 | Keywords, captions and search | find photos later | M-L | AI Keywords and a caption from the work the cull already does, ⌘K searches Photos by words, SigLIP text-image embeddings for "dog on beach"; Collections as saved searches |
+| 6 | Develop odds and ends | deep edit | S each | J clipping overlay, W eyedropper, crop resize handles (check), Profiles beyond Color and Monochrome |
+| 7 | Snapshots and virtual copies | deep edit | S, M | Named points in History; a second Recipe for one original (schema step) |
+| 8 | Brushed Heal and Content-Aware | make people look good | M | Spots are circles today; Lightroom's Remove paints any stroke |
+| 9 | People view | find, cull | M | SFace (Apache-2.0) on the YuNet faces we have; "everyone's eyes open" needs who is who |
+| 10 | Lens Blur | deep edit (portraits) | L | Depth Anything V2 Small (Apache-2.0); also a depth range Mask for #4 |
+| 11 | Rotate 90° and flip | edge case | S-M | Touches Masks and Spots, which live in upright coordinates |
+| 12 | Grid filter bar | cull, find | S | Lightroom's flag, star, camera, lens and ISO filters in one row; Argus has sort and a few views |
+| 13 | Import extras | import | S each | Second copy to a backup drive, eject the card when done |
+| 14 | Color labels | cull | S | No sign Greg uses them |
+
+### Why this order
+
+Own Presets come first because they are a day of work and Greg now sees 57 built-ins and no way to save his own; the edit head learns his taste in the background, but a named look he can reach for is the Lightroom habit. Export comes next because every finished Shoot ends there, and JPEG at sRGB with no output sharpening looks flatter on an iPhone than Lightroom's export does. Auto straighten is the one new item: tilted horizons on boat and travel frames are the most common fix after light, Lightroom's Upright does it in one click, and a line detector needs no model. Masks are the biggest win for "make people look good", since Amount and subtract are how photographers stop a face brighten from spilling onto the background. Keywords and search matter more as the Library fills with a year of Shoots, and the AI angle (captions from work Argus already does) is where Argus can beat Lightroom rather than match it.
+
+### Notes from the first pass (2026-10-21)
 
 ### 1. Copy, paste and sync settings
 
@@ -88,6 +93,6 @@ Lightroom Classic can make a second copy to a backup drive during import, eject 
 
 Generative Remove and Generative Expand, face and body reshaping, Lightroom catalog import, mobile and Windows, and video are out of scope in the spec. HDR and panorama merge, Enhance and Super Resolution, Print, Slideshow, Book, Map, Web, tethered capture, soft proofing and publish services don't serve Greg's four goals; HDR merge is the only one that might, for bracketed interiors, and it can wait until he asks.
 
-## Suggested order
+## First-pass order (2026-10-21)
 
-Copy, paste and sync settings (#1) and saved presets (#6) are cheap and land on the batch goal directly. Camera lens corrections (#2) improve every Photo without a model and without a licence question. AI Denoise (#3) is the biggest visible gap against Lightroom and the right next specialist model after faces. Spot heal (#4) waits on Greg's call about scope.
+Copy, paste and sync settings, camera lens corrections, AI Denoise and Spot heal were the first four; all four landed the same day. The section numbers above are the first pass's, kept for history; the table is the current ranking.

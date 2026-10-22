@@ -33,3 +33,7 @@ Add a `Decision` to `DECISIONS` in `src/store/variants.tsx` and branch on `useVa
 ## Stacks (2026-10-21)
 
 Greg asked for Stacks, and expanding and collapsing them, to be clearer. Of three takes (pile and band, bracket, Lightroom Classic) he went with the pile and band: sheets peek out above a collapsed Stack's cover, the count badge carries a layers icon, expanded frames sit on one tinted band and number themselves (2/6), and S, the badge or the band collapse back to the cover. Details in `docs/design.md`.
+
+## Learn as you cull (Greg, 2026-10-22)
+
+Once the person has flagged five Picks and five Rejects, the AI's stars on the rest of the Shoot refresh from them about a second after flagging pauses (`data/learn.ts`, engine `rerate_shoot`). Changed stars glow briefly, and the footer reads "Learning from 7 Picks, 7 Rejects · 42 re-rated". Sorted by Stars, the grid holds its order while stars refresh; choosing Stars again re-sorts. Greg chose holding over re-sorting at once.

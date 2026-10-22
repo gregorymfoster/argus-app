@@ -160,12 +160,73 @@ fn the_ais_own_flags_teach_the_head_nothing() {
     );
 }
 
+#[test]
+fn rerating_as_the_person_flags_lifts_the_frames_like_their_picks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut lib = Library::open(&tmp.path().join("lib")).unwrap();
+    let card = shoot(&mut lib, tmp.path(), "2026-10-08_Park", 7, 7, 10);
+    argus_engine::cull::cull_shoot(&mut lib, card, &argus_engine::technical::Rules).unwrap();
+    let photos = lib
+        .list_photos(&PhotoFilter {
+            shoot: Some(card),
+            verdict: None,
+        })
+        .unwrap();
+    assert!(
+        photos.iter().all(|p| p.stars_by == Some(Author::Ai)),
+        "the cull rated them all"
+    );
+    // The person flags five of each and stars one warm frame themselves.
+    let (warm, cool): (Vec<_>, Vec<_>) = photos.iter().partition(|p| p.file_name.starts_with('w'));
+    for p in warm.iter().take(5) {
+        lib.set_verdict(&[p.id], Verdict::Pick, Author::Person, None, None)
+            .unwrap();
+    }
+    for p in cool.iter().take(5) {
+        lib.set_verdict(&[p.id], Verdict::Reject, Author::Person, None, None)
+            .unwrap();
+    }
+    lib.set_rating(&[warm[6].id], 2, Author::Person, None)
+        .unwrap();
+    let r = argus_engine::cull::rerate(&mut lib, card).unwrap();
+    assert!(
+        r.learning && r.picks == 5 && r.rejects == 5 && r.changed > 0,
+        "{r:?}"
+    );
+    let now = |id| {
+        lib.list_photos(&PhotoFilter::default())
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap()
+    };
+    let (w, c) = (now(warm[5].id), now(cool[5].id));
+    assert!(
+        w.stars > c.stars,
+        "unflagged warm {} vs cool {}",
+        w.stars,
+        c.stars
+    );
+    assert_eq!(w.verdict, Verdict::Unflagged, "flags untouched");
+    let mine = now(warm[6].id);
+    assert_eq!(
+        (mine.stars, mine.stars_by),
+        (2, Some(Author::Person)),
+        "the person's stars stay"
+    );
+}
+
 mod technical {
-    use argus_engine::technical::{broken, Sharpness};
+    use argus_engine::technical::{broken, doubtful, Sharpness};
 
     #[test]
     fn a_frame_far_softer_than_its_shoot_or_its_sharp_twin_is_broken() {
-        let s = |in_shoot, beside| Sharpness { in_shoot, beside };
+        let s = |in_shoot, beside| Sharpness {
+            in_shoot,
+            beside,
+            streak: 0.1,
+            portrait: false,
+        };
         assert!(
             broken(s(0.05, 1.0)).is_some(),
             "blurred against the whole Shoot"
@@ -185,5 +246,71 @@ mod technical {
             "sharp for its Shoot, whatever its sibling"
         );
         assert_eq!(broken(Sharpness::default()), None);
+        let portrait = Sharpness {
+            portrait: true,
+            ..s(0.08, 1.0)
+        };
+        assert_eq!(
+            broken(portrait),
+            None,
+            "a shallow-focus portrait reads soft beside scenes"
+        );
+        assert_eq!(
+            argus_engine::technical::doubtful(portrait, false),
+            Some("soft"),
+            "but a model may look"
+        );
+        assert!(
+            broken(Sharpness {
+                portrait: true,
+                ..s(0.08, 0.1)
+            })
+            .is_some(),
+            "a sharp sibling still gives a missed portrait away"
+        );
+    }
+
+    #[test]
+    fn a_soft_frame_whose_edges_all_run_one_way_is_shaken() {
+        let s = |in_shoot, streak| Sharpness {
+            in_shoot,
+            beside: 1.0,
+            streak,
+            portrait: false,
+        };
+        assert_eq!(broken(s(0.4, 0.85)), Some("camera shake"));
+        assert_eq!(
+            broken(s(1.2, 0.85)),
+            None,
+            "streaky but sharp: stripes, a fence"
+        );
+        assert_eq!(
+            broken(s(0.4, 0.3)),
+            None,
+            "soft every which way is not shake"
+        );
+    }
+
+    #[test]
+    fn soft_streaky_or_shut_eyed_frames_are_doubtful_not_broken() {
+        let s = |in_shoot, beside, streak| Sharpness {
+            in_shoot,
+            beside,
+            streak,
+            portrait: false,
+        };
+        assert_eq!(doubtful(s(1.0, 1.0, 0.1), false), None);
+        assert_eq!(doubtful(s(0.25, 1.0, 0.1), false), Some("soft"));
+        assert_eq!(doubtful(s(0.6, 0.4, 0.1), false), Some("soft"));
+        assert_eq!(
+            doubtful(s(0.7, 1.0, 0.5), false),
+            Some("streaky, maybe shake")
+        );
+        assert_eq!(doubtful(s(1.0, 1.0, 0.1), true), Some("eyes shut"));
+        assert_eq!(
+            doubtful(s(0.05, 1.0, 0.1), true),
+            None,
+            "broken already: a reject"
+        );
     }
 }

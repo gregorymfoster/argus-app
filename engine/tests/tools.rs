@@ -226,6 +226,19 @@ fn cull_shoot_defaults_to_the_newest_shoot_and_passes_provider_choice() {
         "cull_shoot",
         json!({ "provider": "ollama", "compute": "gentle", "check": "model" }),
     );
+    // The model only sees doubtful frames, and these three are sound, so it rejects nothing.
+    assert_eq!(
+        (r["picks"].as_u64(), r["rejects"].as_u64()),
+        (Some(0), Some(0))
+    );
+    let _env = crate::env_lock();
+    std::env::set_var("ARGUS_CULL_ASK", "all");
+    let r = json1(
+        &tools,
+        "cull_shoot",
+        json!({ "provider": "ollama", "compute": "gentle", "check": "model" }),
+    );
+    std::env::remove_var("ARGUS_CULL_ASK");
     assert_eq!(
         (
             r["picks"].as_u64(),
@@ -243,6 +256,85 @@ fn cull_shoot_defaults_to_the_newest_shoot_and_passes_provider_choice() {
             .len(),
         3
     );
+}
+
+#[test]
+fn stack_bursts_stacks_near_identical_frames_without_a_model() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("2026-10-12_tahoe");
+    write_jpeg(&src.join("p00.jpg"), 320, 240, 3);
+    // The same frame again, one pixel apart, so Import keeps both.
+    let mut retry: Vec<u8> = (0..320 * 240 * 3)
+        .map(|i| (i as u8).wrapping_mul(3))
+        .collect();
+    retry[0] ^= 0xff;
+    jpeg_encoder::Encoder::new_file(src.join("p01.jpg"), 90)
+        .unwrap()
+        .encode(&retry, 320, 240, jpeg_encoder::ColorType::Rgb)
+        .unwrap();
+    let tools = Tools::new(tmp.path().join("Argus.library"))
+        .with_providers(|name, _| panic!("asked the model {name:?}"));
+    json1(&tools, "import_folder", json!({ "folder": src }));
+    // Both frames have the same capture time, so the list's order between them can vary.
+    let mut ids = ids(&tools);
+    ids.sort();
+
+    let stacks = json1(&tools, "stack_bursts", json!({ "shoot_id": 1 }));
+    let stack: Vec<i64> = serde_json::from_value(stacks[0].clone()).unwrap();
+    let mut sorted = stack.clone();
+    sorted.sort();
+    assert_eq!(sorted, ids, "{stacks}");
+    assert_eq!(
+        json1(&tools, "list_stacks", json!({ "shoot_id": 1 })),
+        stacks
+    );
+}
+
+#[test]
+fn rerate_shoot_counts_the_persons_flags_and_asks_no_model() {
+    let (_tmp, tools) = library(3);
+    let tools = tools.with_providers(|name, _| panic!("asked the model {name:?}"));
+    let ids = ids(&tools);
+    json1(
+        &tools,
+        "set_verdict",
+        json!({ "photo_ids": [ids[0]], "verdict": "pick", "as": "person" }),
+    );
+    json1(
+        &tools,
+        "set_verdict",
+        json!({ "photo_ids": [ids[1]], "verdict": "reject", "reason": "the AI's" }),
+    );
+    let r = json1(&tools, "rerate_shoot", json!({ "shoot_id": 1 }));
+    assert_eq!(
+        (&r["shoot_id"], &r["picks"], &r["rejects"], &r["learning"]),
+        (&json!(1), &json!(1), &json!(0), &json!(false)),
+        "only the person's flags count, and one is too few to learn from: {r}"
+    );
+    assert!(tools
+        .call("rerate_shoot", json!({ "shoot_id": 99 }))
+        .is_err());
+}
+
+#[test]
+fn rank_presets_queues_one_job_per_shoot() {
+    let (_tmp, tools) = library(2);
+    let r = json1(&tools, "rank_presets", json!({ "shoot_id": 1 }));
+    assert_eq!(r["status"], "queued", "{r}");
+    assert_eq!(r["created"], true);
+    let again = json1(
+        &tools,
+        "rank_presets",
+        json!({ "shoot_id": 1, "now": true }),
+    );
+    assert_eq!(
+        (&again["job_id"], &again["created"]),
+        (&r["job_id"], &json!(false)),
+        "asking again reuses the queued job"
+    );
+    assert!(tools
+        .call("rank_presets", json!({ "shoot_id": 99 }))
+        .is_err());
 }
 
 #[test]
@@ -527,4 +619,105 @@ fn import_can_auto_tone_and_queue_the_cull() {
         kinds.contains(&"check_shoot") && kinds.contains(&"suggest_shoot"),
         "{kinds:?}"
     );
+}
+
+/// Lightroom's Create Preset: the person's own Presets are saved from a Photo, set rather
+/// than add, reset the rest of their groups, scale with Amount and replace a built-in Look.
+#[test]
+fn your_own_presets_save_apply_and_go() {
+    let (_tmp, tools) = library(2);
+    let ids = ids(&tools);
+    let (a, b) = (ids[0], ids[1]);
+    let write = |id: i64, global: Value| {
+        json1(
+            &tools,
+            "write_recipe",
+            json!({ "photo_ids": [id], "recipe": { "schema": 1, "global": global } }),
+        );
+    };
+    write(
+        a,
+        json!({ "exposure": 0.7, "contrast": 20, "clarity": 15, "temp": 10 }),
+    );
+    write(
+        b,
+        json!({ "exposure": -0.3, "shadows": 40, "temp": -5, "texture": 10 }),
+    );
+    let global = |id: i64| {
+        json1(&tools, "read_recipe", json!({ "photo_id": id }))["recipe"]["global"].clone()
+    };
+    let num = |g: &Value, k: &str| g[k].as_f64().unwrap_or(0.0);
+
+    let saved = json1(
+        &tools,
+        "save_preset",
+        json!({ "name": "Tahoe light", "photo_id": a, "groups": ["light", "effects"] }),
+    );
+    let id = saved["id"].as_str().unwrap().to_string();
+    assert_eq!(id, "yours-tahoe-light");
+    let list = json1(&tools, "list_presets", json!({}));
+    assert_eq!(list["groups"][0], "Yours");
+    assert_eq!(list["presets"][0]["id"], id.as_str());
+    assert_eq!(list["presets"][0]["settings"], json!(["light", "effects"]));
+
+    json1(
+        &tools,
+        "apply_preset",
+        json!({ "photo_ids": [b], "preset": id }),
+    );
+    let g = global(b);
+    assert_eq!(
+        (num(&g, "exposure"), num(&g, "contrast"), num(&g, "clarity")),
+        (0.7, 20.0, 15.0)
+    );
+    assert_eq!(
+        (num(&g, "shadows"), num(&g, "texture")),
+        (0.0, 0.0),
+        "the rest of its groups goes to neutral"
+    );
+    assert_eq!(num(&g, "temp"), -5.0, "White balance wasn't in it");
+
+    json1(
+        &tools,
+        "apply_preset",
+        json!({ "photo_ids": [b], "preset": id, "amount": 50 }),
+    );
+    let g = global(b);
+    assert_eq!(
+        (num(&g, "exposure"), num(&g, "shadows")),
+        (0.2, 20.0),
+        "Amount moves from the Photo's value toward the Preset's"
+    );
+
+    json1(
+        &tools,
+        "apply_preset",
+        json!({ "photo_ids": [b], "preset": "natural" }),
+    );
+    let r = json1(&tools, "read_recipe", json!({ "photo_id": b }))["recipe"].clone();
+    assert_eq!(
+        r["presets"].as_array().unwrap().len(),
+        1,
+        "a built-in Look replaces it: {r}"
+    );
+    assert_eq!(num(&r["global"], "texture"), 10.0, "and it came off first");
+
+    let dup = tools
+        .call(
+            "save_preset",
+            json!({ "name": "tahoe LIGHT", "photo_id": b }),
+        )
+        .unwrap_err();
+    assert!(dup.to_string().contains("already"), "{dup}");
+    let renamed = json1(&tools, "save_preset", json!({ "id": id, "name": "Lake" }));
+    assert_eq!(
+        (renamed["id"].as_str(), renamed["name"].as_str()),
+        (Some(id.as_str()), Some("Lake"))
+    );
+    json1(&tools, "delete_preset", json!({ "id": id }));
+    let list = json1(&tools, "list_presets", json!({}));
+    assert_ne!(list["groups"][0], "Yours");
+    assert!(tools
+        .call("apply_preset", json!({ "photo_ids": [b], "preset": id }))
+        .is_err());
 }

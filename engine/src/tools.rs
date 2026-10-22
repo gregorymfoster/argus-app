@@ -150,7 +150,8 @@ impl Tools {
         let p = find_photo(&lib, photo_id)?;
         let base = with_look(&lib, &p, &crate::auto::cleared(own))?;
         let masks = render::masks_for(&lib, &p, &base);
-        let auto = crate::auto::auto_adjust(
+        let head = crate::auto::head_input(&lib, &p);
+        let auto = crate::auto::auto_adjust_for(
             |s| {
                 let r = Recipe {
                     global: base.global.plus(s),
@@ -159,6 +160,7 @@ impl Tools {
                 render::render_photo(&p, &r, Some(crate::auto::MEASURE_EDGE), masks.clone())
             },
             p.kind == "raw",
+            head.as_ref(),
         )?;
         Ok(crate::auto::applied(own, &auto))
     }
@@ -261,6 +263,7 @@ impl Tools {
                             a.cull,
                         ),
                         ("suggest_shoot", a.suggest.unwrap_or(a.cull)),
+                        ("tag_photos", a.tag.unwrap_or(a.cull)),
                     ];
                     let mut args = json!({ "shoot_id": shoot });
                     if let Some(p) = &a.provider {
@@ -282,6 +285,7 @@ impl Tools {
             }
             "library_storage" => one(lib.storage()?),
             "clear_cache" => one(lib.clear_cache()?),
+            "learn_edit_head" => one(crate::edit_head::learn_library(&lib)?),
             "usage_log" => {
                 let a: UsageLogArgs = parse(args)?;
                 if let Some(on) = a.recording {
@@ -369,6 +373,155 @@ impl Tools {
                 let a: SetRating = parse(args)?;
                 set_rating(&mut lib, a, batch)
             }
+            "read_tags" => {
+                let a: PhotoIds = parse(args)?;
+                one(lib.tags(&a.photo_ids)?)
+            }
+            "set_keywords" => {
+                let a: SetKeywords = parse(args)?;
+                let add = keywords_arg(&a.add)?;
+                let remove = keywords_arg(&a.remove)?;
+                let accept = a.accept.as_deref().map(keywords_arg).transpose()?;
+                let mut changed = 0;
+                if !add.is_empty() {
+                    changed += lib.add_keywords(&a.photo_ids, &add)?.changed;
+                }
+                if !remove.is_empty() {
+                    changed += lib.remove_keywords(&a.photo_ids, &remove)?.changed;
+                }
+                if a.accept_all {
+                    changed += lib.accept_tags(&a.photo_ids, None)?.changed;
+                } else if let Some(k) = &accept {
+                    changed += lib.accept_tags(&a.photo_ids, Some(k))?.changed;
+                }
+                one(json!({ "changed": changed, "tags": lib.tags(&a.photo_ids)? }))
+            }
+            "set_caption" => {
+                let a: SetCaption = parse(args)?;
+                let r = lib.set_caption(&a.photo_ids, &a.text)?;
+                one(json!({ "changed": r.changed, "tags": lib.tags(&a.photo_ids)? }))
+            }
+            "meaning_model" => {
+                let a: MeaningModel = parse(args)?;
+                let mut v = json!(crate::meaning::status());
+                if a.download && !crate::meaning::available() {
+                    let (job, _) =
+                        jobs::enqueue(&mut lib, "download_model", &json!({}), None, None)?;
+                    v["job_id"] = json!(job);
+                }
+                one(v)
+            }
+            "search_photos" => {
+                let a: SearchPhotos = parse(args)?;
+                let hits = crate::meaning::search(&lib, &a.query, a.shoot_id)?;
+                let shoots: std::collections::BTreeSet<ShootId> =
+                    hits.iter().map(|h| h.shoot_id).collect();
+                let last = a.query.split_whitespace().last().unwrap_or("");
+                let keywords = lib.keyword_counts(Some(last), 5)?;
+                let count = hits.len();
+                let photos: Vec<Value> = hits
+                    .into_iter()
+                    .take(a.limit.unwrap_or(24))
+                    .map(|h| {
+                        let p = find_photo(&lib, h.photo_id)?;
+                        let preview = p.preview.strip_prefix(lib.root()).unwrap_or(&p.preview).to_string_lossy().replace('\\', "/");
+                        Ok(json!({ "photo_id": h.photo_id, "shoot_id": h.shoot_id, "file_name": p.file_name,
+                                   "preview": preview, "score": h.score, "matched": h.matched }))
+                    })
+                    .collect::<Result<_>>()?;
+                one(
+                    json!({ "count": count, "shoots": shoots.len(), "photos": photos, "keywords": keywords }),
+                )
+            }
+            "list_albums" => {
+                let albums: Vec<Value> = lib
+                    .albums()?
+                    .into_iter()
+                    .map(|al| {
+                        let n = album_photos(&lib, &al.query).map(|p| p.len()).unwrap_or(0);
+                        let mut v = json!(al);
+                        v["photos"] = json!(n);
+                        v
+                    })
+                    .collect();
+                one(albums)
+            }
+            "save_album" => {
+                let a: SaveAlbum = parse(args)?;
+                one(lib.save_album(&a.name, &json!({ "text": a.query }))?)
+            }
+            "edit_album" => {
+                let a: EditAlbum = parse(args)?;
+                let q = a.query.as_ref().map(|t| json!({ "text": t }));
+                lib.edit_album(a.album_id, a.name.as_deref(), q.as_ref())?;
+                one(json!({ "album_id": a.album_id }))
+            }
+            "delete_album" => {
+                let a: AlbumArg = parse(args)?;
+                lib.delete_album(a.album_id)?;
+                one(json!({ "deleted": a.album_id }))
+            }
+            "list_keywords" => {
+                let a: ListKeywords = parse(args)?;
+                one(lib.keyword_counts(a.prefix.as_deref(), a.limit.unwrap_or(50))?)
+            }
+            "list_people" => one(crate::people::overview(&lib)?),
+            "read_faces" => {
+                let (job, photos) = crate::people::read_faces(&mut lib)?;
+                one(json!({ "job_id": job, "photos": photos }))
+            }
+            "get_person" => {
+                let a: PersonArg = parse(args)?;
+                one(crate::people::person(&lib, a.person_id)?)
+            }
+            "name_faces" => {
+                let a: NameFaces = parse(args)?;
+                one(lib.name_faces(&a.faces, &a.name)?)
+            }
+            "hide_faces" => {
+                let a: HideFaces = parse(args)?;
+                one(json!({ "changed": lib.hide_faces(&a.faces, !a.unhide)? }))
+            }
+            "not_person" => {
+                let a: NotPerson = parse(args)?;
+                one(json!({ "changed": lib.not_person(&a.faces, a.person_id)? }))
+            }
+            "rename_person" => {
+                let a: RenamePerson = parse(args)?;
+                one(lib.rename_person(a.person_id, &a.name)?)
+            }
+            "tag_photos" => {
+                let a: TagPhotos = parse(args)?;
+                if a.wait {
+                    let chat = self.chat(
+                        a.provider.as_deref(),
+                        Some(Compute::from_env()),
+                        crate::tagging::schema(),
+                    )?;
+                    let photos =
+                        crate::tagging::photos(&lib, a.shoot_id, a.photo_ids.as_deref(), a.redo)?;
+                    drop(lib);
+                    let n = crate::tagging::tag(&self.library, chat.as_ref(), &photos, &|_, _| {})?;
+                    let lib = Library::open(&self.library)?;
+                    return one(
+                        json!({ "status": "ready", "tagged": n, "tags": lib.tags(&photos)? }),
+                    );
+                }
+                let mut args = json!({ "redo": a.redo });
+                if let Some(s) = a.shoot_id {
+                    args["shoot_id"] = json!(s);
+                }
+                if let Some(p) = &a.photo_ids {
+                    args["photo_ids"] = json!(p);
+                }
+                if let Some(p) = &a.provider {
+                    args["provider"] = json!(p);
+                }
+                let priority = a.now.then_some(jobs::PRIORITY_FOCUS);
+                let (job_id, created) =
+                    jobs::enqueue(&mut lib, "tag_photos", &args, priority, None)?;
+                one(json!({ "status": "queued", "job_id": job_id, "created": created }))
+            }
             "best_photos" => {
                 let a: BestPhotos = parse(args)?;
                 let shoot = match a.shoot_id {
@@ -435,6 +588,10 @@ impl Tools {
                     },
                 )?)
             }
+            "rerate_shoot" => {
+                let a: ShootArg = parse(args)?;
+                one(cull::rerate(&mut lib, a.shoot_id)?)
+            }
             "read_recipe" => {
                 let a: PhotoArg = parse(args)?;
                 find_photo(&lib, a.photo_id)?;
@@ -494,6 +651,12 @@ impl Tools {
                 list_presets(&lib, a.shoot_id)
             }
             "apply_preset" => apply_preset(&mut lib, parse(args)?, batch),
+            "save_preset" => save_preset(&lib, parse(args)?),
+            "delete_preset" => {
+                let a: DeletePreset = parse(args)?;
+                crate::presets::delete(&lib, &a.id)?;
+                one(json!({ "deleted": a.id }))
+            }
             "rank_presets" => {
                 let a: RankPresets = parse(args)?;
                 shoot_photos(&lib, a.shoot_id)?;
@@ -592,6 +755,7 @@ impl Tools {
                 one(json!({ "batch_id": batch, "version": version, "local": r.local }))
             }
             "view_mask" => view_mask(&lib, parse(args)?),
+            "view_depth" => view_depth(&lib, parse(args)?),
             "add_spot" => add_spot(&mut lib, parse(args)?, batch),
             "edit_spot" => edit_spot(&mut lib, parse(args)?, batch),
             "remove_spot" => remove_spot(&mut lib, parse(args)?, batch),
@@ -841,7 +1005,7 @@ fn specs() -> Vec<ToolSpec> {
                 "copy": { "type": "boolean",
                     "description": "Copy the originals into the Library's originals folder (verified) instead of reading them in place. Default: true from a memory card, false from a folder" },
                 "cull": { "type": "boolean",
-                    "description": "Then queue an AI cull and edit Suggestions for the new Shoot" },
+                    "description": "Then queue an AI cull, edit Suggestions, and suggested captions and Keywords for the new Shoot" },
                 "auto": { "type": "boolean",
                     "description": "Then run Auto (as auto_edit) on every new Photo, as one undoable batch" },
                 "provider": { "type": "string", "description": "ollama, claude-code or claude-api; default ARGUS_PROVIDER, else ollama" } } }),
@@ -863,6 +1027,12 @@ fn specs() -> Vec<ToolSpec> {
             description: "Where the Library folder is and how much disk each part takes: originals copied into it, originals read from elsewhere, previews, cache, database and backups, plus how many originals are missing (moved or on a disconnected disk) and the free space on its disk.",
             input_schema: json!({ "type": "object", "properties": {} }),
             read_only: true,
+        },
+        ToolSpec {
+            name: "learn_edit_head",
+            description: "Learn this Library's own Edit head from every RAW the person has exported: what Auto makes of each against the sliders they finished it with, on top of the head Argus ships. Auto uses it when the Edit head is on. Returns how many edits it learned from and the average offset from Auto it now adds.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+            read_only: false,
         },
         ToolSpec {
             name: "clear_cache",
@@ -944,6 +1114,134 @@ fn specs() -> Vec<ToolSpec> {
             read_only: false,
         },
         ToolSpec {
+            name: "read_tags",
+            description: "Each Photo's caption and Keywords, Lightroom style: hierarchical paths under a Facet (People, Places, Events, Activities, Subjects), e.g. Places|Portugal|Lisbon. Each says who added it and whether it is still an AI suggestion the person hasn't kept. Dismissed suggestions are left out.",
+            input_schema: json!({ "type": "object", "required": ["photo_ids"], "properties": { "photo_ids": ids } }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "set_keywords",
+            description: TAGGING_DOC,
+            input_schema: json!({ "type": "object", "required": ["photo_ids"], "properties": {
+                "photo_ids": ids,
+                "add": { "type": "array", "items": { "type": "string" }, "description": "Keywords to add, kept at once" },
+                "remove": { "type": "array", "items": { "type": "string" }, "description": "Keywords to take off (an AI suggestion is dismissed)" },
+                "accept": { "type": "array", "items": { "type": "string" }, "description": "AI suggestions to keep" },
+                "accept_all": { "type": "boolean", "description": "Keep every AI suggestion, caption included" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "set_caption",
+            description: "Set the caption (IPTC Description: one or two plain sentences saying who, what, where) of Photos, as the person's own. Empty text removes it. Written to the XMP sidecar on export.",
+            input_schema: json!({ "type": "object", "required": ["photo_ids", "text"], "properties": {
+                "photo_ids": ids, "text": { "type": "string" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "search_photos",
+            description: "Find Photos by words, best first: every word must match the start of a word in a Photo's Keywords (kept ones count most, AI suggestions too), its caption, its file name or its Shoot's name. Returns how many matched and in how many Shoots, the best `limit` (default 24) with what matched, and Library Keywords that start like the last word.",
+            input_schema: json!({ "type": "object", "required": ["query"], "properties": {
+                "query": { "type": "string" }, "shoot_id": id, "limit": { "type": "integer", "minimum": 1 } } }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "meaning_model",
+            description: "Whether search by meaning (finding Photos that look like the words, not only by Keywords) is installed: its model is a one-time 407 MB download into the models folder. `download: true` queues the download (progress on the Queue), after which every Photo is analysed so search can find it.",
+            input_schema: json!({ "type": "object", "properties": { "download": { "type": "boolean" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "list_albums",
+            description: "The Library's Albums: saved searches (like Lightroom's smart collections) shown in the sidebar, each with its query and how many Photos it finds now.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "save_album",
+            description: "Save a search (search_photos words) as an Album. It finds its Photos again each time, so it keeps up with Imports and new Keywords.",
+            input_schema: json!({ "type": "object", "required": ["name", "query"], "properties": {
+                "name": { "type": "string" }, "query": { "type": "string" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "edit_album",
+            description: "Rename an Album, or change the search it saves.",
+            input_schema: json!({ "type": "object", "required": ["album_id"], "properties": {
+                "album_id": id, "name": { "type": "string" }, "query": { "type": "string" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "delete_album",
+            description: "Delete an Album. Its Photos stay in the Library.",
+            input_schema: json!({ "type": "object", "required": ["album_id"], "properties": { "album_id": id } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "list_keywords",
+            description: "Keywords in use across the Library, most used first, with how many Photos keep each. prefix narrows to those whose path or any level starts with it. Reuse these names when tagging so the Library stays consistent.",
+            input_schema: json!({ "type": "object", "properties": {
+                "prefix": { "type": "string" }, "limit": { "type": "integer", "minimum": 1 } } }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "list_people",
+            description: "The People view: everyone the person has named (with how many Photos and a cover face), and groups of unnamed faces that look like one person, biggest first, each with the named person it looks most like (maybe) when alike enough to ask. Faces are {photo_id, face}, face numbered from 0 left to right as analyze_photo lists them. Grouping runs on this Mac and never names anyone.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "read_faces",
+            description: "Queue the face models for Photos whose faces aren't read yet (list_people counts them as unread_photos), so they join the People view. Runs in the background Queue at the Compute level.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "get_person",
+            description: "One named person: their Photos in capture order, their faces, and unnamed faces that might be them (suggestions, most alike first) for the person to confirm with name_faces or turn down with not_person.",
+            input_schema: json!({ "type": "object", "required": ["person_id"], "properties": { "person_id": id } }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "name_faces",
+            description: "Name faces as someone: only with a name the person gave you, never one you guessed. A new name makes a person; an existing one (any case) adds to them. Each Photo keeps the Keyword People|<name>.",
+            input_schema: json!({ "type": "object", "required": ["faces", "name"], "properties": {
+                "faces": json!({ "type": "array", "minItems": 1, "items": { "type": "object", "required": ["photo_id", "face"],
+                "properties": { "photo_id": { "type": "integer" }, "face": { "type": "integer", "minimum": 0 } } } }), "name": { "type": "string" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "hide_faces",
+            description: "Hide faces from the People view as not someone to name (strangers, a poster), taking any name off them; unhide brings them back to name.",
+            input_schema: json!({ "type": "object", "required": ["faces"], "properties": {
+                "faces": json!({ "type": "array", "minItems": 1, "items": { "type": "object", "required": ["photo_id", "face"],
+                "properties": { "photo_id": { "type": "integer" }, "face": { "type": "integer", "minimum": 0 } } } }), "unhide": { "type": "boolean" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "not_person",
+            description: "The person says these faces aren't this person: they're unnamed if they were, and never suggested as them again.",
+            input_schema: json!({ "type": "object", "required": ["faces", "person_id"], "properties": {
+                "faces": json!({ "type": "array", "minItems": 1, "items": { "type": "object", "required": ["photo_id", "face"],
+                "properties": { "photo_id": { "type": "integer" }, "face": { "type": "integer", "minimum": 0 } } } }), "person_id": id } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "rename_person",
+            description: "Rename a person, and the People Keyword on their Photos. A name someone else already has merges the two.",
+            input_schema: json!({ "type": "object", "required": ["person_id", "name"], "properties": {
+                "person_id": id, "name": { "type": "string" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "tag_photos",
+            description: "The AI suggests a caption and Keywords for Photos (a Shoot's, rejects skipped, or photo_ids), one model call per Photo. Suggestions stay dashed until the person keeps them; the AI never names People. Photos it tagged before are skipped unless redo. Queued in the background (it waits for an idle Mac on the local model) unless wait is true, which runs it now; now puts the queued job first.",
+            input_schema: json!({ "type": "object", "properties": {
+                "shoot_id": id, "photo_ids": ids, "redo": { "type": "boolean" },
+                "wait": { "type": "boolean" }, "now": { "type": "boolean" },
+                "provider": { "type": "string", "enum": ["ollama", "claude-code", "claude-api"] } } }),
+            read_only: false,
+        },
+        ToolSpec {
             name: "best_photos",
             description: "A Shoot's Best Photos, best first: the AI cull's short list of the strongest frames (about one in ten, at most one per Stack), leaving out any the person rejected. Empty until the Shoot is culled.",
             input_schema: json!({ "type": "object", "properties": {
@@ -985,6 +1283,12 @@ fn specs() -> Vec<ToolSpec> {
             read_only: false,
         },
         ToolSpec {
+            name: "rerate_shoot",
+            description: "Learn as you cull: refresh a culled Shoot's AI star Ratings from the person's own Picks and Rejects so far (here and on other Shoots), so the likely keepers rise. Only the AI's stars change, never flags, Stacks, Best Photos or the person's stars; not an undo step. Takes under a second.",
+            input_schema: json!({ "type": "object", "required": ["shoot_id"], "properties": { "shoot_id": id } }),
+            read_only: false,
+        },
+        ToolSpec {
             name: "read_recipe",
             description: "Read a Photo's current Recipe (its JSON edit settings) and Version, or null if it was never edited.",
             input_schema: json!({ "type": "object", "required": ["photo_id"], "properties": { "photo_id": id } }),
@@ -1020,7 +1324,7 @@ fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "list_presets",
-            description: "Argus's built-in Presets, as in Lightroom's Presets panel: groups (Essentials, Portrait, Landscape, Film, Cinematic, Vintage, Black and white, Seasons, Subject, and Adaptive ones that add Masks for faces, sky or subject) with each Preset's id, name and what it suits. With shoot_id, also the order the AI suggests for that Shoot when one has been worked out (rank_presets).",
+            description: "Argus's Presets, as in Lightroom's Presets panel: the person's own (group Yours, saved with save_preset, each with the settings groups it holds) first, then the built-in groups (Essentials, Portrait, Landscape, Film, Cinematic, Vintage, Black and white, Seasons, Subject, and Adaptive ones that add Masks for faces, sky or subject) with each Preset's id, name and what it suits. With shoot_id, also the order the AI suggests for that Shoot when one has been worked out (rank_presets).",
             input_schema: json!({ "type": "object", "properties": { "shoot_id": id } }),
             read_only: true,
         },
@@ -1039,6 +1343,20 @@ fn specs() -> Vec<ToolSpec> {
                 "photo_ids": ids, "preset": { "type": "string" },
                 "amount": { "type": "number", "minimum": 0, "maximum": 200 },
                 "remove": { "type": "boolean" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "save_preset",
+            description: "Lightroom's Create Preset: save one Photo's settings (as it looks, Look included) as one of the person's own Presets, group Yours, kept in the Library. groups are the settings groups it holds: wb, light, color, effects, detail, optics, calibration, retouch, masks; by default all but wb and masks. Applied with apply_preset, its settings are set rather than added, a setting of those groups it leaves out goes back to neutral, and amount moves each from the Photo's value toward it. With id as well as photo_id it updates that Preset with the Photo's settings; with id and no photo_id it only renames it. Names are unique among the person's Presets.",
+            input_schema: json!({ "type": "object", "required": ["name"], "properties": {
+                "name": { "type": "string" }, "photo_id": id, "id": { "type": "string" },
+                "groups": { "type": "array", "items": { "enum": crate::presets::PRESET_GROUPS } } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "delete_preset",
+            description: "Delete one of the person's own Presets (group Yours). Photos it was applied to keep their settings.",
+            input_schema: json!({ "type": "object", "required": ["id"], "properties": { "id": { "type": "string" } } }),
             read_only: false,
         },
         ToolSpec {
@@ -1161,7 +1479,7 @@ fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "enqueue_job",
-            description: "Queue background AI work. kind: suggest {photo_id, count?, reference_id?, look_id?}, suggest_shoot {shoot_id?, photo_ids?, count?, redo?}, match_hero {photo_id, photo_ids?}, cull_shoot (or rate_shoot) {shoot_id?}, render_previews {shoot_id?}, analyze {shoot_id?, photo_ids?} (the specialist models' Facts). Asking twice for the same thing returns the queued job.",
+            description: "Queue background AI work. kind: suggest {photo_id, count?, reference_id?, look_id?}, suggest_shoot {shoot_id?, photo_ids?, count?, redo?}, match_hero {photo_id, photo_ids?}, cull_shoot (or rate_shoot) {shoot_id?}, tag_photos {shoot_id?, photo_ids?, redo?} (captions and Keywords), render_previews {shoot_id?}, analyze {shoot_id?, photo_ids?} (the specialist models' Facts). Asking twice for the same thing returns the queued job.",
             input_schema: json!({ "type": "object", "required": ["kind"], "properties": {
                 "kind": { "type": "string", "enum": jobs::KINDS },
                 "args": { "type": "object" },
@@ -1247,13 +1565,16 @@ fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "export_photos",
-            description: "Export Photos into a folder on this Mac (created if missing), as Lightroom's Export does: JPEG or TIFF rendered with each Photo's edits and Look, or the untouched original plus an XMP sidecar Lightroom reads. Names never contain spaces and nothing is overwritten (an existing name gets -2). JPEGs keep capture metadata but never location. Photos that fail are listed under failed; the rest still export.",
+            description: "Export Photos into a folder on this Mac (created if missing), as Lightroom's Export does: JPEG, HEIC (macOS only) or TIFF rendered with each Photo's edits and Look, or the untouched original plus an XMP sidecar Lightroom reads. Names never contain spaces and nothing is overwritten (an existing name gets -2). JPEGs keep capture metadata but never location. Photos that fail are listed under failed; the rest still export.",
             input_schema: json!({ "type": "object", "required": ["photo_ids", "folder"], "properties": {
                 "photo_ids": ids,
                 "folder": { "type": "string", "description": "Export location: an absolute path, or starting with ~/" },
-                "format": { "enum": ["jpeg", "tiff", "original"], "description": "Default jpeg" },
+                "format": { "enum": ["jpeg", "heic", "tiff", "original"], "description": "Default jpeg; heic needs macOS" },
                 "long_edge": { "type": "integer", "minimum": 64, "description": "Pixels; full size if omitted" },
-                "quality": { "type": "integer", "minimum": 50, "maximum": 100, "description": "JPEG quality, default 90" },
+                "short_edge": { "type": "integer", "minimum": 64, "description": "Pixels on the short side instead (1080 for Instagram); never upscales" },
+                "megapixels": { "type": "number", "exclusiveMinimum": 0, "description": "Size by megapixels instead; never upscales" },
+                "sharpen": { "enum": ["low", "standard", "high"], "description": "Output sharpening for screen, as Lightroom's Export; off if omitted" },
+                "quality": { "type": "integer", "minimum": 50, "maximum": 100, "description": "JPEG and HEIC quality, default 90" },
                 "naming": { "enum": ["shoot", "sequence", "original"],
                     "description": "shoot (default): 2026-10-18_Boat-Trip_DSC08005; sequence: 2026-10-18_Boat-Trip_001; original: DSC08005" },
                 "shoot_folder": { "type": "boolean", "description": "Put files in a folder named after their Shoot inside folder (default true)" },
@@ -1276,18 +1597,20 @@ fn specs() -> Vec<ToolSpec> {
                 "mask": { "type": "object", "description": "e.g. {\"kind\": \"sky\"}, {\"kind\": \"faces\", \"face\": 0}, {\"kind\": \"radial\", \"x\": 0.5, \"y\": 0.4, \"rx\": 0.2, \"ry\": 0.3}" },
                 "adjust": { "type": "object", "additionalProperties": { "type": "number" },
                     "description": "Slider deltas inside the Mask, same paths and units as edit_recipe, e.g. {\"exposure\": -0.3, \"highlights\": -20}" },
-                "name": { "type": "string", "description": "Shown to the person, e.g. \"Sky\" or \"Her face\"" } } }),
+                "name": { "type": "string", "description": "Shown to the person, e.g. \"Sky\" or \"Her face\"" },
+                "amount": { "type": "number", "description": "Lightroom's Mask Amount, 0..200 percent (default 100): scales the whole adjustment" } } }),
             read_only: false,
         },
         ToolSpec {
             name: "edit_mask",
-            description: "Change one local adjustment: its sliders (set, same paths as edit_recipe; relative adds), its Mask, or its name. Ids are in read_recipe's local list.",
+            description: "Change one local adjustment: its sliders (set, same paths as edit_recipe; relative adds), its Amount (0..200, Lightroom's), its Mask, or its name. Ids are in read_recipe's local list.",
             input_schema: json!({ "type": "object", "required": ["photo_id", "local_id"], "properties": {
                 "photo_id": id, "local_id": { "type": "string" },
                 "set": { "type": "object", "additionalProperties": { "type": "number" } },
                 "relative": { "type": "boolean" },
                 "mask": { "type": "object", "description": "Replaces the Mask" },
-                "name": { "type": "string" } } }),
+                "name": { "type": "string" },
+                "amount": { "type": "number", "description": "0..200 percent, 100 is the sliders as set" } } }),
             read_only: false,
         },
         ToolSpec {
@@ -1307,6 +1630,16 @@ fn specs() -> Vec<ToolSpec> {
                 "long_edge": { "type": "integer", "minimum": 64, "maximum": MAX_PREVIEW_EDGE },
                 "as": { "type": "string", "enum": ["overlay", "weights"],
                     "description": "overlay (default): tinted over the render; weights: the Mask alone as greyscale, white = full" } } }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "view_depth",
+            description: "Lens Blur's depth map for a Photo (computed the first time, a few seconds): an image from cool (far) to warm (near) with what's outside the focal range dimmed, the focal range lensBlur uses now (0 far .. 100 near), a histogram of depths far to near, and with x, y the focal range around that point (Lightroom's point focus) to set as lensBlur.focus.",
+            input_schema: json!({ "type": "object", "required": ["photo_id"], "properties": {
+                "photo_id": id,
+                "x": { "type": "number", "minimum": 0, "maximum": 1, "description": "A point to focus on, 0..1 of the uncropped upright width" },
+                "y": { "type": "number", "minimum": 0, "maximum": 1 },
+                "long_edge": { "type": "integer", "minimum": 64, "maximum": MAX_PREVIEW_EDGE } } }),
             read_only: true,
         },
         ToolSpec {
@@ -1358,8 +1691,12 @@ subject (every person), background (all but the people), faces (face skin; \"fac
 skin (face and body skin), hair, sky; \
 person {person?: n, parts: [face_skin|body_skin|eyes|teeth|hair|whole]} (Lightroom's Select People: those parts of person n, or of everyone); \
 brush {dots: [{x, y, r}], erase?: [{x, y, r}]}, linear {from: {x, y}, to: {x, y}} (full at from, none at to), \
-radial {x, y, rx, ry, feather? 0..1 (default 0.5)}. \
-Add \"invert\": true to flip any Mask. x and y are 0..1 of the upright image's width and height; rx is a fraction of the width, ry of the height, a dot's r of the long edge. \
+radial {x, y, rx, ry, feather? 0..1 (default 0.5)}, \
+luminance {lo, hi, smooth?} (tones of the render between lo and hi, 0..1; smooth 0..1 softens the edges, default 0.25), \
+color {points: [{x, y}], range? 0..1 (default 0.5)} (colours like the render's at those points, Lightroom's Color Range). \
+Add \"invert\": true to flip any Mask. Combine Masks with \"components\": [{\"op\": \"add\"|\"subtract\"|\"intersect\", \"kind\": ...}], \
+e.g. {\"kind\": \"sky\", \"components\": [{\"op\": \"intersect\", \"kind\": \"luminance\", \"lo\": 0.6, \"hi\": 1}]} for only the bright sky, \
+or {\"kind\": \"subject\", \"components\": [{\"op\": \"subtract\", \"kind\": \"faces\"}]} for clothes and hair but not faces. x and y are 0..1 of the upright image's width and height; rx is a fraction of the width, ry of the height, a dot's r of the long edge. \
 AI kinds come from local models on this Mac and follow the image's edges.";
 
 const ADD_SPOT_DOC: &str = "Lightroom's Heal and Clone: cover a small circle (a blemish, a stray hair, sensor dust, a speck in the sky) \
@@ -1394,6 +1731,7 @@ noise 0..100 luminance noise reduction with noiseDetail (default 50) and noiseCo
 denoise 0..100 is AI Denoise (RAW only, like Lightroom's Denoise; 0 = off, 50 is a good start for high-ISO indoor and night shots, higher looks smoother and waxier): far cleaner than noise, which it replaces. The first time it runs the model over the whole frame as a background job (minutes); renders show it once that finishes. \
 OPTICS: lensCorrections \"camera\" (default: the corrections the camera made to its own JPEG, from the lens data Sony writes into each ARW), \"on\" (distortion, vignetting and chromatic aberration from that data) or \"off\"; removeCA 1 removes lateral chromatic aberration; defringePurple, defringeGreen 0..20 take colour out of fringes at strong edges; distortion -100..100 (+ straightens barrel); lensVignette -100..100 (+ brightens dark lens corners) with lensVignetteMidpoint (default 50). \
 CALIBRATION: calibration.shadowsTint -100..100 (+ magenta); calibration.<red|green|blue>.<hue|sat> -100..100 shift the camera primaries (blue sat +30 is a popular richer-colour trick). \
+LENS BLUR (Lightroom's, from a depth model; nothing is generated): lensBlur.amount 0..100 (0 = off; 40-60 reads as a fast prime, 100 is very shallow), lensBlur.boost 0..100 (default 50, how much out-of-focus highlights bloom), lensBlur.bokeh \"circle\" | \"bubble\" | \"blade\" | \"ring\", lensBlur.focus [from, to] on depth 0 (farthest) .. 100 (nearest), or null to focus on the subject (the default); lensBlur.focusBrush and lensBlur.blurBrush take brush dots [{x, y, r}] to keep areas sharp or blur them. view_depth shows the depth map, the focal range and the range around a point. \
 RETOUCH: skin (natural smoothing of every person's skin), eyes (brighter, crisper eyes) and teeth (whiter teeth), 0..100, found by local models. \
 correction.exposure (stops) and correction.wbK (Kelvin) for the per-Photo baseline under a Look, and correction.face (stops of light on faces). \
 crop.angle straightens in degrees (-45..45, + turns clockwise); crop.x, crop.y, crop.w, crop.h crop as fractions 0..1 of the \
@@ -1523,13 +1861,14 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
         return Err(Error("no Photos to Auto".into()));
     }
     // What each Photo looks like apart from Auto's sliders: its Recipe over its Look.
-    let jobs: Vec<(Photo, Recipe, Recipe, _)> = photos
+    let jobs: Vec<(Photo, Recipe, Recipe, _, _)> = photos
         .into_iter()
         .map(|p| {
             let own = current_recipe(lib, p.id)?;
             let base = with_look(lib, &p, &crate::auto::cleared(&own))?;
             let masks = render::masks_for(lib, &p, &base);
-            Ok((p, own, base, masks))
+            let head = crate::auto::head_input(lib, &p);
+            Ok((p, own, base, masks, head))
         })
         .collect::<Result<_>>()?;
     let task =
@@ -1539,11 +1878,11 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     let stop = task.stop_flag();
     let results: Vec<(PhotoId, Result<Recipe>)> = pool.install(|| {
         jobs.par_iter()
-            .map(|(p, own, base, masks)| {
+            .map(|(p, own, base, masks, head)| {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     return (p.id, Err(Error(crate::progress::STOPPED.into())));
                 }
-                let auto = crate::auto::auto_adjust(
+                let auto = crate::auto::auto_adjust_for(
                     |s| {
                         // The Look's sliders sit under Auto's, as they do under the person's.
                         let r = Recipe {
@@ -1553,6 +1892,7 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
                         render::render_photo(p, &r, Some(crate::auto::MEASURE_EDGE), masks.clone())
                     },
                     p.kind == "raw",
+                    head.as_ref(),
                 );
                 task.tick();
                 (p.id, auto.map(|s| crate::auto::applied(own, &s)))
@@ -1598,22 +1938,60 @@ struct OptShoot {
 }
 
 fn list_presets(lib: &Library, shoot: Option<ShootId>) -> Result<Vec<Part>> {
-    let presets: Vec<Value> = crate::presets::builtin()
+    let yours = crate::presets::yours(lib)?;
+    let presets: Vec<Value> = yours
         .iter()
+        .chain(crate::presets::builtin())
         .map(|p| {
-            json!({ "id": p.id, "name": p.name, "group": p.group, "why": p.why,
-            "masks": p.local.iter().map(|l| l.mask.clone()).collect::<Vec<_>>() })
+            let mut v = json!({ "id": p.id, "name": p.name, "group": p.group, "why": p.why,
+            "masks": p.local.iter().map(|l| l.mask.clone()).collect::<Vec<_>>() });
+            if p.is_yours() {
+                v["settings"] = json!(p.groups);
+            }
+            v
         })
         .collect();
+    let mut groups: Vec<&str> = crate::presets::groups()
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if !yours.is_empty() {
+        groups.insert(0, crate::presets::YOURS);
+    }
     let ranking = match shoot {
         Some(s) => crate::preset_rank::cached(lib, s)?.map(|r| json!(r)),
         None => None,
     };
-    one(json!({ "groups": crate::presets::groups(), "presets": presets, "ranking": ranking }))
+    one(json!({ "groups": groups, "presets": presets, "ranking": ranking }))
+}
+
+/// Lightroom's Create Preset, Update with current settings and Rename ([`crate::presets`]).
+fn save_preset(lib: &Library, a: SavePreset) -> Result<Vec<Part>> {
+    let p = match (a.photo_id, &a.id) {
+        (None, Some(id)) => crate::presets::rename(lib, id, &a.name)?,
+        (Some(photo_id), _) => {
+            let photo = find_photo(lib, photo_id)?;
+            // What the Photo looks like, its Look included.
+            let recipe = with_look(lib, &photo, &current_recipe(lib, photo_id)?)?;
+            let groups: Vec<&str> = match &a.groups {
+                Some(g) => g.iter().map(String::as_str).collect(),
+                None => crate::presets::default_groups(),
+            };
+            let p = crate::presets::from_recipe(&a.name, &recipe, &groups)?;
+            crate::presets::save(lib, p, a.id.as_deref())?
+        }
+        (None, None) => {
+            return Err(Error(
+                "pass photo_id to save a Preset from, or id to rename one".into(),
+            ))
+        }
+    };
+    one(json!({ "id": p.id, "name": p.name, "group": p.group, "settings": p.groups }))
 }
 
 fn apply_preset(lib: &mut Library, a: ApplyPreset, batch: Option<BatchId>) -> Result<Vec<Part>> {
-    let p = crate::presets::find(&a.preset)?;
+    let yours = crate::presets::yours(lib)?;
+    let p = &crate::presets::find_in(lib, &a.preset)?;
     let amount = a.amount.unwrap_or(100.0).clamp(0.0, 200.0) / 100.0;
     let mut todo = Vec::new();
     for &id in &a.photo_ids {
@@ -1622,7 +2000,7 @@ fn apply_preset(lib: &mut Library, a: ApplyPreset, batch: Option<BatchId>) -> Re
         let r = if a.remove {
             crate::presets::remove(&own, p)?
         } else {
-            crate::presets::apply(&own, p, amount)?
+            crate::presets::apply_among(&own, p, amount, &yours)?
         };
         todo.push((id, r));
     }
@@ -1657,24 +2035,6 @@ pub(crate) fn with_look(lib: &Library, photo: &Photo, recipe: &Recipe) -> Result
         }
     }
     Ok(r)
-}
-
-fn slug(name: &str) -> String {
-    let s: String = name
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let s = s
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if s.is_empty() {
-        "look".into()
-    } else {
-        s
-    }
 }
 
 /// Put Photos under a Look by saving a Recipe Version that names it.
@@ -1719,7 +2079,7 @@ fn set_look(lib: &mut Library, a: SetLook, batch: Option<BatchId>) -> Result<Vec
     let created = existing.is_none();
     let mut look = existing.unwrap_or_else(|| {
         let name = a.name.clone().unwrap_or_else(|| "Shoot Look".into());
-        let mut id = slug(&name);
+        let mut id = crate::naming::id_slug(&name, "look");
         while looks.iter().any(|l| l.id == id) {
             id = format!("{id}-2");
         }
@@ -1860,7 +2220,7 @@ fn paste_settings(
 }
 
 /// The Photo's current Recipe, or an empty one if it was never edited.
-fn current_recipe(lib: &Library, id: PhotoId) -> Result<Recipe> {
+pub(crate) fn current_recipe(lib: &Library, id: PhotoId) -> Result<Recipe> {
     match lib.read_recipe(id)? {
         Some(v) => Recipe::from_value(&v.recipe),
         None => Ok(Recipe::default()),
@@ -1873,6 +2233,9 @@ fn export_photos(lib: &Library, a: ExportPhotos) -> Result<Vec<Part>> {
         shoot_folder: a.shoot_folder.unwrap_or(true),
         format: a.format.unwrap_or_default(),
         long_edge: a.long_edge,
+        short_edge: a.short_edge,
+        megapixels: a.megapixels,
+        sharpen: a.sharpen,
         quality: a.quality.unwrap_or(90),
         naming: a.naming.unwrap_or_default(),
         sequence_start: a.sequence_start.unwrap_or(1).max(1),
@@ -1899,6 +2262,8 @@ fn export_photos(lib: &Library, a: ExportPhotos) -> Result<Vec<Part>> {
             verdict: photo.verdict,
             shoot_name: shoots.get(&photo.shoot_id).map_or("", |s| s.as_str()),
             masks: render::masks_for(lib, photo, recipe),
+            keywords: lib.kept_keywords(photo.id)?,
+            caption: lib.kept_caption(photo.id)?,
         };
         // One Photo failing (its drive offline, say) doesn't stop the rest, as in Lightroom.
         match export::export(&item, &opts, opts.sequence_start + i, total) {
@@ -1916,6 +2281,12 @@ fn export_photos(lib: &Library, a: ExportPhotos) -> Result<Vec<Part>> {
                 exported.push(x)
             }
             Err(e) => failed.push(json!({ "photo_id": photo.id, "error": e.to_string() })),
+        }
+    }
+    // Every finished edit teaches the Library's own Edit head (best-effort, in the Queue).
+    if !exported.is_empty() && a.record.unwrap_or(true) {
+        if let Ok(mut l) = Library::open(lib.root()) {
+            let _ = jobs::enqueue(&mut l, "learn_edits", &json!({}), None, Some("learn_edits"));
         }
     }
     one(json!({ "exported": exported, "failed": failed }))
@@ -1985,6 +2356,7 @@ struct AddMask {
     mask: Value,
     adjust: BTreeMap<String, f64>,
     name: Option<String>,
+    amount: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -1998,6 +2370,7 @@ struct EditMask {
     relative: bool,
     mask: Option<Value>,
     name: Option<String>,
+    amount: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -2009,6 +2382,14 @@ struct ViewMask {
     long_edge: Option<u32>,
     #[serde(rename = "as", default)]
     view: MaskView,
+}
+
+#[derive(Deserialize)]
+struct ViewDepth {
+    photo_id: PhotoId,
+    x: Option<f64>,
+    y: Option<f64>,
+    long_edge: Option<u32>,
 }
 
 #[derive(Deserialize, Default, PartialEq)]
@@ -2025,6 +2406,146 @@ struct ListPhotos {
     shoot_id: Option<ShootId>,
     verdict: Option<Verdict>,
     min_stars: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhotoIds {
+    photo_ids: Vec<PhotoId>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetKeywords {
+    photo_ids: Vec<PhotoId>,
+    #[serde(default)]
+    add: Vec<String>,
+    #[serde(default)]
+    remove: Vec<String>,
+    accept: Option<Vec<String>>,
+    #[serde(default)]
+    accept_all: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetCaption {
+    photo_ids: Vec<PhotoId>,
+    text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchPhotos {
+    query: String,
+    shoot_id: Option<ShootId>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveAlbum {
+    name: String,
+    query: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EditAlbum {
+    album_id: i64,
+    name: Option<String>,
+    query: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MeaningModel {
+    #[serde(default)]
+    download: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AlbumArg {
+    album_id: i64,
+}
+
+/// The Photos an Album's saved query finds now, best first.
+pub(crate) fn album_photos(lib: &Library, query: &Value) -> Result<Vec<PhotoId>> {
+    let text = query["text"].as_str().unwrap_or("");
+    Ok(crate::meaning::search(lib, text, None)?
+        .into_iter()
+        .map(|h| h.photo_id)
+        .collect())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersonArg {
+    person_id: crate::library::PersonId,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NameFaces {
+    faces: Vec<crate::library::FaceRef>,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HideFaces {
+    faces: Vec<crate::library::FaceRef>,
+    #[serde(default)]
+    unhide: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotPerson {
+    faces: Vec<crate::library::FaceRef>,
+    person_id: crate::library::PersonId,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenamePerson {
+    person_id: crate::library::PersonId,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListKeywords {
+    prefix: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TagPhotos {
+    shoot_id: Option<ShootId>,
+    photo_ids: Option<Vec<PhotoId>>,
+    #[serde(default)]
+    redo: bool,
+    #[serde(default)]
+    wait: bool,
+    #[serde(default)]
+    now: bool,
+    provider: Option<String>,
+}
+
+const TAGGING_DOC: &str = "Add, remove or keep Keywords on Photos, as the person asked. Keywords are hierarchical paths joined with |, under People, Places, Events, Activities or Subjects (a path without one goes under Subjects): Places|Portugal|Lisbon, Events|Birthday, Subjects|Animals|dog. Reuse names from list_keywords. add keeps them at once; remove takes them off (an AI suggestion is remembered as dismissed); accept keeps named AI suggestions and accept_all keeps all of them and the caption. Name a person under People only when the person named them. Written to the XMP sidecar (dc:subject, lr:hierarchicalSubject) on export.";
+
+/// Keywords from a caller, each read with [`naming::Keyword::parse`]; one that has no
+/// words left is an error so the caller can fix it.
+fn keywords_arg(texts: &[String]) -> Result<Vec<crate::naming::Keyword>> {
+    texts
+        .iter()
+        .map(|t| {
+            crate::naming::Keyword::parse(t).ok_or_else(|| Error(format!("not a Keyword: {t:?}")))
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -2064,6 +2585,8 @@ struct ImportFolder {
     cull: bool,
     /// Queue edit Suggestions once the Photos are in (default: as `cull`).
     suggest: Option<bool>,
+    /// Queue the AI's captions and Keywords once the Photos are in (default: as `cull`).
+    tag: Option<bool>,
     /// Lightroom's Auto on every new Photo, as one batch of the person's (⌘Z undoes it).
     #[serde(default)]
     auto: bool,
@@ -2178,11 +2701,29 @@ struct ApplyPreset {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SavePreset {
+    name: String,
+    photo_id: Option<PhotoId>,
+    groups: Option<Vec<String>>,
+    id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeletePreset {
+    id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExportPhotos {
     photo_ids: Vec<PhotoId>,
     folder: String,
     format: Option<export::Format>,
     long_edge: Option<usize>,
+    short_edge: Option<usize>,
+    megapixels: Option<f64>,
+    sharpen: Option<export::Sharpen>,
     quality: Option<u8>,
     naming: Option<export::Naming>,
     shoot_folder: Option<bool>,
@@ -2456,7 +2997,9 @@ fn render_parts(lib: &Library, a: RenderPhoto, max_edge: u32) -> Result<Vec<Part
     };
     if let Some(id) = &a.preset {
         let amount = a.amount.unwrap_or(100.0) / 100.0;
-        recipe = crate::presets::apply(&recipe, crate::presets::find(id)?, amount)?;
+        let yours = crate::presets::yours(lib)?;
+        let p = crate::presets::find_in(lib, id)?;
+        recipe = crate::presets::apply_among(&recipe, &p, amount, &yours)?;
     }
     let edge = a.long_edge.unwrap_or(1024).clamp(64, max_edge);
     let img = render::render_in(
@@ -2572,7 +3115,7 @@ fn write_edited(path: &Path, jpeg: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn find_photo(lib: &Library, id: PhotoId) -> Result<Photo> {
+pub(crate) fn find_photo(lib: &Library, id: PhotoId) -> Result<Photo> {
     lib.list_photos(&PhotoFilter::default())?
         .into_iter()
         .find(|p| p.id == id)
@@ -2672,11 +3215,11 @@ fn set_rating(lib: &mut Library, a: SetRating, batch: Option<BatchId>) -> Result
     one(json!({ "stars": a.stars, "changed": changed, "kept_person_ratings": kept }))
 }
 
-fn open_preview(p: &Photo) -> Result<image::DynamicImage> {
+pub(crate) fn open_preview(p: &Photo) -> Result<image::DynamicImage> {
     image::open(&p.preview).map_err(|e| Error(format!("preview {}: {e}", p.preview.display())))
 }
 
-fn encode_jpeg(img: &image::RgbImage) -> Result<Vec<u8>> {
+pub(crate) fn encode_jpeg(img: &image::RgbImage) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     jpeg_encoder::Encoder::new(&mut out, 82)
         .encode(
@@ -2796,7 +3339,14 @@ fn parse_mask(v: &Value) -> Result<Mask> {
 }
 
 /// Refuse a `faces` Mask that names a face the Photo doesn't have.
-fn check_mask(lib: &Library, photo: &Photo, m: &Mask) -> Result<()> {
+fn check_mask(lib: &Library, photo: &Photo, mask: &Mask) -> Result<()> {
+    for m in mask.all() {
+        check_one_mask(lib, photo, m)?;
+    }
+    Ok(())
+}
+
+fn check_one_mask(lib: &Library, photo: &Photo, m: &Mask) -> Result<()> {
     if let Shape::Faces { face: Some(i) }
     | Shape::Person {
         person: Some(i), ..
@@ -2811,6 +3361,13 @@ fn check_mask(lib: &Library, photo: &Photo, m: &Mask) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A Mask Amount as stored: clamped to 0..200, and absent at the default 100.
+fn mask_amount(a: Option<f64>) -> Option<f64> {
+    a.filter(|v| v.is_finite())
+        .map(|v| v.clamp(0.0, 200.0))
+        .filter(|v| (v - 100.0).abs() > 1e-9)
 }
 
 /// Slider deltas from edit_recipe-style paths (no `correction.` paths in a local).
@@ -2850,6 +3407,8 @@ fn default_name(m: &Mask) -> String {
         Shape::Brush { .. } => "Brush",
         Shape::Linear { .. } | Shape::Gradient { .. } => "Gradient",
         Shape::Radial { .. } => "Radial",
+        Shape::Luminance { .. } => "Luminance range",
+        Shape::Color { .. } => "Color range",
     };
     if m.invert {
         format!("Not {}", n.to_lowercase())
@@ -2886,6 +3445,7 @@ fn add_mask(lib: &mut Library, a: AddMask, batch: Option<BatchId>) -> Result<Vec
             name: a.name.clone().unwrap_or_else(|| default_name(&mask)),
             mask: mask.clone(),
             adjust: adjust.clone(),
+            amount: mask_amount(a.amount),
             source: Some("ai".into()),
             other: Default::default(),
         });
@@ -2911,6 +3471,9 @@ fn edit_mask(lib: &mut Library, a: EditMask, batch: Option<BatchId>) -> Result<V
     }
     if let Some(n) = a.name {
         l.name = n;
+    }
+    if a.amount.is_some() {
+        l.amount = mask_amount(a.amount);
     }
     l.adjust = local_adjust(&l.adjust, &a.set, a.relative)?;
     let local = l.clone();
@@ -3071,7 +3634,11 @@ fn mean(p: &[f32]) -> f64 {
 
 fn analyze_photo(lib: &Library, photo: &Photo) -> Result<Vec<Part>> {
     use crate::analyzers::{self, eyes, faces, signals};
-    let ids: Vec<&str> = analyzers::REGISTRY.iter().map(|a| a.id()).collect();
+    let ids: Vec<&str> = analyzers::REGISTRY
+        .iter()
+        .filter(|a| a.available() && !a.on_demand())
+        .map(|a| a.id())
+        .collect();
     let facts = analyzers::facts(lib, photo, &ids)?;
     let r3 = |v: f32| (v as f64 * 1000.0).round() / 1000.0;
     let reads = facts.get("eyes").map(eyes::read).unwrap_or_default();
@@ -3106,6 +3673,60 @@ fn analyze_photo(lib: &Library, photo: &Photo) -> Result<Vec<Part>> {
     }))
 }
 
+fn view_depth(lib: &Library, a: ViewDepth) -> Result<Vec<Part>> {
+    use crate::lens_blur;
+    let photo = find_photo(lib, a.photo_id)?;
+    let recipe = current_recipe(lib, a.photo_id)?;
+    let analysis = render::analysis_with(lib, &photo, true)?;
+    let depth = analysis
+        .depth
+        .as_ref()
+        .ok_or_else(|| Error(format!("no depth map for Photo {}", photo.id)))?;
+    let n = crate::masks::models::SEG_SIZE;
+    let subject: Vec<f32> = analysis
+        .class("background")
+        .iter()
+        .map(|v| 1.0 - v)
+        .collect();
+    let subject = crate::masks::refine::resize(&subject, n, n, depth.width, depth.height);
+    let range = lens_blur::focus_range(&recipe.lens_blur, depth, Some(&subject));
+    // The depth on the whole frame, its edges snapped to the photo's as a render does.
+    let edge = a.long_edge.unwrap_or(1024).clamp(64, MAX_PREVIEW_EDGE) as usize;
+    let whole = Recipe {
+        crop: Default::default(),
+        local: Vec::new(),
+        lens_blur: Default::default(),
+        ..recipe.clone()
+    };
+    let img = render::render_in(lib, &photo, &whole, Some(edge))?;
+    let guide: Vec<f32> = img
+        .data
+        .chunks(3)
+        .map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0)
+        .collect();
+    let full = lens_blur::depth_at_size(depth, &guide, img.width, img.height);
+    let view = crate::RgbImage {
+        width: img.width,
+        height: img.height,
+        data: lens_blur::visualize(&full, range),
+    };
+    let pct = |v: f32| (v as f64 * 1000.0).round() / 10.0;
+    let mut out = json!({
+        "photo_id": photo.id,
+        "focus": [pct(range[0]), pct(range[1])],
+        "subject": recipe.lens_blur.focus.is_none(),
+        "histogram": depth.histogram(32).iter().map(|v| (*v as f64 * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
+        "width": view.width, "height": view.height,
+    });
+    if let (Some(x), Some(y)) = (a.x, a.y) {
+        out["at"] = json!(lens_blur::focus_at(depth, x, y));
+    }
+    Ok(vec![
+        Part::Json(out),
+        Part::Jpeg(render::encode_jpeg(&view, 85)?),
+    ])
+}
+
 fn view_mask(lib: &Library, a: ViewMask) -> Result<Vec<Part>> {
     let photo = find_photo(lib, a.photo_id)?;
     let recipe = current_recipe(lib, a.photo_id)?;
@@ -3121,9 +3742,12 @@ fn view_mask(lib: &Library, a: ViewMask) -> Result<Vec<Part>> {
     };
     check_mask(lib, &photo, &mask)?;
     let edge = a.long_edge.unwrap_or(1024).clamp(64, MAX_PREVIEW_EDGE) as usize;
-    // Masks live on the whole frame, so look at it uncropped and crop the view last.
+    // Masks live on the whole frame, so look at it uncropped and crop the view last. They
+    // are drawn on the render before any local adjustment, as a render draws them, so range
+    // Masks see the same tones and colours.
     let whole = Recipe {
         crop: Default::default(),
+        local: Vec::new(),
         ..recipe.clone()
     };
     let img = render::render_in(lib, &photo, &whole, Some(edge))?;
@@ -3137,10 +3761,12 @@ fn view_mask(lib: &Library, a: ViewMask) -> Result<Vec<Part>> {
     } else {
         None
     };
+    let rgb: Vec<f32> = img.data.iter().map(|&v| v as f32 / 255.0).collect();
     let canvas = Canvas {
         width: img.width,
         height: img.height,
         guide: &guide,
+        rgb: Some(&rgb),
         analysis: analysis.as_deref(),
     };
     let w = canvas.plane(&mask)?;

@@ -28,6 +28,10 @@ Auto has no event of its own: it is a `recipe` event by `ai` whose label starts 
 
 `engine::style` reads every exported History with a kept take as a correction (`moved`, keyed by the take's name) and learns the Style profile from the latest 200: for each global slider (exposure, contrast, highlights, shadows, whites, blacks, temp, tint, vibrance, saturation, clarity, texture, dehaze) the median change, where an unmoved slider counts as 0, so a slider moved on fewer than half the Photos stays out. Moves are scaled by n / (n + 4) and dropped below a small floor, and nothing is learned under 3 corrections. A take name with 5 or more corrections of its own gets its own moves. Fresh Suggestions add the moves to each take after the model's settings (matched ones don't: their reference is already the person's edit), and the prompt says so. The `style_profile` tool shows it, or learns from a `corrections` list; a variant's `style` pins it (`{}` turns it off). `bench/style_loo.py` measures it leave-one-out on the edit bench.
 
+
+## The Library's own Edit head
+
+Every export with recording on queues one `learn_edits` job ("Learning from your edits"). It runs `engine::edit_head::learn_library`: for each exported RAW, what Auto (without the head) makes of it, the facts the Edit head reads (the unedited render's light plus the scene from the Photo's Analysis), and the offset of the person's current sliders from Auto. Samples are cached by Recipe in `edit-head.json` at the Library's root, so one more export reads one Photo. The learned head starts from the one Argus ships: the person's average miss moves its intercept by n / (n + 4) of the way, as the Style profile does, and a ridge at the shipped head's strength (alpha 300) nudges its weights, so a few dozen edits barely change how it reads a scene. Auto uses the Library's head (the Edit head is on by default). The `learn_edit_head` tool runs the same thing now and returns how many edits it learned from and the average offset it adds.
 ## Bench export
 
 `argus tool export_usage_bench '{"folder":"out/usage-bench"}' --library <dir>` (or Export… in Settings) writes `fixtures/bench`'s layout:

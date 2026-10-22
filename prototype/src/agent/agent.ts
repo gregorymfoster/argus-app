@@ -7,7 +7,7 @@ import { LOOK_BY_ID } from '../domain/looks';
 import type { Adjust, Correction, NumKey, LocalAdjust, Photo, Verdict } from '../domain/types';
 import { recipeOf, verdictOf, type Action, type State } from '../store/library';
 
-export interface AgentStep {
+interface AgentStep {
   label: string;
   wait: number;
   shown: string;
@@ -96,7 +96,7 @@ function cull(prompt: string, s: State, selected: Photo | null): AgentPlan {
   };
 }
 
-export function correctionsFor(ids: string[], facesOnly = false): Record<string, Correction> {
+function correctionsFor(ids: string[], facesOnly = false): Record<string, Correction> {
   const out: Record<string, Correction> = {};
   for (const id of ids) {
     const p = PHOTO_BY_ID[id];

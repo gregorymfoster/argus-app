@@ -7,7 +7,7 @@
 //! (a single LUT step is ~1 level on a few percent of pixels) while a real change to
 //! exposure, WB, matrix or curve moves MAE by several levels.
 //!
-//! Bless (rewrite references): `ARGUS_BLESS=1 cargo test --profile fast -p argus-engine --test golden`
+//! Bless (rewrite references): `ARGUS_BLESS=1 cargo test --profile fast --test engine golden::`
 //! (`just bless`). On failure `out/golden/<stem>_actual.png` and `_diff.png` (|a-b| x8).
 
 use argus_engine::{decode, develop, DevelopOptions, RgbImage};

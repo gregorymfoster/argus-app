@@ -5,7 +5,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-export type Screen = 'import' | 'cull' | 'loupe' | 'compare' | 'bursts' | 'look' | 'edit';
+export type Screen = 'import' | 'cull' | 'loupe' | 'compare' | 'bursts' | 'look' | 'edit' | 'people';
 
 export interface Decision {
   id: string;
@@ -19,7 +19,7 @@ export interface Decision {
 //   options: [{ id: 'side', label: 'Side panel', note: '…' }, { id: 'dock', label: 'Bottom dock', note: '…' }] }
 export const DECISIONS: Decision[] = [];
 
-export const DECISION_BY_ID: Record<string, Decision> = Object.fromEntries(DECISIONS.map((d) => [d.id, d]));
+const DECISION_BY_ID: Record<string, Decision> = Object.fromEntries(DECISIONS.map((d) => [d.id, d]));
 
 interface VariantState {
   choice: Record<string, string>;
@@ -73,6 +73,7 @@ export function useVariants() {
   return v;
 }
 
+/** @public The switch screens branch on while a Decision is open (none is right now). */
 export function useVariant(id: string): string {
   const { choice } = useVariants();
   return choice[id] ?? DECISION_BY_ID[id]?.options[0].id ?? '';

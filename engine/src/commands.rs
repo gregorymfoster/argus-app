@@ -12,7 +12,7 @@
 //! | `models`    | {}                                        | {model, pinned, models: [{name, bytes, loaded}], error?} |
 //! | `set_model` | {model}                                   | {model}                       |
 //! | `set_api_key` | {key}                                   | {ok} (macOS Keychain; offers `claude-api` in `providers`) |
-//! | `photos` | {shoot_id?, verdict?}                        | [Photo] with `preview`, and `edit`: a stamp of the current Recipe (null if never edited) |
+//! | `photos` | {shoot_id?, verdict?, query?, album_id?, person_id?}                      | [Photo] with `preview`, and `edit`: a stamp of the current Recipe (null if never edited) |
 //! | `eye_flags` | {shoot_id?}                               | [{id, closed, soft}]: stored eye Facts only, never computes; Photos with neither left out |
 //! | `flag`   | {ids, verdict, author = "person", reason?, label?, batch_id?} | {flagged, batch_id, photos: [CullState]} |
 //! | `rate`   | {ids, stars (0-5), author = "person", label?, batch_id?} | {rated, batch_id, photos: [CullState]} |
@@ -21,6 +21,7 @@
 //! | `as_person` | {tool, args, label}                     | the tool's result plus `batch_id` |
 //! | `edit`   | {photo_id, recipe, label?}                   | {version, batch_id}           |
 //! | `thumbnail`    | {path, long_edge = 320}                | {images: [data URL]}          |
+//! | `face_crops`   | {faces: [{photo_id, face}], edge = 160} | {"<photo>-<face>": Library-relative square JPEG of the face, or null}; cached on disk |
 //! | `edited_previews` | {photo_ids, long_edge}              | {"<id>": Library-relative JPEG of the Photo with its edits, or null}; cached on disk by what it shows |
 //! | `suggest_name` | {paths? \| shoot_id?, captured_at?, provider?} | {name, by, note}       |
 //! | `shoot_name`   | {title, captured_at?}                  | {shoot_name, originals}       |
@@ -92,6 +93,12 @@ fn person() -> Author {
 struct PhotosArgs {
     shoot_id: Option<ShootId>,
     verdict: Option<Verdict>,
+    /// Only the Photos a search finds (search_photos words), in capture order.
+    query: Option<String>,
+    /// Only the Photos an Album finds.
+    album_id: Option<i64>,
+    /// Only the Photos a named person is in (the People view).
+    person_id: Option<crate::library::PersonId>,
 }
 
 #[derive(Deserialize)]
@@ -195,6 +202,18 @@ struct PreviewArgs {
 struct EditedPreviewArgs {
     photo_ids: Vec<PhotoId>,
     long_edge: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FaceCropArgs {
+    faces: Vec<crate::library::FaceRef>,
+    #[serde(default = "face_edge")]
+    edge: u32,
+}
+
+fn face_edge() -> u32 {
+    160
 }
 
 #[derive(Deserialize)]
@@ -370,6 +389,11 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             let files = crate::tools::edited_previews(&lib, &a.photo_ids, a.long_edge)?;
             Ok(json!(files))
         }
+        "face_crops" => {
+            let a: FaceCropArgs = args(command, a)?;
+            let lib = Library::open(tools.library())?;
+            Ok(json!(crate::people::face_crops(&lib, &a.faces, a.edge)?))
+        }
         "thumbnail" => {
             let a: ThumbnailArgs = args(command, a)?;
             let edge = a.long_edge.unwrap_or(320).clamp(64, 1024);
@@ -505,10 +529,32 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             let a: PhotosArgs = args(command, a)?;
             let lib = Library::open(tools.library())?;
             let root = lib.root().to_path_buf();
-            let photos = lib.list_photos(&PhotoFilter {
+            let mut photos = lib.list_photos(&PhotoFilter {
                 shoot: a.shoot_id,
                 verdict: a.verdict,
             })?;
+            let query = match a.album_id {
+                Some(id) => Some(
+                    lib.albums()?
+                        .into_iter()
+                        .find(|al| al.id == id)
+                        .ok_or_else(|| Error(format!("no Album with id {id}")))?
+                        .query,
+                ),
+                None => a.query.map(|q| json!({ "text": q })),
+            };
+            if let Some(q) = query {
+                let found: std::collections::HashSet<_> =
+                    crate::tools::album_photos(&lib, &q)?.into_iter().collect();
+                photos.retain(|p| found.contains(&p.id));
+            }
+            if let Some(id) = a.person_id {
+                let theirs: std::collections::HashSet<_> = crate::people::person(&lib, id)?
+                    .photos
+                    .into_iter()
+                    .collect();
+                photos.retain(|p| theirs.contains(&p.id));
+            }
             let edits = lib.recipe_stamps()?;
             Ok(Value::Array(
                 photos

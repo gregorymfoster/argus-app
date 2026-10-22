@@ -7,9 +7,6 @@ import { toast } from 'sonner';
 import type { Action, ChatMessage } from '../store/library';
 import { LIVE, asPerson } from './live';
 
-/** The sliders Auto sets (engine/src/auto.rs AUTO_SLIDERS); the rest of a Recipe is kept. */
-export const AUTO_KEYS = ['exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks', 'temp', 'tint', 'vibrance'] as const;
-
 /** A plausible Auto for a demo Photo, stable per id. */
 function demoAuto(id: string): Adjust {
   let h = 0;

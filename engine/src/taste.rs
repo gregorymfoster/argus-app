@@ -254,7 +254,7 @@ fn tastes(sheet: &ContactSheet) -> HashMap<usize, f32> {
     let at: Vec<i64> = sheet
         .photos
         .iter()
-        .map(|p| crate::cull::seconds(&p.captured_at))
+        .map(|p| crate::library::time::capture_seconds(&p.captured_at))
         .collect();
     sheet
         .photos

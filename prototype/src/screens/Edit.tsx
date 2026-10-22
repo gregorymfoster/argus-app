@@ -10,7 +10,7 @@ import { LIVE, asPerson, focusPhoto, wrote } from '../data/live';
 import { loadRecipe, pickSpotSource, useDetailRender, useEngineMasks, useLiveRender } from '../data/liveEdit';
 import { listVersions } from '../data/liveAgent';
 import { PhotoView } from '../ui/PhotoView';
-import { SuggestionStrip } from '../ui/Suggestions';
+import { TakesPanel } from '../ui/Suggestions';
 import { Filmstrip } from '../ui/Filmstrip';
 import { acceptSuggestion, applyToRest, cancelTakes, dismissSuggestion, requestSuggestions, useQueue, useSuggestionImage, useSuggestions, useTakesProgress } from '../data/suggestions';
 import { Kbd, Tip, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
@@ -19,15 +19,17 @@ import { ToolStrip } from '../ui/Develop';
 import { autoAction } from '../data/auto';
 import { PresetsPanel } from '../ui/Presets';
 import { EditPanel, GLOBAL, LIGHT, PRESENCE, WB } from '../ui/EditPanel';
-import { MaskingPanel } from '../ui/MaskingPanel';
+import { MaskingPanel, maskPart, withPart } from '../ui/MaskingPanel';
 import { MaskHandles } from '../ui/MaskHandles';
 import { COLOR_NOISE, DEFRINGE, DENOISE, EFFECTS, GRAIN, LENS, NOISE, PickOverlay, SHARPEN, VIGNETTE, type Picked } from '../ui/EditSections';
-import { CropOverlay, CropPanel, FULL } from '../ui/CropPanel';
+import { CropOverlay, CropPanel, FULL, rulerOut, setRuler } from '../ui/CropPanel';
 import { HEAL_BRUSH, HealOverlay, HealPanel, SPOT_R, newSpotId, spotsOf, type HealBrush } from '../ui/HealPanel';
 import { Button } from '@/components/ui/button';
 import { longEdge, useNeed, useZoomPan } from '../ui/zoomPan';
 import { Navigator, ZoomReadout } from '../ui/Navigator';
 import { useSettingsKeys } from '../ui/PasteSettings';
+import { useCreatePresetKey } from '../ui/CreatePreset';
+import { brushRadius, useDepth, type Refine } from '../ui/LensBlur';
 
 // Every slider's panel name, so a take's diff says "Clarity" and "Vignette midpoint", not the Recipe key.
 const SLIDERS = [...GLOBAL, ...EFFECTS, ...VIGNETTE, ...GRAIN, ...DENOISE, ...SHARPEN, ...NOISE, ...COLOR_NOISE, ...DEFRINGE, ...LENS];
@@ -114,6 +116,7 @@ export function EditScreen({ id }: { id: string }) {
   const [masks, setMasks] = useState(false);
   const [before, setBefore] = useState(false);
   /** A click on the photo the Edit panel asked for (eyedropper, Point Color). */
+  const [selPart, setSelPart] = useState<number | null>(null);
   const [picking, setPicking] = useState<{ label: string; then: (p: Picked) => void } | null>(null);
   const [brush, setBrush] = useState(false);
   const [stroke, setStroke] = useState<{ x: number; y: number; r: number }[] | null>(null);
@@ -151,7 +154,10 @@ export function EditScreen({ id }: { id: string }) {
   const takeUrl = useSuggestionImage(take, 1600, amount / 100);
   const cycle = (d: number) => {
     const n = takes.list.length + 1;
-    if (n > 1) setPick((i) => ((((i + 1 + d) % n) + n) % n) - 1);
+    if (n <= 1) return;
+    // The takes live in the Edit tab's panel, so Tab brings it up.
+    setTab('edit');
+    setPick((i) => ((((i + 1 + d) % n) + n) % n) - 1);
   };
 
   const back = () => go({ name: state.look ? 'look' : 'cull' });
@@ -167,6 +173,13 @@ export function EditScreen({ id }: { id: string }) {
   // Heal (H): the next Spot's settings, the selected Spot, and the newest Recipe for picks
   // that finish after it changed.
   const [healBrush, setHealBrush] = useState<HealBrush>(HEAL_BRUSH);
+  // Lens Blur: the depth view and the Refine brush (LensBlur.tsx), both on the stage.
+  const [depthView, setDepthView] = useState(false);
+  const [refine, setRefine] = useState<Refine>('off');
+  const [refineSize, setRefineSize] = useState(30);
+  const [refineStroke, setRefineStroke] = useState<{ mode: 'focus' | 'blur'; dots: { x: number; y: number; r: number }[] } | null>(null);
+  const [refineAt, setRefineAt] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => (setDepthView(false), setRefine('off')), [p.id]);
   const [selSpot, setSelSpot] = useState<string | null>(null);
   useEffect(() => setSelSpot(null), [p.id]);
   const latest = useRef(recipe);
@@ -206,15 +219,18 @@ export function EditScreen({ id }: { id: string }) {
     if (selSpot) saveSpots(spotsOf(recipe).map((x) => (x.id === selSpot ? { ...x, r } : x)), 'Spot size', `spot:${selSpot}:r`);
   };
   // Lightroom's keys: [ and ] size the brush, / picks a new source, Delete removes the Spot.
-  useHotkeys('bracketleft', () => tab === 'heal' && sizeBy(1 / 1.15), [tab, healBrush, selSpot, recipe]);
-  useHotkeys('bracketright', () => tab === 'heal' && sizeBy(1.15), [tab, healBrush, selSpot, recipe]);
+  const refineBy = (d: number) => setRefineSize((v) => Math.min(100, Math.max(0, v + d)));
+  useHotkeys('bracketleft', () => (refine !== 'off' ? refineBy(-8) : tab === 'heal' && sizeBy(1 / 1.15)), [tab, healBrush, selSpot, recipe, refine]);
+  useHotkeys('bracketright', () => (refine !== 'off' ? refineBy(8) : tab === 'heal' && sizeBy(1.15)), [tab, healBrush, selSpot, recipe, refine]);
   useHotkeys('slash', () => tab === 'heal' && selSpot && void repick(selSpot), [tab, selSpot]);
   useHotkeys('delete', () => {
     if (tab !== 'heal' || !selSpot) return;
     saveSpots(spotsOf(recipe).filter((x) => x.id !== selSpot), 'Removed a Spot');
     setSelSpot(null);
   }, [tab, selSpot, recipe]);
-  useHotkeys('escape', () => (brush ? setBrush(false) : tab === 'heal' && selSpot ? setSelSpot(null) : back()), ESC_OUTSIDE_DIALOGS, [brush, state.look, tab, selSpot]);
+  // G goes back to the grid as in every other view (Lightroom's Library key).
+  useHotkeys('g', back, [state.look]);
+  useHotkeys('escape', () => (rulerOut() ? setRuler(false) : brush ? setBrush(false) : refine !== 'off' ? setRefine('off') : depthView ? setDepthView(false) : tab === 'heal' && selSpot ? setSelSpot(null) : back()), ESC_OUTSIDE_DIALOGS, [brush, state.look, tab, selSpot, refine, depthView]);
   // Lightroom's Sync: fold this photo's sliders into the Shoot's Look.
   const hasGlobal = Object.values(recipe.global).some((v) => v);
   const reload = async () => {
@@ -238,6 +254,7 @@ export function EditScreen({ id }: { id: string }) {
   };
   useHotkeys('shift+s', () => hasGlobal && sync(), [hasGlobal, p.id]);
   useSettingsKeys(p.id, []);
+  useCreatePresetKey(p.id, recipe);
   const auto = () => {
     dispatch(autoAction([p.id], (id) => recipeOf(state, id)));
     dispatch({ type: 'toast', text: `Auto on ${p.file}` });
@@ -267,7 +284,7 @@ export function EditScreen({ id }: { id: string }) {
     if (!take) return;
     dismissSuggestion(take).catch((e) => dispatch({ type: 'toast', text: `Dismiss failed: ${String(e).replace(/^Error: /, '')}` }));
   };
-  // The strip shows the takes coming, so no toast.
+  // The panel shows the takes coming, so no toast.
   const more = () =>
     requestSuggestions(p.id).catch((e) => dispatch({ type: 'toast', text: `Couldn't ask: ${String(e).replace(/^Error: /, '')}` }));
   const toRest = () =>
@@ -301,12 +318,18 @@ export function EditScreen({ id }: { id: string }) {
   }
   const crop = placing?.crop ?? recipe.crop ?? FULL;
   if (tab === 'crop') live = { ...live, crop: { ...FULL, angle: crop.angle } };
-  // Spots sit on the whole upright frame, so Heal shows it uncropped.
-  if (tab === 'heal') live = { ...live, crop: undefined };
+  // Spots sit on the whole upright frame, so Heal shows it uncropped; so does Lens Blur's
+  // depth view and Refine brush, since the depth map covers the whole frame.
+  const lensOn = tab === 'edit' && (recipe.lensBlur?.amount ?? 0) > 0;
+  const wholeFrame = lensOn && (depthView || refine !== 'off');
+  if (tab === 'heal' || wholeFrame) live = { ...live, crop: undefined };
   const render = useLiveRender(p.id, loaded ? live : null, LIVE);
+  const depth = useDepth(p.id, recipe.lensBlur, lensOn);
   const engineMasks = useEngineMasks(p.id, recipe.local, LIVE && (masks || brush || tab === 'masking'));
   const selLocal = tab === 'masking' ? recipe.local.find((l) => l.id === selMask) : undefined;
   const placed = selLocal && placing?.local?.id === selLocal.id ? placing.local : selLocal;
+  // Handles place the selected component of a combined Mask, or the Mask itself.
+  const placedMask = placed && maskPart(placed.mask, selPart);
   const [frame, setFrame] = useState(1.5);
   useEffect(() => {
     if (!p.preview) return;
@@ -316,7 +339,8 @@ export function EditScreen({ id }: { id: string }) {
   }, [p.preview]);
 
   // Lightroom's zoom and pan; a click zooms unless it paints a Mask or moves the crop.
-  const zp = useZoomPan({ photoKey: p.id, natural: longEdge(p), click: !brush && tab !== 'crop' && tab !== 'heal' });
+  const painting = lensOn && refine !== 'off';
+  const zp = useZoomPan({ photoKey: p.id, natural: longEdge(p), click: !brush && !painting && tab !== 'crop' && tab !== 'heal' });
   const need = useNeed(zp.z);
   const detail = useDetailRender(p.id, live, need, 1536, longEdge(p), LIVE && loaded && !take && !before);
 
@@ -349,6 +373,46 @@ export function EditScreen({ id }: { id: string }) {
       }
     : {};
 
+  // Lens Blur's Refine brush: drag to paint Focus (stays sharp) or Blur dots; ⌥ flips it.
+  const refineHandlers = painting
+    ? {
+        onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
+          if (zp.z.hand || e.button !== 0) return;
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          const mode = e.altKey ? (refine === 'focus' ? 'blur' : 'focus') : (refine as 'focus' | 'blur');
+          const d = at(e);
+          setRefineStroke({ mode, dots: [{ x: d.x, y: d.y, r: brushRadius(refineSize) }] });
+        },
+        onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => {
+          const d = at(e);
+          setRefineAt({ x: d.x, y: d.y });
+          if (!refineStroke) return;
+          const r = brushRadius(refineSize);
+          const last = refineStroke.dots[refineStroke.dots.length - 1];
+          if (Math.hypot(d.x - last.x, d.y - last.y) > r * 0.5 && refineStroke.dots.length < 400) setRefineStroke({ ...refineStroke, dots: [...refineStroke.dots, { x: d.x, y: d.y, r }] });
+        },
+        onPointerLeave: () => setRefineAt(null),
+        onPointerUp: () => {
+          if (!refineStroke) return;
+          const lb = recipe.lensBlur ?? {};
+          const k = refineStroke.mode === 'focus' ? 'focusBrush' : 'blurBrush';
+          const round = (v: number) => Math.round(v * 1e4) / 1e4;
+          const dots = refineStroke.dots.map((d) => ({ x: round(d.x), y: round(d.y), r: round(d.r) }));
+          dispatch({ type: 'recipe/set', id: p.id, recipe: { ...recipe, lensBlur: { ...lb, [k]: [...(lb[k] ?? []), ...dots] } }, label: refineStroke.mode === 'focus' ? 'Lens Blur: painted focus' : 'Lens Blur: painted blur', by: 'you' });
+          setRefineStroke(null);
+        },
+      }
+    : {};
+  // A brush dot's size on the stage: `r` is a share of the long edge.
+  const dotSize = (r: number) => `${2 * r * 100 * Math.max(1, 1 / frame)}%`;
+  const refineDots = painting
+    ? [
+        ...(recipe.lensBlur?.focusBrush ?? []).map((d) => ({ ...d, mode: 'focus' })),
+        ...(recipe.lensBlur?.blurBrush ?? []).map((d) => ({ ...d, mode: 'blur' })),
+        ...(refineStroke?.dots.map((d) => ({ ...d, mode: refineStroke.mode })) ?? []),
+      ]
+    : [];
+
   const diff = take && (
     <div className="take-diff" data-testid="take-diff">
       <div className="row">
@@ -364,6 +428,26 @@ export function EditScreen({ id }: { id: string }) {
         </div>
       ))}
     </div>
+  );
+  const takesPanel = (
+    <TakesPanel
+      photo={p}
+      recipe={live}
+      look={state.look}
+      list={takes.list}
+      pick={pick}
+      onPick={setPick}
+      onAccept={accept}
+      amount={amount}
+      onAmount={setAmount}
+      onDismiss={dismiss}
+      onMore={() => void more()}
+      onCancel={() => coming && void cancelTakes(p.id, coming).then(() => dispatch({ type: 'toast', text: 'Cancelled the new takes' }))}
+      job={coming}
+      held={!coming || coming.focus && !queue?.paused ? null : queue?.paused ? 'Paused' : queue?.battery_paused ? 'Waiting for the charger' : null}
+      waiting={takes.loading ? 'Loading…' : 'None for this photo yet. Press R to ask for some'}
+      diff={diff}
+    />
   );
 
   const historyPanel = (
@@ -390,10 +474,10 @@ export function EditScreen({ id }: { id: string }) {
       <PhotoView photo={p} recipe={live} look={state.look} rendered={render.url} style={{ width: '100%', borderRadius: 0 }} />
     </Navigator>
     <div className="dev-scroll" role="tabpanel" aria-label={tab}>
-      {tab === 'edit' && <EditPanel key={p.id} photo={p} recipe={recipe} look={state.look} versions={versions.length} shown={shown} onShown={setShown} onHover={setHover} onAuto={auto} onSync={sync} onPick={(label, then) => setPicking({ label, then })} diff={diff} />}
+      {tab === 'edit' && <EditPanel key={p.id} photo={p} recipe={recipe} look={state.look} versions={versions.length} shown={shown} onShown={setShown} onHover={setHover} onAuto={auto} onSync={sync} onPick={(label, then) => setPicking({ label, then })} takes={takesPanel} lensBlur={{ visualize: depthView, onVisualize: setDepthView, refine, onRefine: setRefine, size: refineSize, onSize: setRefineSize, depth }} />}
       {tab === 'crop' && <CropPanel photoId={p.id} recipe={recipe} frame={frame} />}
       {tab === 'heal' && <HealPanel photoId={p.id} recipe={recipe} sel={selSpot} onSel={setSelSpot} brush={healBrush} onBrush={setHealBrush} onRepick={(id) => void repick(id)} />}
-      {tab === 'masking' && <MaskingPanel photo={p} recipe={recipe} overlay={masks} onOverlay={setMasks} sel={selMask} onSel={setSelMask} brush={brush} onBrush={setBrush} />}
+      {tab === 'masking' && <MaskingPanel photo={p} recipe={recipe} overlay={masks} onOverlay={setMasks} sel={selMask} onSel={(id) => (setSelMask(id), setSelPart(null))} brush={brush} onBrush={setBrush} part={selPart} onPart={setSelPart} onPick={(label, then) => setPicking({ label, then })} />}
       {tab === 'presets' && <PresetsPanel photo={p} recipe={recipe} look={state.look} onHover={setHover} onSet={setFromPreset} onAuto={auto} />}
       {tab === 'history' && historyPanel}
     </div>
@@ -419,7 +503,7 @@ export function EditScreen({ id }: { id: string }) {
       <main className="panel main" style={{ flexDirection: 'column' }}>
         <header className="panel-head toolbar" data-testid="edit-head">
           <Button variant="ghost" size="sm" onClick={back}>
-            <ArrowLeft size={13} /> {state.look ? 'Look' : 'Grid'} <Kbd>Esc</Kbd>
+            <ArrowLeft size={13} /> {state.look ? 'Look' : 'Grid'} <Kbd quiet>Esc</Kbd>
           </Button>
           <span className="mono" style={{ fontSize: 12 }}>{p.file}</span>
           <span className="faint mono head-meta" title={p.exif}>{p.exif}</span>
@@ -427,15 +511,15 @@ export function EditScreen({ id }: { id: string }) {
           <QueueChip />
           <Tip label={`Hold \\ for ${take ? 'your edit' : 'before'}`} keys={'\\'}>
             <span className="faint head-hint" style={{ fontSize: 11 }}>
-              <Kbd>{'\\'}</Kbd> {take ? 'your edit' : 'before'}
+              <Kbd quiet>{'\\'}</Kbd> {take ? 'your edit' : 'before'}
             </span>
           </Tip>
-          <Tip label="Match the rest of the Shoot to this Photo, as Suggestions" keys="⌘⇧A">
+          <Tip label="Match the rest of the Shoot to this Photo, as Suggestions" keys="⇧⌘A">
             <Button variant="ghost" size="sm" onClick={() => void toRest()} data-testid="apply-rest">
               <Copy size={12} /> Apply to rest
             </Button>
           </Tip>
-          <Button variant={masks ? 'default' : 'ghost'} size="sm" onClick={() => setMasks(!masks)} aria-pressed={masks}>
+          <Button variant="ghost" size="sm" className={masks ? 'bg-chip text-text' : undefined} onClick={() => setMasks(!masks)} aria-pressed={masks}>
             <Layers size={12} /> Masks
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setTab('history')}>
@@ -443,7 +527,7 @@ export function EditScreen({ id }: { id: string }) {
           </Button>
         </header>
         <div className="stage" data-testid="edit-stage" {...zp.stageProps}>
-          <div className="stage-fit"><PhotoView photo={p} size="full" recipe={take && !before ? take.recipe : live} look={state.look} original={before && !take} rendered={take ? (before ? render.url : takeUrl) : (detail.url ?? render.url)} engineMasks={take ? undefined : engineMasks} showMasks={(masks || brush || tab === 'masking') && !before && !take} maskFocus={tab === 'masking' && selMask && !masks ? selMask : null} className={brush ? 'brushing' : ''} {...brushHandlers}>
+          <div className="stage-fit"><PhotoView photo={p} size="full" recipe={take && !before ? take.recipe : live} look={state.look} original={before && !take} rendered={take ? (before ? render.url : takeUrl) : (detail.url ?? render.url)} engineMasks={take ? undefined : engineMasks} showMasks={(masks || brush || tab === 'masking') && !before && !take} maskFocus={tab === 'masking' && selMask && !masks ? selMask : null} className={brush || painting ? 'brushing' : ''} {...(brush ? brushHandlers : refineHandlers)}>
             {before && !take && <span className="compare-flag">Before</span>}
             {take && <span className="compare-flag" data-testid="previewing">{before ? 'Your edit' : `Previewing · ${take.title}`}</span>}
             {!LIVE && take?.recipe.crop && !before && (
@@ -451,13 +535,19 @@ export function EditScreen({ id }: { id: string }) {
             )}
             {LIVE && render.busy && !before && !take && <span className="compare-flag" data-testid="rendering">Rendering…</span>}
             {brush && !stroke && <span className="compare-flag">Drag to paint a Mask · Esc to stop</span>}
-            {placed && (placed.mask.kind === 'linear' || placed.mask.kind === 'radial') && !before && !take && (
+            {lensOn && depthView && depth.info?.image && !before && !take && <img className="depth-view" src={depth.info.image} alt="Depth map" data-testid="depth-view" />}
+            {refineDots.map((d, i) => (
+              <span key={i} className={`refine-dot ${d.mode}`} style={{ left: `${d.x * 100}%`, top: `${d.y * 100}%`, width: dotSize(d.r), aspectRatio: '1' }} />
+            ))}
+            {painting && refineAt && !refineStroke && <span className="refine-cursor" style={{ left: `${refineAt.x * 100}%`, top: `${refineAt.y * 100}%`, width: dotSize(brushRadius(refineSize)), aspectRatio: '1' }} />}
+            {painting && !refineStroke && <span className="compare-flag">Paint {refine === 'focus' ? 'what stays sharp' : 'what blurs'} · ⌥ for {refine === 'focus' ? 'Blur' : 'Focus'} · Esc to stop</span>}
+            {placedMask && (placedMask.kind === 'linear' || placedMask.kind === 'radial') && !before && !take && (
               <MaskHandles
-                mask={placed.mask}
+                mask={placedMask}
                 onChange={(m, done) => {
-                  const local = { ...placed, mask: m };
+                  const local = { ...placed!, mask: withPart(placed!.mask, selPart, m) };
                   if (!done) return setPlacing({ local });
-                  dispatch({ type: 'recipe/local-upsert', id: p.id, local, label: `Moved ${placed.name}` });
+                  dispatch({ type: 'recipe/local-upsert', id: p.id, local, label: `Moved ${placed!.name}` });
                   setPlacing(null);
                 }}
               />
@@ -490,9 +580,9 @@ export function EditScreen({ id }: { id: string }) {
             {tab === 'crop' && !before && !take && (
               <CropOverlay
                 crop={crop}
-                onChange={(c, done) => {
+                onChange={(c, done, label) => {
                   if (!done) return setPlacing({ crop: c });
-                  dispatch({ type: 'recipe/set', id: p.id, recipe: { ...recipe, crop: c }, label: 'Moved crop', by: 'you' });
+                  dispatch({ type: 'recipe/set', id: p.id, recipe: { ...recipe, crop: c }, label: label ?? 'Moved crop', by: 'you' });
                   setPlacing(null);
                 }}
               />
@@ -500,23 +590,6 @@ export function EditScreen({ id }: { id: string }) {
           </PhotoView></div>
           <ZoomReadout z={zp.z} loading={detail.loading} />
         </div>
-        <SuggestionStrip
-          photo={p}
-          recipe={live}
-          look={state.look}
-          list={takes.list}
-          pick={pick}
-          onPick={setPick}
-          onAccept={accept}
-          amount={amount}
-          onAmount={setAmount}
-          onDismiss={dismiss}
-          onMore={() => void more()}
-          onCancel={() => coming && void cancelTakes(p.id, coming).then(() => dispatch({ type: 'toast', text: 'Cancelled the new takes' }))}
-          job={coming}
-          held={!coming || coming.focus && !queue?.paused ? null : queue?.paused ? 'Paused' : queue?.battery_paused ? 'Waiting for the charger' : null}
-          waiting={takes.loading ? 'Loading…' : 'None for this photo yet. Press R to ask for some'}
-        />
         <Filmstrip order={order} pos={pos} open={(n) => go({ name: 'edit', id: n })} />
       </main>
       <Agent ctx={`edit:${p.id}`} chips={[p.file, ...(recipe.local.length ? [`${recipe.local.length} Masks`] : [])]} placeholder="A bit more on the face…" header={controls} strip={strip} />

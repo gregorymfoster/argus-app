@@ -45,6 +45,99 @@ fn recipe(v: Value) -> Recipe {
     Recipe::from_value(&v).unwrap()
 }
 
+/// A grey ramp, dark at the left to bright at the right, blue sky above orange ground.
+fn ramp() -> RgbImage {
+    let (w, h) = (96, 48);
+    let data = (0..w * h)
+        .flat_map(|i| {
+            let (x, y) = (i % w, i / w);
+            let v = 40.0 + 180.0 * x as f32 / w as f32;
+            let c = if y < h / 2 {
+                [v * 0.6, v * 0.8, v]
+            } else {
+                [v, v * 0.6, v * 0.3]
+            };
+            c.map(|c| c as u8)
+        })
+        .collect();
+    RgbImage {
+        width: w,
+        height: h,
+        data,
+    }
+}
+
+#[test]
+fn a_masks_amount_scales_its_whole_adjustment() {
+    let img = ramp();
+    let base = develop_rgb8_with(&img, &Recipe::default(), None);
+    let at = |amount: Option<f64>| {
+        let mut l = json!({ "id": "r", "mask": { "kind": "radial", "x": 0.5, "y": 0.5, "rx": 0.3, "ry": 0.3 },
+            "adjust": { "exposure": 0.5 } });
+        if let Some(a) = amount {
+            l["amount"] = json!(a);
+        }
+        let out = develop_rgb8_with(&img, &recipe(json!({ "local": [l] })), None);
+        luma(&out, 0.45, 0.45, 0.55, 0.55)
+    };
+    let b = luma(&base, 0.45, 0.45, 0.55, 0.55);
+    let (zero, half, full, double) = (at(Some(0.0)), at(Some(50.0)), at(None), at(Some(200.0)));
+    assert!(
+        (zero - b).abs() < 0.5,
+        "0% leaves the Photo alone: {zero} vs {b}"
+    );
+    assert!(
+        b < half && half < full && full < double,
+        "{b} {half} {full} {double}"
+    );
+    assert!(
+        ((half - b) - (full - half)).abs() < 3.0,
+        "50% is about halfway"
+    );
+}
+
+#[test]
+fn range_masks_combine_with_others_in_a_render() {
+    let img = ramp();
+    let base = develop_rgb8_with(&img, &Recipe::default(), None);
+    // The top half, but only its bright tones: a linear Mask intersected with a luminance range.
+    let r = recipe(
+        json!({ "local": [{ "id": "m", "adjust": { "exposure": -1.0 }, "mask": {
+        "kind": "linear", "from": { "x": 0.5, "y": 0.0 }, "to": { "x": 0.5, "y": 0.0001 }, "invert": true,
+        "components": [
+            { "op": "subtract", "kind": "linear", "from": { "x": 0.5, "y": 1.0 }, "to": { "x": 0.5, "y": 0.5 } },
+            { "op": "intersect", "kind": "luminance", "lo": 0.6, "hi": 1.0, "smooth": 0.1 },
+        ] } }] }),
+    );
+    let out = develop_rgb8_with(&img, &r, None);
+    let d = |x0, y0, x1, y1| luma(&out, x0, y0, x1, y1) - luma(&base, x0, y0, x1, y1);
+    assert!(
+        d(0.85, 0.05, 0.95, 0.4) < -20.0,
+        "bright sky darkens: {}",
+        d(0.85, 0.05, 0.95, 0.4)
+    );
+    assert!(d(0.05, 0.05, 0.15, 0.4).abs() < 1.0, "dark sky stays");
+    assert!(d(0.85, 0.6, 0.95, 0.95).abs() < 1.0, "bright ground stays");
+
+    // A colour picked in the sky takes the sky, at any brightness, and not the ground.
+    let r = recipe(
+        json!({ "local": [{ "id": "c", "adjust": { "exposure": -1.0 }, "mask": {
+        "kind": "color", "points": [{ "x": 0.5, "y": 0.25 }] } }] }),
+    );
+    let out = develop_rgb8_with(&img, &r, None);
+    let d = |x0, y0, x1, y1| luma(&out, x0, y0, x1, y1) - luma(&base, x0, y0, x1, y1);
+    assert!(
+        d(0.4, 0.1, 0.6, 0.4) < -15.0,
+        "sky: {}",
+        d(0.4, 0.1, 0.6, 0.4)
+    );
+    assert!(
+        d(0.4, 0.6, 0.6, 0.9).abs() < 1.0,
+        "ground: {}",
+        d(0.4, 0.6, 0.6, 0.9)
+    );
+}
+
 #[test]
 fn analysis_finds_the_faces_and_the_sky() {
     if !crate::has_bench() {
@@ -222,6 +315,16 @@ fn the_agent_adds_checks_edits_and_removes_a_mask() {
         .as_f64()
         .unwrap();
     assert!((exp - 0.6).abs() < 1e-6);
+    let amount = |a: f64| {
+        let e = call(
+            "edit_mask",
+            json!({ "photo_id": 1, "local_id": local, "amount": a }),
+        );
+        part_json(&e[0])["local"]["amount"].clone()
+    };
+    assert_eq!(amount(150.0), json!(150.0));
+    assert_eq!(amount(900.0), json!(200.0), "clamped to Lightroom's 200");
+    assert_eq!(amount(100.0), Value::Null, "the default is left out");
 
     let recipe = call("read_recipe", json!({ "photo_id": 1 }));
     assert_eq!(

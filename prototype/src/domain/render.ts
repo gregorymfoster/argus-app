@@ -3,7 +3,7 @@
 
 import type { Adjust, Correction, Look, LocalAdjust, MaskRef, NumKey, Photo, Recipe } from './types';
 
-export const NEUTRAL_CORRECTION: Correction = { exposure: 0, wbK: 0, face: 0 };
+const NEUTRAL_CORRECTION: Correction = { exposure: 0, wbK: 0, face: 0 };
 
 export function emptyRecipe(look: string | null = null): Recipe {
   return { schema: 1, global: {}, look, correction: { ...NEUTRAL_CORRECTION }, local: [] };
@@ -21,7 +21,7 @@ export function addAdjust(...parts: (Adjust | undefined)[]): Adjust {
   return out;
 }
 
-export function correctionAdjust(c: Correction): Adjust {
+function correctionAdjust(c: Correction): Adjust {
   return { exposure: c.exposure, temp: c.wbK / 25 };
 }
 
@@ -59,8 +59,19 @@ const NONE = 'linear-gradient(transparent, transparent)';
  * CSS mask-image for a Mask on a given Photo: a rough stand-in for dummy Photos. On the
  * real Library the engine renders Masks and the overlay uses its own (useEngineMasks).
  */
-export function maskImage(mask: MaskRef, photo: Photo): string {
+function maskImage(mask: MaskRef, photo: Photo): string {
+  // Added components join as more layers; CSS masks can't subtract or intersect per layer,
+  // so the stand-in leaves those out.
+  const added = (mask.components ?? []).filter((c) => c.op === 'add').map((c) => maskImage(c, photo));
+  return [shapeImage(mask, photo), ...added].join(', ');
+}
+
+function shapeImage(mask: MaskRef, photo: Photo): string {
   switch (mask.kind) {
+    case 'luminance':
+    case 'color':
+      // Tones and colours need the pixels: a soft wash stands in for them.
+      return 'linear-gradient(rgb(0 0 0 / 0.5), rgb(0 0 0 / 0.5))';
     case 'subject':
     case 'skin':
     case 'hair':
@@ -102,6 +113,12 @@ export function maskImage(mask: MaskRef, photo: Photo): string {
   }
 }
 
+/** The plain sliders of an adjustment times `k`: a Mask's Amount, roughly, for dummy Photos. */
+function scaled(a: Adjust, k: number): Adjust {
+  if (k === 1) return a;
+  return Object.fromEntries(Object.entries(a).map(([key, v]) => [key, typeof v === 'number' ? v * k : v])) as Adjust;
+}
+
 export interface RenderPlan {
   base: Adjust;
   locals: { local: LocalAdjust; mask: string; adjust: Adjust }[];
@@ -116,6 +133,6 @@ export function plan(photo: Photo, recipe: Recipe, look: Look | null): RenderPla
     const local: LocalAdjust = { id: 'corr-face', name: 'Face light', mask: { kind: 'faces' }, adjust: { exposure: recipe.correction.face }, source: 'ai' };
     locals.push({ local, mask: maskImage(local.mask, photo), adjust: addAdjust(base, local.adjust) });
   }
-  for (const local of recipe.local) locals.push({ local, mask: maskImage(local.mask, photo), adjust: addAdjust(base, local.adjust) });
+  for (const local of recipe.local) locals.push({ local, mask: maskImage(local.mask, photo), adjust: addAdjust(base, scaled(local.adjust, (local.amount ?? 100) / 100)) });
   return { base, locals, grain: base.grain ?? 0 };
 }

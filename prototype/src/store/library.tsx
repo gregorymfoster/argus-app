@@ -12,9 +12,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import { LIVE, aiName, asPerson, providerDown, liveShootId, readCull, saveChats, savedChats, saveRecipe, undoBatch, writeCull, type CullState, type CullWrite, type Written } from '../data/live';
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
 import { addAdjust, emptyRecipe } from '../domain/render';
-import type { Actor, Adjust, Correction, NumKey, LocalAdjust, Look, Photo, Recipe, Verdict, Version } from '../domain/types';
+import type { Actor, Adjust, Correction, NumKey, LocalAdjust, Look, Recipe, Verdict, Version } from '../domain/types';
 
-export interface ChatStep {
+interface ChatStep {
   label: string;
   ms: number;
   done: boolean;
@@ -45,7 +45,7 @@ interface Undoable {
   recipes: Record<string, Recipe>;
 }
 
-export interface OverrideLog {
+interface OverrideLog {
   photoId: string;
   what: string;
   from: string;
@@ -99,7 +99,8 @@ export type Action =
   | { type: 'recipe/load'; id: string; recipe: Recipe }
   /** `key` makes steady changes (a slider drag) one Version and one Undo step. */
   | { type: 'recipe/set'; id: string; recipe: Recipe; label: string; by: Actor; key?: string }
-  | { type: 'recipe/local-upsert'; id: string; local: LocalAdjust; label: string }
+  /** `key` merges a slider drag into one History step. */
+  | { type: 'recipe/local-upsert'; id: string; local: LocalAdjust; label: string; key?: string }
   | { type: 'recipe/local-adjust'; id: string; localId: string; key: NumKey; value: number; by: Actor }
   | { type: 'recipe/local-remove'; id: string; localId: string }
   | { type: 'version/restore'; id: string; n: number }
@@ -270,7 +271,7 @@ function apply(s: State, a: Action): State {
       const r = recipeOf(s, a.id);
       const exists = r.local.some((l) => l.id === a.local.id);
       const local = exists ? r.local.map((l) => (l.id === a.local.id ? a.local : l)) : [...r.local, a.local];
-      return withVersion(s, a.id, { ...r, local }, a.label, a.local.source);
+      return withVersion(s, a.id, { ...r, local }, a.label, a.local.source, a.key && `u:${a.local.id}:${a.key}`);
     }
     case 'recipe/local-adjust': {
       const r = recipeOf(s, a.id);
@@ -351,6 +352,8 @@ function undoLabel(a: Action): { label: string; key?: string } {
       return { label: `${cap(a.key)}`, key: `g:${a.id}:${a.key}` };
     case 'recipe/local-adjust':
       return { label: `Mask ${a.key}`, key: `l:${a.id}:${a.localId}:${a.key}` };
+    case 'recipe/local-upsert':
+      return { label: a.label, key: a.key && `u:${a.id}:${a.local.id}:${a.key}` };
     case 'correction/set':
       return { label: 'Correction', key: `c:${a.id}` };
     default:
@@ -406,7 +409,7 @@ function recipeChange(a: Action): string | null {
   return RECIPE_CHANGES.has(a.type) && 'id' in a ? a.id : null;
 }
 
-export function cap(k: string) {
+function cap(k: string) {
   const words: Record<string, string> = { temp: 'Temperature', wbK: 'White balance', skin: 'Skin even' };
   return words[k] ?? k.charAt(0).toUpperCase() + k.slice(1);
 }
@@ -583,8 +586,4 @@ export function useLibrary() {
   const v = useContext(Ctx);
   if (!v) throw new Error('useLibrary outside LibraryProvider');
   return v;
-}
-
-export function visiblePhotos(s: State): Photo[] {
-  return PHOTOS.slice(0, s.imported);
 }

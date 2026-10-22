@@ -13,9 +13,11 @@
 //! [`REGISTRY`] line, one `engine/models/manifest.json` entry and one test in
 //! `engine/tests/analyzers.rs`.
 
+pub mod depth;
 pub mod embedding;
 pub mod eyes;
 pub mod faces;
+pub mod identity;
 pub mod runtime;
 pub mod segment;
 pub mod signals;
@@ -116,6 +118,16 @@ pub trait Analyzer: Sync {
     fn needs(&self) -> &'static [&'static str] {
         &[]
     }
+    /// Whether its model is installed; a large one lives in the models folder and can be
+    /// missing ([`crate::meaning`]).
+    fn available(&self) -> bool {
+        true
+    }
+    /// Only computed when something asks for it by name, never by the Queue or
+    /// `analyze_photo`: a Fact that is big and that few Photos need (the depth map).
+    fn on_demand(&self) -> bool {
+        false
+    }
     fn run(&self, input: &Input) -> Result<Fact>;
     /// A few words for the LLM's Contact sheet caption, if this Fact has something to say.
     fn caption(&self, _fact: &Fact) -> Option<String> {
@@ -130,8 +142,16 @@ pub static REGISTRY: &[&dyn Analyzer] = &[
     &segment::Segment,
     &sky::Sky,
     &eyes::Eyes,
+    &identity::Identity,
     &embedding::Embedding,
+    &depth::DepthMap,
+    &crate::meaning::Meaning,
 ];
+
+/// The current version of an Analyzer's Facts.
+pub fn version_of(id: &str) -> Result<u32> {
+    Ok(analyzer(id)?.version())
+}
 
 fn analyzer(id: &str) -> Result<&'static dyn Analyzer> {
     REGISTRY
@@ -298,7 +318,7 @@ pub fn caption(facts: &Facts) -> String {
 pub fn background_ids(compute: Compute) -> Vec<&'static str> {
     REGISTRY
         .iter()
-        .filter(|a| a.cost().runs_at(compute))
+        .filter(|a| a.cost().runs_at(compute) && a.available() && !a.on_demand())
         .map(|a| a.id())
         .collect()
 }

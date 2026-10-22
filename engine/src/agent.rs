@@ -59,6 +59,7 @@ pub const TOOLS: &[&str] = &[
     "edit_mask",
     "remove_mask",
     "view_mask",
+    "view_depth",
     "add_spot",
     "edit_spot",
     "remove_spot",

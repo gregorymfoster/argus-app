@@ -370,6 +370,7 @@ fn sheet_photo(n: usize, at: &str) -> SheetPhoto {
         burst: None,
         tilt: None,
         sharpness: Default::default(),
+        shut_eyes: false,
     }
 }
 
@@ -1126,5 +1127,61 @@ fn a_frame_much_darker_than_the_moment_it_shares_ranks_below_it() {
         r.photos[1].rank,
         Some(2),
         "the dark twin comes last in its Stack"
+    );
+}
+
+#[test]
+fn a_models_check_sees_only_the_doubtful_frames_and_rejects_only_among_them() {
+    use argus_engine::technical::Sharpness;
+    /// Rejects every Photo it is shown, and remembers how many that was.
+    struct RejectAll(std::sync::Mutex<usize>);
+    impl Provider for RejectAll {
+        fn cull(&self, sheet: &ContactSheet) -> argus_engine::Result<CullResult> {
+            *self.0.lock().unwrap() += sheet.photos.len();
+            Ok(CullResult {
+                summary: "all bad".into(),
+                photos: sheet
+                    .photos
+                    .iter()
+                    .map(|p| photo(p.n, Verdict::Reject, "soft", None, None))
+                    .collect(),
+            })
+        }
+    }
+    let soft = Sharpness {
+        in_shoot: 0.25,
+        beside: 1.0,
+        streak: 0.1,
+        portrait: false,
+    };
+    let sheet = ContactSheet {
+        shoot: 1,
+        shoot_name: "s".into(),
+        photos: (1..=6)
+            .map(|n| SheetPhoto {
+                sharpness: if n == 2 { soft } else { Default::default() },
+                shut_eyes: n == 5,
+                ..sheet_photo(n, "2026-10-10T10:00:00")
+            })
+            .collect(),
+        context: None,
+    };
+    let model = RejectAll(Default::default());
+    let r = argus_engine::cull::cull_doubtful(&sheet, &model, 100, &|_| {}).unwrap();
+    assert_eq!(
+        *model.0.lock().unwrap(),
+        2,
+        "shown the soft frame and the shut-eyed one"
+    );
+    let rejected: Vec<usize> = r
+        .photos
+        .iter()
+        .filter(|c| c.verdict == Verdict::Reject)
+        .map(|c| c.n)
+        .collect();
+    assert_eq!(
+        rejected,
+        vec![2, 5],
+        "its rejects land on the right frames of the whole sheet"
     );
 }

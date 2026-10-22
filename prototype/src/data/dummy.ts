@@ -34,7 +34,7 @@ export function personGeometry(p: Person, groundY: number) {
 }
 
 export const GROUND_Y: Record<SceneKind, number> = { lake: 0.98, forest: 0.98, cabin: 0.98, dusk: 0.98, street: 0.98 };
-export const HORIZON: Record<SceneKind, number> = { lake: 0.42, forest: 0.3, cabin: 0.0, dusk: 0.5, street: 0.36 };
+const HORIZON: Record<SceneKind, number> = { lake: 0.42, forest: 0.3, cabin: 0.0, dusk: 0.5, street: 0.36 };
 
 function makePeople(r: () => number, n: number): Person[] {
   const people: Person[] = [];

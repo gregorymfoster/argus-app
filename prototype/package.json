@@ -9,6 +9,8 @@
     "build:single": "vite build --mode single",
     "typecheck": "tsc -b",
     "design-lint": "node scripts/design-lint.mjs",
+    "preset-parity": "node scripts/preset-parity.mjs",
+    "dead-code": "npx --yes knip --no-progress",
     "shots": "node scripts/shots.mjs",
     "live": "node scripts/live.mjs",
     "check": "tsc -b && npm run shots",

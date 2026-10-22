@@ -814,7 +814,7 @@ fn allowed(path: &str, scene: Option<Coverage>) -> bool {
 
 /// [`Recipe::set`], plus `local.<kind>.<setting>`: that setting on the take's local
 /// adjustment through an AI Mask of that kind, made the first time it's needed.
-fn apply_setting(r: &mut Recipe, path: &str, v: f64, relative: bool) -> Result<()> {
+pub fn apply_setting(r: &mut Recipe, path: &str, v: f64, relative: bool) -> Result<()> {
     let Some(rest) = path.strip_prefix("local.") else {
         return r.set(path, v, relative);
     };
@@ -835,6 +835,7 @@ fn apply_setting(r: &mut Recipe, path: &str, v: f64, relative: bool) -> Result<(
             name: format!("{name} (AI)"),
             mask,
             adjust: Adjust::default(),
+            amount: None,
             source: Some("ai".into()),
             other: Default::default(),
         });

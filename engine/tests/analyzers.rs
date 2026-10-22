@@ -174,8 +174,11 @@ fn the_queue_analyses_a_shoot_and_analyze_photo_reports_it() {
         .unwrap();
     assert_eq!(
         n as usize,
-        2 * REGISTRY.len(),
-        "every Analyzer on both Photos"
+        2 * REGISTRY
+            .iter()
+            .filter(|a| a.available() && !a.on_demand())
+            .count(),
+        "every installed background Analyzer on both Photos"
     );
 
     let out = tools
@@ -379,5 +382,37 @@ fn the_face_model_reads_expressions_and_head_turn() {
     assert!(
         open[0].size > 0.05 && (0.0..=1.0).contains(&open[0].x),
         "{open:?}"
+    );
+}
+
+#[test]
+fn depth_puts_the_people_in_front_of_the_room() {
+    if !crate::has_bench() {
+        return;
+    }
+    let _env = crate::env_lock();
+    std::env::remove_var("ARGUS_DEPTH_FAKE");
+    let img = image::open(bench(PEOPLE)).unwrap().to_rgb8();
+    let d = analyzers::depth::estimate(&argus_engine::RgbImage {
+        width: img.width() as usize,
+        height: img.height() as usize,
+        data: img.into_raw(),
+    })
+    .unwrap();
+    // Mean depth (1 is near) over a box in fractions of the frame.
+    let mean = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        let (mut s, mut n) = (0f32, 0f32);
+        for y in (y0 * d.height as f32) as usize..(y1 * d.height as f32) as usize {
+            for x in (x0 * d.width as f32) as usize..(x1 * d.width as f32) as usize {
+                s += d.plane[y * d.width + x];
+                n += 1.0;
+            }
+        }
+        s / n
+    };
+    let (people, top) = (mean(0.3, 0.45, 0.7, 0.9), mean(0.0, 0.0, 1.0, 0.1));
+    assert!(
+        people > top + 0.3,
+        "people {people:.2} should be well in front of the top of the frame {top:.2}"
     );
 }

@@ -54,6 +54,8 @@ A sweep file (`bench/sweeps/`) is a `base` variant plus named `variants` laid ov
 
 Greg's "super edit" (2026-10-20): many subroutines bundled into one edit. Per Photo: K takes plus Auto and no edit as candidates, a knockout judged in both orders (calmest first, a split keeps the calmer one), then up to `--rounds` Agent critique-and-fix rounds that the judge must prefer. `--judge self,opus` runs one bracket and loop per judge from the same takes, to compare Qwen judging itself with an outside judge; `--think` lets Qwen reason. Judge the result's `super` take against its `first` take (what Suggestions show today) with an outside judge that wasn't in the loop, then with Greg's taps. A Qwen super edit costs roughly 30 min a Photo at Full, so it runs overnight on a handful of Photos.
 
+What it found (2026-10-20 to 22, `/mnt/project-files/argus-bench/super-edit/`): the critique-and-fix rounds kept nothing in 12 tries on Claude, and Qwen thinking doubled the time and lost to the first take 0-4. Qwen can't judge its own edits: pairwise it keeps the unedited photo (it answers by slot), and scoring each take alone it said "no better than the original" on 152 of 160 candidates, where Codex preferred the takes to no edit 13-1. With the first take holding the title, Qwen scoring changed 1 of 20 Photos. Opus in the loop switched 3 of 6, but Opus and Codex judging afterwards disagreed about those switches. So no default changed. A super edit needs an outside judge, and the judges only agree with Greg about two in three, so his taps decide.
+
 ## Not yet
 
 The Agent's prompt (`agent.rs` GUIDE) and the matched-Suggestion prompt aren't in variants yet. There is no cache of model replies, so re-scoring a run re-pays every call.

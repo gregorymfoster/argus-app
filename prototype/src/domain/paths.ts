@@ -1,7 +1,7 @@
 // Greg's rule: paths never contain spaces. Words join with hyphens; a date
 // prefix joins with an underscore, e.g. ~/Pictures/Argus/2026-10-12_tahoe.
 
-export function slug(name: string) {
+function slug(name: string) {
   return name
     .toLowerCase()
     .normalize('NFKD')

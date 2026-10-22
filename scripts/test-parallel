@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""`cargo test`, but with the test binaries running side by side instead of one after another.
+
+    scripts/test-parallel CARGO_TEST_ARGS...      e.g. scripts/test-parallel --workspace --profile fast
+
+Builds with `cargo test ARGS --no-run`, then starts every test binary cargo built (found from
+its JSON messages, so a new test file is never left out) plus the doc tests, all at once, each
+in its package's folder as cargo would. Each binary's output is printed whole when it ends, so
+failures don't interleave. Exit code 1 if any failed. Used by `just check`: the engine's unit
+tests (~7 s, mostly the denoise model) overlap its integration tests (~27 s) instead of
+adding to them. See docs/agents/build-speed.md. Python 3.9+ stdlib only.
+"""
+import json, os, subprocess, sys, threading, time
+
+
+def main(args):
+    build = subprocess.run(
+        ["cargo", "test", *args, "--no-run", "--message-format=json-render-diagnostics"],
+        stdout=subprocess.PIPE, text=True)
+    if build.returncode:
+        return build.returncode
+    jobs = []
+    for line in build.stdout.splitlines():
+        try:
+            m = json.loads(line)
+        except ValueError:
+            continue
+        if m.get("reason") == "compiler-artifact" and m.get("executable") and m["profile"]["test"]:
+            pkg = os.path.dirname(m["manifest_path"])
+            name = f'{m["package_id"].split("#")[0].rsplit("/", 1)[-1]} {m["target"]["kind"][0]} {m["target"]["name"]}'
+            jobs.append((name, [m["executable"]], pkg))
+    if not jobs:
+        print("test-parallel: cargo built no test binaries", file=sys.stderr)
+        return 1
+    jobs.append(("doc tests", ["cargo", "test", *args, "--doc", "-q"], None))
+
+    lock = threading.Lock()
+    failed = []
+
+    def run(name, cmd, cwd):
+        env = dict(os.environ)
+        if cwd:
+            env["CARGO_MANIFEST_DIR"] = cwd
+            deps = os.path.dirname(cmd[0])
+            for var in ("LD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):
+                env[var] = os.pathsep.join(filter(None, [deps, env.get(var)]))
+        start = time.time()
+        p = subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        with lock:
+            state = "ok" if p.returncode == 0 else f"FAILED (exit {p.returncode})"
+            print(f"\n== {name}: {state} in {time.time() - start:.1f} s", flush=True)
+            sys.stdout.write(p.stdout)
+            sys.stdout.flush()
+            if p.returncode:
+                failed.append(name)
+
+    threads = [threading.Thread(target=run, args=job) for job in jobs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if failed:
+        print(f"\ntest-parallel: FAILED: {', '.join(failed)}", file=sys.stderr)
+        return 1
+    print(f"\ntest-parallel: all {len(jobs)} test runs passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

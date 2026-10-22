@@ -31,7 +31,7 @@ if (!source) {
   process.exit(2);
 }
 // --only flags,zoom runs just those steps (each one navigates for itself), for a fast loop.
-const STEPS = ['grid', 'flags', 'zoom', 'cancel', 'cull', 'auto', 'export', 'agent', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views'];
+const STEPS = ['grid', 'flags', 'zoom', 'cancel', 'cull', 'auto', 'export', 'agent', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views', 'keywords', 'search'];
 const onlyArg = process.argv.indexOf('--only');
 const only = onlyArg > 0 ? process.argv[onlyArg + 1]?.split(',').filter(Boolean) ?? [] : (process.env.LIVE_ONLY?.split(',').filter(Boolean) ?? []);
 const unknown = only.filter((s) => !STEPS.includes(s));
@@ -122,7 +122,7 @@ const foregroundDir = mkdtempSync(join(tmpdir(), 'argus-foreground-'));
 const bridge = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
   stdio: ['ignore', 'inherit', 'inherit'],
   // Full: never throttle (pause) a real Ollama on this machine during a smoke test.
-  env: { ...process.env, ARGUS_PROVIDER: 'ollama', ARGUS_CULL_CHECK: 'model', OLLAMA_HOST: '127.0.0.1:7879', ARGUS_COMPUTE: 'full', ARGUS_REFINE_ROUNDS: '1', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
+  env: { ...process.env, ARGUS_PROVIDER: 'ollama', ARGUS_CULL_CHECK: 'model', ARGUS_CULL_ASK: 'all', OLLAMA_HOST: '127.0.0.1:7879', ARGUS_COMPUTE: 'full', ARGUS_REFINE_ROUNDS: '1', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
 });
 const api = (p, init) => fetch(`http://127.0.0.1:7878${p}`, init).then((r) => r.json());
 for (let i = 0; ; i++) {
@@ -437,7 +437,7 @@ try {
   if (run('suggest')) {
     await gotoEdit();
     // Suggestions: R queues new takes, the bridge's Queue worker asks the model, and the
-    // takes show up under the photo; accepting one saves it as a Version.
+    // takes show up first in the Edit panel; accepting one saves it as a Version.
     await p.locator('.stage').click();
     const suggestBefore = suggestCalls;
     await p.keyboard.press('r');
@@ -477,8 +477,10 @@ try {
     const afterAuto = await p.locator('.stage .photo img').first().getAttribute('src');
     // A preset is the person's own edit: its sliders reach the Library, the rest is kept.
     await p.getByRole('tab', { name: 'Presets' }).click();
-    await p.getByTestId('section-presets-Film').locator('.dev-section-toggle').click();
-    await p.getByTestId('preset-warm-film').click();
+    // Film is closed by default and remembers being opened; Suggested may list Warm film too.
+    const film = p.getByTestId('section-presets-Film');
+    if ((await film.locator('.dev-section-toggle').getAttribute('aria-expanded')) !== 'true') await film.locator('.dev-section-toggle').click();
+    await film.getByTestId('preset-warm-film').click();
     await p.waitForTimeout(1500);
     const preset = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
     const warmed = (preset?.recipe?.global?.temp ?? 0) - (autoed?.recipe?.global?.temp ?? 0);
@@ -506,15 +508,16 @@ try {
     await p.screenshot({ path: `${out}live-people.png` });
     const person = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
     check(found && person?.recipe?.local?.some((l) => l.mask.kind === 'person' && l.mask.parts.includes('face_skin')), `the people picker asked the engine and a person Mask was saved (${await p.getByTestId('people-picker').locator('.people-note').textContent().catch(() => '?')})`);
-    // A Recommended Look and a one-click fix from the Edit tool reach the Library.
+    // A suggested Look from Presets and a one-click fix from the Edit tool reach the Library.
+    await p.getByRole('tab', { name: 'Presets' }).click();
+    const recId = (await p.getByTestId('presets-suggested').locator('[data-testid^="preset-"]').first().getAttribute('data-testid')).slice(7);
+    await p.getByTestId('presets-suggested').getByTestId(`preset-${recId}`).click();
     await p.getByRole('tab', { name: 'Edit', exact: true }).click();
-    const recId = (await p.locator('[data-testid^="rec-"]').first().getAttribute('data-testid')).slice(4);
-    await p.getByTestId(`rec-${recId}`).click();
     await p.getByTestId('fix-shadows').click();
     await p.waitForTimeout(1500);
     const rec = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
     const on = (rec?.recipe?.presets ?? []).map((x) => x.id);
-    check(on.includes(recId) && on.includes('fix-shadows') && !on.includes('warm-film'), `a Recommended Look replaced Warm film and Lift shadows stacked on it (${on.join(', ')})`);
+    check(on.includes(recId) && on.includes('fix-shadows') && !on.includes('warm-film'), `a suggested Look replaced Warm film and Lift shadows stacked on it (${on.join(', ')})`);
   }
 
   if (run('look')) {
@@ -595,6 +598,82 @@ try {
     check((await p.locator(`[data-testid="tile-${victim.id}"]`).count()) === 1, 'the grid shows it again');
   }
 
+  if (run('keywords')) {
+    // Keywords and caption in the loupe, saved by the engine (read_tags), as the person's own.
+    await gotoGrid();
+    const id = photos[0].id;
+    await p.locator(`[data-testid="tile-${id}"]`).click();
+    await p.keyboard.press('e');
+    await p.waitForSelector('[data-testid="keywords"]');
+    await p.keyboard.press('k');
+    await p.keyboard.type('Places > Portugal > Lisbon');
+    await p.waitForTimeout(300);
+    await p.keyboard.press('Enter');
+    await p.keyboard.press('Escape');
+    await p.getByLabel('Caption').fill('Lunch in Alfama.');
+    await p.getByLabel('Caption').blur();
+    await p.waitForTimeout(500);
+    const tags = (await api('/api/read_tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids: [Number(id)] }) }))[0];
+    check(tags?.keywords?.some((k) => k.keyword === 'Places|Portugal|Lisbon' && !k.suggested), `K adds a kept Keyword in the engine (${JSON.stringify(tags?.keywords)})`);
+    check(tags?.caption?.text === 'Lunch in Alfama.' && !tags.caption.suggested, `the caption is saved as the person's (${JSON.stringify(tags?.caption)})`);
+    check((await p.getByText('Portugal › Lisbon').count()) > 0, 'the new Keyword shows as a chip');
+    await p.screenshot({ path: `${out}live-keywords.png` });
+  }
+  if (run('lensblur')) {
+    // Lens Blur: the Amount slider saves to the Recipe, the engine finds depth (Depth Anything
+    // V2) and the blurred render replaces the photo.
+    await gotoEdit();
+    await p.getByRole('tab', { name: 'Edit', exact: true }).click();
+    const sec = p.getByTestId('section-lensblur');
+    if ((await sec.locator('.dev-section-toggle').getAttribute('aria-expanded')) !== 'true') await sec.locator('.dev-section-toggle').click();
+    const before = await p.locator('.stage .photo img').first().getAttribute('src');
+    await sec.getByRole('slider', { name: 'Lens Blur amount' }).focus();
+    for (let i = 0; i < 10; i++) await p.keyboard.press('ArrowRight');
+    await p.waitForTimeout(1700);
+    const lb = (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) }))?.recipe?.lensBlur;
+    check(lb?.amount > 0, `the Lens Blur Amount saved to the Recipe (${JSON.stringify(lb)})`);
+    const depth = await p.getByTestId('depth-bar').waitFor({ timeout: 60000 }).then(() => true, () => false);
+    check(depth, 'the engine found depth and the focal range shows it');
+    const changed = await p.waitForFunction((b) => document.querySelector('.stage .photo img')?.getAttribute('src') !== b, before, { timeout: 60000 }).then(() => true, () => false);
+    check(changed, 'the photo re-rendered with Lens Blur');
+    await p.screenshot({ path: `${out}live-lens-blur.png` });
+  }
+  if (run('people')) {
+    // People: the face models read the Shoot in the Queue, and list_people groups the faces.
+    const queued = await api('/api/read_faces', { method: 'POST', body: '{}' });
+    let people = await api('/api/list_people', { method: 'POST', body: '{}' });
+    for (let i = 0; i < 60 && people?.unread_photos > 0; i++) {
+      await p.waitForTimeout(1000);
+      people = await api('/api/list_people', { method: 'POST', body: '{}' });
+    }
+    check(queued != null && people != null && people.unread_photos === 0, `the face models read every Photo for People (${JSON.stringify(people)?.slice(0, 160)})`);
+  }
+  if (run('search')) {
+    // ⌘K finds Photos by their Keywords across the Library, ⌘↵ opens them all in the grid,
+    // and the search saves as an Album in the sidebar.
+    await gotoGrid();
+    // Two Photos from different Stacks: the grid shows a Stack as one tile, and the AI cull
+    // above stacks the burst.
+    const now = await api(`/api/photos?shoot_id=${shoot.id}`);
+    const ids = now.filter((x, i) => x.stack == null || now.findIndex((y) => y.stack === x.stack) === i).slice(0, 2).map((x) => Number(x.id));
+    await api('/api/set_keywords', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids: ids, add: ['Activities|Sports|pickleball'] }) });
+    await p.keyboard.press('ControlOrMeta+k');
+    await p.keyboard.type('pickle');
+    await p.waitForSelector('[data-testid="palette-show-all"]', { timeout: 5000 }).catch(() => {});
+    check((await p.locator('.found-thumb').count()) >= 2, `⌘K shows the Photos it found (${await p.locator('.found-thumb').count()})`);
+    await p.screenshot({ path: `${out}live-search-palette.png` });
+    await p.keyboard.press('ControlOrMeta+Enter');
+    await p.waitForURL(/#\/cull/).catch(() => {});
+    await p.waitForSelector('[data-testid^="tile-"]', { timeout: 15000 }).catch(() => {});
+    await p.waitForTimeout(500);
+    const tiles = await p.locator('[data-testid^="tile-"]').count();
+    check(tiles >= 2 && tiles < photos.length + 1, `⌘↵ opens the matches in the grid (${tiles} tiles)`);
+    check(/in 1 Shoot/.test(await p.locator('.found-line').innerText().catch(() => '')), 'the header says how many it found');
+    await p.getByTestId('save-album').click();
+    await p.waitForSelector('[data-testid="nav-album"]', { timeout: 15000 }).catch(() => {});
+    check((await p.getByTestId('nav-album').innerText().catch(() => '')).includes('Pickle'), 'Save as Album adds it to the sidebar');
+    await p.screenshot({ path: `${out}live-search-album.png` });
+  }
   if (run('views')) {
     await gotoGrid();
     // Library-wide views from the sidebar: every Photo, then every Pick.

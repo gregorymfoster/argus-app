@@ -59,6 +59,23 @@ pub fn slug(words: &str) -> String {
     cut_at_word(&out, MAX_SLUG)
 }
 
+/// A lowercase id from a display name, for a Look or a Preset: ASCII letters and digits
+/// joined by hyphens (`"Warm Film #2"` -> `warm-film-2`), or `fallback` when none are left.
+/// Ids never reach the disk, so unlike [`slug`] nothing is spelled out or kept in case.
+pub fn id_slug(name: &str, fallback: &str) -> String {
+    let s: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let parts: Vec<&str> = s.split('-').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        fallback.into()
+    } else {
+        parts.join("-")
+    }
+}
+
 /// The date part of an ISO 8601 capture time: `2026-10-18T09:12:00` -> `2026-10-18`.
 pub fn capture_date(captured_at: &str) -> Option<&str> {
     let d = captured_at.get(..10)?;
@@ -257,6 +274,16 @@ impl Keyword {
         })
     }
 
+    /// The Keyword a named person gets on their Photos, `People|Maya Lee`: one level, so a
+    /// slash or bar in the name is a space. None for a name with no words.
+    pub fn person(name: &str) -> Option<Keyword> {
+        let level = clean_level(&name.replace(['|', '>', '/'], " "));
+        (!level.is_empty()).then(|| Keyword {
+            facet: Facet::People,
+            levels: vec![level],
+        })
+    }
+
     /// The narrowest level: `Lisbon`.
     pub fn leaf(&self) -> &str {
         self.levels.last().expect("a Keyword has a level")
@@ -405,6 +432,12 @@ mod tests {
             "2026-10-18_Boat-Trip"
         );
         assert!(!shoot_name("2026-10-18", "Maya's Party").contains(' '));
+    }
+
+    #[test]
+    fn ids_are_lowercase_words_joined_by_hyphens() {
+        assert_eq!(id_slug("Warm Film #2", "look"), "warm-film-2");
+        assert_eq!(id_slug("  ", "preset"), "preset");
     }
 
     #[test]

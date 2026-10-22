@@ -223,7 +223,7 @@ fn a_v1_library_migrates_and_keeps_working() {
         db.execute_batch(
             "ALTER TABLE looks DROP COLUMN batch_id; ALTER TABLE photos DROP COLUMN jpeg;
              DROP TABLE ratings; DROP TABLE rating_log; DROP TABLE best_photos;
-             DROP TABLE suggestions; DROP TABLE jobs; DROP TABLE facts; DROP TABLE usage_events;
+             DROP TABLE suggestions; DROP TABLE jobs; DROP TABLE facts; DROP TABLE usage_events; DROP TABLE photo_keywords; DROP TABLE captions; DROP TABLE albums; DROP TABLE face_not; DROP TABLE face_names; DROP TABLE people;
              ALTER TABLE photos DROP COLUMN lens; ALTER TABLE photos DROP COLUMN focal; ALTER TABLE photos DROP COLUMN iso; ALTER TABLE photos DROP COLUMN aperture; ALTER TABLE photos DROP COLUMN shutter;
              PRAGMA user_version = 1;",
         )

@@ -68,6 +68,9 @@
   --chip: rgb(255 255 255 / 0.075);
   /* Sidebar and list row height, and the icon size in rows and headers. */
   --row-h: 28px;
+  /* Ends of a tone ramp (the Luminance range band): pure black and white in any theme. */
+  --tone-0: #000;
+  --tone-1: #fff;
   --icon: 14px;
   /* Secondary buttons and segmented controls are a soft tint with no outline, as in Claude's header
      chips (Greg, 2026-10-18: lighter, gentler outlines, fewer borders). Hover lifts the tint. */
@@ -97,6 +100,12 @@
   --reject-line: #6a2c29;
   --done: #7fd1a8;
   --shoot: #e0ac5a;
+  /* Lens Blur's depth, far (cool) to near (warm), as the engine's Visualize depth draws it (lens_blur.rs). */
+  --depth-ramp: linear-gradient(90deg, #1a0f47, #5c1c7a, #b8386b, #f5854a, #fce08c);
+  --depth-out: rgb(17 17 17 / 0.62);
+  /* Refine brush strokes over the photo: light where it stays sharp, dark where it blurs. */
+  --refine-focus: rgb(255 255 255 / 0.28);
+  --refine-blur: rgb(0 0 0 / 0.38);
   /* The Mac's own SF Pro and SF Mono first, as Cursor and Claude use; bundled Geist wherever those don't exist. */
   --sans: -apple-system, BlinkMacSystemFont, 'Geist Variable', Geist, system-ui, sans-serif;
   --mono: 'Nordwand Mono', ui-monospace, 'SF Mono', 'Geist Mono Variable', 'Geist Mono', Menlo, monospace;
@@ -188,7 +197,6 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .nav-item.active { background: var(--selected); color: var(--text); box-shadow: var(--highlight); }
 .nav-item:hover svg, .nav-item.active svg { color: var(--text-2); }
 .nav-item .count { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.nav-sub { padding-left: 25px; height: 26px; }
 .swatch { width: 8px; height: 8px; border-radius: 2px; background: #3a3a39; flex: none; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--done); }
 
@@ -212,6 +220,12 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .stars svg { color: rgb(255 255 255 / 0.16); }
 .stars svg.on, .stars button.on svg { color: var(--text); }
 .stars.ai svg.on, .stars.ai button.on svg { color: rgb(237 237 239 / 0.5); }
+/* Learn as you cull: AI stars that just changed glow up and settle back. */
+.stars.rerated svg.on { animation: rerated 900ms var(--ease-out); }
+@keyframes rerated { 0% { color: var(--text); } }
+@media (prefers-reduced-motion: reduce) { .stars.rerated svg.on { animation: none; } }
+.foot-learn { display: inline-flex; flex: none; align-items: center; gap: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-3); font-size: 11px; margin-right: 12px; }
+@container (max-width: 760px) { .foot-learn { display: none; } }
 .stars .spark { color: rgb(237 237 239 / 0.45); margin-right: 2px; }
 .stars button { display: inline-flex; padding: 1px; border: none; background: none; cursor: pointer; border-radius: 3px; transition: transform var(--fast) var(--ease-out); }
 .stars button:hover { background: var(--hover); }
@@ -219,6 +233,10 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .stars.live:hover button svg { color: rgb(255 255 255 / 0.3); }
 .stars.live button:hover svg, .stars.live button:has(~ button:hover) svg { color: var(--text) !important; }
 .tile figcaption .stars { margin-right: 6px; }
+/* Grid view styles (J). Compact keeps what culling needs (flag, Stack, stars); the reason and the AI's
+   marks wait for the footer and the Loupe. Photo only also drops the caption row. */
+.grid-v.tiles-compact .cap-text:not(:only-child), .grid-v.tiles-compact .takes-badge, .grid-v.tiles-compact .ai-mark, .grid-v.tiles-compact .eye-badges, .grid-v.tiles-compact .best-badge { display: none; }
+.grid-v.tiles-photo figcaption, .grid-v.tiles-photo .takes-badge, .grid-v.tiles-photo .ai-mark, .grid-v.tiles-photo .eye-badges, .grid-v.tiles-photo .best-badge { display: none; }
 .best-badge { position: absolute; top: 8px; right: 8px; z-index: 2; display: inline-flex; align-items: center; gap: 2px; font-family: var(--mono); font-size: 10.5px; padding: 2px 5px; border-radius: 6px; background: rgba(13, 13, 14, 0.72); color: var(--shoot); backdrop-filter: blur(6px); }
 /* In the grid the corner marks are icons, like Lightroom's flags: the photo is the content. */
 .tile .chip, .tile .badge, .tile .best-badge, .tile .takes-badge { height: 18px; padding: 0 5px; border-radius: 4px; font-size: 10.5px; top: 5px; }
@@ -251,12 +269,8 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .best-summary { display: flex; gap: 10px; align-items: baseline; padding: 14px 16px 0; font-size: 13px; line-height: 1.55; color: var(--text-2); }
 .loupe-strip { display: flex; align-items: center; gap: 12px; padding: 6px 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-2); min-height: 32px; }
 .loupe-strip .reason { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile.edge-pick { border-color: var(--pick); }
-.tile.edge-reject { border-color: var(--reject); }
 .tile.faded { opacity: 0.32; }
 .tile.faded:hover { opacity: 0.8; }
-.hover-reason { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 10px 7px; font-size: 12px; background: linear-gradient(transparent, rgba(0,0,0,0.75)); opacity: 0; transition: opacity 0.12s; }
-.tile:hover .hover-reason, .tile.sel .hover-reason { opacity: 1; }
 .shimmer { position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,0.06) 50%, transparent 70%); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
@@ -270,8 +284,8 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 /* Lightroom flags. On a tile they sit on the corner chip and show on hover. */
 .flags { display: flex; gap: 4px; }
 .flags.sm { position: absolute; left: 5px; top: 5px; z-index: 3; opacity: 0; transition: opacity 0.1s; }
-.tile:hover .flags.sm, .survey-cell:hover .flags.sm, .tile.cur .flags.sm { opacity: 1; }
-.tile:hover .chip, .survey-cell:hover .chip, .tile.cur .chip { opacity: 0; }
+.tile:hover .flags.sm, .tile.cur .flags.sm { opacity: 1; }
+.tile:hover .chip, .tile.cur .chip { opacity: 0; }
 .flag { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid transparent; background: rgba(13, 13, 14, 0.78); color: var(--text-2); border-radius: 6px; transition: background var(--fast), color var(--fast), border-color var(--fast), transform 80ms; }
 .flag:active { transform: scale(0.96); }
 .flags.sm .flag { width: 22px; height: 18px; padding: 0; border-radius: 4px; }
@@ -289,15 +303,6 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .flags.lg .flag.pick.on { background: var(--pick-bg); color: var(--pick); }
 .flags.lg .flag.reject.on { background: var(--reject-bg); color: var(--reject); }
 .flags.lg .flag.unflagged.on { background: var(--selected); color: var(--text); }
-
-/* Compare (Lightroom's Survey) */
-.survey { flex: 1 1 auto; min-height: 0; display: grid; gap: 12px; padding: 16px; align-content: center; overflow: auto; }
-.survey-cell { margin: 0; border-radius: 6px; overflow: hidden; background: var(--raised); border: 1px solid var(--border); cursor: pointer; transition: opacity 0.15s, border-color var(--fast); }
-.survey-cell:hover { border-color: var(--border-hover); }
-.survey-cell.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
-.survey-cell.faded { opacity: 0.4; }
-.survey-cell .ph { aspect-ratio: 3/2; position: relative; }
-.survey-cell figcaption { padding: 8px 12px; color: var(--text-2); font-size: 12px; }
 
 .slider-label { color: var(--text-2); }
 .side .chip { position: static; }
@@ -357,8 +362,6 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .side h2 { margin: 0 0 8px; font-size: 11.5px; font-weight: 500; color: var(--text-3); letter-spacing: 0; }
 .signals { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 4px; font-size: 12px; }
 .signals > :nth-child(even) { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hud { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 6px 8px 6px 12px; border-radius: 8px; background: rgba(13,13,14,0.82); border: 1px solid var(--border-strong); box-shadow: var(--pop); backdrop-filter: blur(12px); z-index: 5; max-width: calc(100% - 40px); }
-.hud .seg button { height: 28px; }
 
 /* Sliders */
 .slider { display: grid; grid-template-columns: 88px 1fr 44px; align-items: center; gap: 8px; font-size: 12px; }
@@ -367,18 +370,10 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .slider-list { display: flex; flex-direction: column; gap: 3px; }
 
 /* Look screen */
-.batch-tile .pair { display: grid; grid-template-columns: 1fr 1fr; aspect-ratio: 3/2; }
-.batch-tile .pair .photo, .batch-tile .one .photo { border-radius: 0; width: 100%; height: 100%; aspect-ratio: auto; }
-.batch-tile .one { aspect-ratio: 3/2; position: relative; }
-.batch-tile .fixes { padding: 8px 10px; display: flex; gap: 6px; flex-wrap: wrap; min-height: 34px; }
 .fix { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 5px; background: #242424; color: var(--text-2); }
 .compare-flag { position: absolute; top: 8px; left: 8px; z-index: 3; font-size: 11px; padding: 2px 8px; border-radius: 6px; background: rgba(13,13,14,0.8); }
 
 /* Editor */
-.mask-card { border: 1px solid var(--border); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); transition: border-color var(--fast), background var(--fast); }
-.mask-card:hover { border-color: var(--border-strong); }
-.mask-card.sel { border-color: var(--border-strong); background: var(--raised); }
-.mask-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
 .version { display: flex; align-items: center; gap: 8px; padding: 5px 14px; border: none; background: none; width: 100%; text-align: left; transition: background var(--fast); }
 .version:hover { background: var(--hover); }
@@ -390,8 +385,6 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 /* Import */
 .source { text-align: left; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--raised); }
 .source.on { border-color: rgb(217 119 87 / 0.6); background: rgb(217 119 87 / 0.08); }
-/* The scroller is a wrapper: WebKit squashes aspect-ratio tiles in a height-capped grid. */
-.import-scroll { max-height: 340px; overflow: auto; flex: none; }
 .import-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); grid-auto-rows: max-content; gap: 8px; padding: 2px; }
 .import-tile { position: relative; aspect-ratio: 3 / 2; min-height: 72px; flex: none; border-radius: 6px; transition: border-color var(--fast), box-shadow var(--fast); overflow: hidden; border: 1px solid var(--border-strong); background: var(--panel); padding: 0; cursor: pointer; }
 .import-tile img, .import-tile-blank { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -492,9 +485,13 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .first-run-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* Suggestions: the takes strip under the photo in Edit (Lightroom's preset previews). */
-.takes { border-top: 1px solid var(--border); background: var(--panel); padding: 6px 10px 8px; display: flex; flex-direction: column; gap: 6px; flex: none; }
-.takes-row { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; }
-.take { flex: none; width: 124px; display: flex; flex-direction: column; gap: 3px; padding: 3px; border-radius: 5px; border: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; transition: border-color var(--fast), background var(--fast); }
+/* The AI takes, first in Edit's panel: three across with names only, so the sliders stay in reach;
+   the picked take's reason is the line above them, the rest on hover. */
+.takes-panel { gap: 6px; }
+.takes-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.takes-grid .take-why { display: none; }
+.takes-panel .takes-progress { width: auto; }
+.take { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 3px; border-radius: 5px; border: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; transition: border-color var(--fast), background var(--fast); }
 .take:hover { border-color: var(--border-hover); background: var(--hover); }
 .take.sel { border-color: color-mix(in srgb, var(--text) 60%, transparent); background: var(--selected); }
 .take .photo { width: 100%; border-radius: 3px; }
@@ -526,15 +523,8 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 
 /* Export dialog (src/ui/Export.tsx): Lightroom's sections, simplified. */
 .export-dialog { width: min(620px, calc(100vw - 32px)); max-width: none; }
-.export-sections { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.export-sections:disabled { opacity: 0.55; }
-.export-head { margin: 10px 0 0; font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); }
-.export-label { width: 90px; flex: none; color: var(--text-2); }
-.export-indent { padding-left: 98px; }
-.export-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .export-example { font-size: 12px; }
 .export-quality { max-width: 240px; }
-.export-progress { display: flex; flex-direction: column; gap: 6px; }
 .takes-badge { position: absolute; left: 6px; bottom: 6px; display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 5px; border-radius: 4px; background: rgb(0 0 0 / 0.62); color: var(--text); font-size: 11px; font-family: var(--font-mono, inherit); pointer-events: auto; }
 
 /* Native Mac chrome (src/ui/macChrome.ts): overlay title bar and a translucent sidebar. The window's own
@@ -678,7 +668,6 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .dev-select svg { color: var(--text-3); }
 .dev-block { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); margin: 0 -12px; padding: 8px 12px 10px; }
 .dev-block .dim { opacity: 0.45; pointer-events: none; }
-.rec-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
 .fix-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .fix { font-family: var(--sans); display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border-radius: 5px; border: 1px solid transparent; background: var(--fill); color: var(--text-2); font-size: 12px; transition: background var(--fast), color var(--fast), border-color var(--fast); }
 .fix:hover { background: var(--fill-hover); color: var(--text); }
@@ -699,6 +688,22 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .dev-panel .dim-soft:hover, .dev-panel .dim-soft:focus-within { opacity: 1; }
 .curve-modes, .lens-profile { width: 100%; margin-bottom: 6px; }
 .curve-modes > button, .lens-profile > button { flex: 1; height: 22px; font-size: 11.5px; }
+/* Lens Blur (LensBlur.tsx): the depth histogram with the focal range's two handles. */
+.bokeh-seg { width: 100%; }
+.bokeh-seg > button { flex: 1; height: 24px; font-size: 11.5px; gap: 4px; }
+.depth-range { margin: 4px 0 2px; }
+.depth-bar { position: relative; height: 34px; border-radius: 4px; overflow: hidden; background: var(--depth-ramp); cursor: ew-resize; touch-action: none; }
+.depth-hist { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 1px; padding: 0 1px; pointer-events: none; }
+.depth-hist i { flex: 1; background: var(--depth-out); border-radius: 2px 2px 0 0; }
+.depth-out { position: absolute; top: 0; bottom: 0; background: var(--depth-out); pointer-events: none; }
+.depth-handle { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); pointer-events: none; }
+.depth-handle::after { content: ''; position: absolute; left: -4px; top: 50%; width: 10px; height: 14px; margin-top: -7px; border-radius: 4px; background: var(--text); box-shadow: var(--pop); }
+.depth-scale { height: 18px; font-size: 10.5px; }
+.depth-view { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.refine-dot { position: absolute; border-radius: 999px; transform: translate(-50%, -50%); pointer-events: none; }
+.refine-dot.focus { background: var(--refine-focus); }
+.refine-dot.blur { background: var(--refine-blur); }
+.refine-cursor { position: absolute; border-radius: 999px; border: 1.5px solid var(--text); transform: translate(-50%, -50%); pointer-events: none; }
 .curve-graph { display: block; width: 100%; max-width: 232px; aspect-ratio: 1; margin: 2px auto 4px; touch-action: none; cursor: crosshair; }
 .curve-bg { fill: var(--fill); }
 .curve-grid line, .curve-diag { stroke: var(--border); stroke-width: 1; }
@@ -724,8 +729,8 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .pick-overlay { position: absolute; inset: 0; z-index: 4; cursor: crosshair; outline: none; }
 
 /* Masking tool */
-.mask-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
-.mask-tiles button { font-family: var(--sans); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; height: 50px; border-radius: 6px; border: 1px solid var(--border-strong); background: rgb(255 255 255 / 0.02); color: var(--text-2); font-size: 11px; transition: background var(--fast), color var(--fast), border-color var(--fast); }
+.mask-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+.mask-tiles button { font-family: var(--sans); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; height: 50px; border-radius: 6px; border: 1px solid var(--border-strong); background: rgb(255 255 255 / 0.02); color: var(--text-2); font-size: 10.5px; letter-spacing: -0.01em; padding: 0 2px; transition: background var(--fast), color var(--fast), border-color var(--fast); }
 .mask-tiles button:hover:not(:disabled) { background: var(--hover); color: var(--text); border-color: var(--border-hover); }
 .mask-tiles button.on { background: var(--selected); color: var(--text); border-color: var(--accent); }
 .mask-tiles button:disabled { opacity: 0.35; }
@@ -735,6 +740,14 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .mask-row.sel { background: var(--selected); box-shadow: var(--highlight); }
 .mask-x { display: grid; place-items: center; width: 20px; height: 20px; border: none; border-radius: 4px; background: none; color: var(--text-3); opacity: 0; }
 .mask-row:hover .mask-x, .mask-row.sel .mask-x { opacity: 1; }
+/* A combined Mask's components, indented under it with their op (Add, Subtract, Intersect). */
+.mask-part { padding-left: 20px; height: 26px; color: var(--text-2); }
+.mask-op { flex: none; color: var(--text-3); }
+.mask-ops { display: flex; gap: 2px; margin: 4px -6px 0; }
+.mask-colors { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+/* The chosen band of tones over a black-to-white ramp. */
+.lum-band { position: relative; height: 6px; margin: 8px 0 2px; border-radius: 4px; background: linear-gradient(90deg, var(--tone-0), var(--tone-1)); box-shadow: inset 0 0 0 1px var(--border); }
+.lum-band span { position: absolute; top: -2px; bottom: -2px; border: 1px solid var(--accent); border-radius: 4px; }
 .mask-x:hover { background: var(--press); color: var(--text); }
 .people-pick { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); margin: 0 -12px; padding: 10px 12px 2px; }
 .people { display: flex; align-items: flex-start; gap: 10px; }
@@ -974,3 +987,102 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
    hints are plain letters, and Cancel is a ghost button beside the one terracotta Import. */
 .import-v2 .import-pick { border-color: transparent; background: none; }
 .import-v2 .import-pick:hover { background: var(--hover); border-color: transparent; }
+.preset-name { height: 28px; margin-top: 10px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg); color: var(--text); font-size: 12.5px; outline: none; transition: border-color var(--fast); }
+.preset-name:focus { border-color: var(--border-hover); }
+.preset-error { margin-top: 4px; font-size: 11.5px; color: var(--reject); }
+.mask-handles.straighten { pointer-events: auto; cursor: crosshair; }
+.mask-handles.straighten .crop-shade { cursor: crosshair; }
+.straighten-line { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.straighten-line line { stroke: var(--accent); stroke-width: 1.5; }
+.crop-tools { display: flex; gap: 6px; margin-top: 8px; }
+/* Caption and Keywords in the loupe: the AI's suggestions dashed with a sparkle until kept. */
+.tag-by, .tag-count { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; }
+.tag-count { margin-right: 4px; }
+.cap-box { display: block; width: 100%; resize: none; border: 1px solid var(--border); border-radius: 5px; background: var(--fill); color: var(--text); font: inherit; font-size: 12px; line-height: 1.45; padding: 6px 8px; outline: none; }
+.cap-box:focus { border-color: var(--ring); }
+.cap-box.ai { border-style: dashed; border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.kw-rows { display: flex; flex-direction: column; gap: 5px; }
+.kw-row { display: grid; grid-template-columns: 64px 1fr; align-items: start; gap: 6px; min-height: 22px; }
+.kw-facet { font-size: 11.5px; line-height: 22px; color: var(--text-3); }
+.kw-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 22px; min-width: 0; }
+.kw-chip { display: inline-flex; align-items: center; gap: 2px; height: 20px; max-width: 100%; padding: 0 2px 0 7px; border-radius: 5px; background: var(--chip); color: var(--text); font-size: 11px; border: 1px solid transparent; }
+.kw-chip > span, .kw-keep { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kw-chip.ai { background: transparent; border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent-hover); }
+.kw-keep { display: inline-flex; align-items: center; gap: 4px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.kw-keep:hover { color: var(--text); }
+.kw-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-3); cursor: pointer; opacity: 0; }
+.kw-chip:hover .kw-x, .kw-x:focus-visible { opacity: 1; }
+.kw-x:hover { background: var(--hover); color: var(--text); }
+.kw-face { width: 22px; height: 22px; border-radius: 999px; padding: 0; border: 1px dashed var(--border-strong); background: var(--raised); color: var(--text-3); font-size: 11px; cursor: pointer; }
+.kw-face:hover { color: var(--text); border-color: var(--border-hover); }
+.kw-note { font-size: 11px; margin: 0; }
+.kw-add { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; margin-top: 6px; padding: 0 8px; border: 0; border-radius: 5px; background: none; color: var(--text-3); font: inherit; font-size: 12px; cursor: pointer; }
+.kw-add:hover { background: var(--hover); color: var(--text-2); }
+.kw-input-wrap { position: relative; margin-top: 6px; }
+.kw-input { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border: 1px solid var(--ring); border-radius: 5px; color: var(--text-3); }
+.kw-input input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12px; outline: none; }
+.kw-menu { position: absolute; left: 0; right: 0; top: 30px; z-index: 20; padding: 4px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--glass); box-shadow: var(--shadow-pop); backdrop-filter: blur(24px) saturate(1.5); }
+.kw-opt { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; border-radius: 4px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.kw-opt.on { background: var(--selected); color: var(--text); }
+.kw-n { margin-left: auto; flex: none; font-size: 10.5px; color: var(--text-3); }
+/* Search: the palette's best few Photos, and the results grid's header line. */
+.found-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; padding: 2px 8px 6px; }
+.found-thumb { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 0; border: 0; background: none; color: var(--text-3); font: inherit; font-size: 10.5px; text-align: left; cursor: pointer; }
+.found-thumb > img, .found-thumb > div { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; border-radius: 4px; background: var(--photo-well); outline: 1px solid var(--border); }
+.found-thumb:hover > img, .found-thumb:hover > div { outline-color: var(--border-hover); }
+.found-thumb:hover { color: var(--text-2); }
+.found-line { gap: 8px; margin-left: 10px; font-size: 11.5px; }
+
+/* People view (as mocked, 2026-10-22): round face tiles, named people then groups to name. */
+.people-view { display: flex; flex-direction: column; min-width: 0; }
+.people-body { flex: 1 1 auto; overflow-y: auto; padding: 14px 20px 20px; display: flex; flex-direction: column; gap: 18px; }
+.people-h { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px; font-size: 12.5px; font-weight: 500; }
+.people-h .faint { font-size: 11.5px; font-weight: 400; }
+.people-h [data-slot='button'] { align-self: center; }
+.people-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 112px)); gap: 16px 12px; }
+.people-tile { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; padding: 4px 2px; border: 0; border-radius: 7px; background: none; color: var(--text); font: inherit; cursor: pointer; transition: background var(--fast); }
+button.people-tile:hover { background: var(--hover); }
+.people-tile.drop { background: var(--selected); box-shadow: inset 0 0 0 1px var(--accent); }
+.people-tile.group { cursor: default; }
+.people-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.people-count { margin-top: -4px; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.face-circle { display: block; flex: none; border-radius: 999px; overflow: hidden; background-color: var(--photo-well); background-repeat: no-repeat; }
+.face-circle img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.face-circle.unnamed { box-shadow: 0 0 0 1px var(--border-strong); }
+.people-face-btn { position: relative; padding: 0; border: 0; border-radius: 999px; background: none; cursor: pointer; }
+.people-face-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.people-tile.selected .face-circle { box-shadow: 0 0 0 2px var(--accent); }
+.people-badge { position: absolute; right: -2px; bottom: 0; padding: 1px 5px; border-radius: 999px; background: var(--raised-2); color: var(--text-2); font-family: var(--mono); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.people-field { position: relative; display: flex; align-items: center; width: 92px; }
+.people-field input { width: 100%; height: 24px; padding: 0 6px; border: 1px solid var(--border); border-radius: 5px; background: none; color: var(--text); font: inherit; font-size: 12px; text-align: center; transition: border-color var(--fast); }
+.people-field input::placeholder { color: var(--text-3); }
+.people-field input:hover { border-color: var(--border-hover); }
+.people-field input:focus { outline: none; border-color: var(--accent); }
+.people-yes { position: absolute; right: 3px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: var(--fill); color: var(--done); cursor: pointer; }
+.people-yes:hover { background: var(--fill-hover); }
+.people-menu { position: absolute; top: 28px; left: calc(50% - 90px); z-index: 20; width: 180px; display: flex; flex-direction: column; padding: 4px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--glass); backdrop-filter: blur(20px); box-shadow: var(--pop); }
+.people-menu button { height: 28px; padding: 0 8px; border: 0; border-radius: 5px; background: none; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; white-space: nowrap; cursor: pointer; }
+.people-menu button.on, .people-menu button:hover { background: var(--chip); }
+.people-find { width: 180px; height: 26px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: none; color: var(--text); font: inherit; font-size: 12px; }
+.people-find::placeholder { color: var(--text-3); }
+.people-find:focus { outline: none; border-color: var(--accent); }
+.people-unread, .people-empty { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; }
+.people-crumb { padding: 2px 4px; border: 0; border-radius: 4px; background: none; color: var(--text-3); font: inherit; font-size: 13px; cursor: pointer; }
+.people-crumb:hover { color: var(--text); background: var(--hover); }
+.people-rename { width: 200px; height: 26px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 6px; background: none; color: var(--text); font: inherit; font-size: 13px; }
+.people-rename:focus { outline: none; }
+.people-ask { flex: none; padding: 14px 20px 16px; border-bottom: 1px solid var(--border); }
+.people-ask-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.people-maybe { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.people-maybe .face-circle.unnamed { box-shadow: 0 0 0 1px var(--accent); }
+.people-maybe.on .face-circle { box-shadow: 0 0 0 2px var(--accent); }
+.people-yn { display: flex; gap: 2px; opacity: 0; transition: opacity var(--fast); }
+.people-maybe:hover .people-yn, .people-maybe.on .people-yn { opacity: 1; }
+.people-yn button { display: grid; place-items: center; width: 22px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: var(--fill); color: var(--text-2); cursor: pointer; }
+.people-yn button.yes { color: var(--done); }
+.people-yn button:hover { background: var(--fill-hover); }
+.people-photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.people-photo { padding: 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--photo-well); aspect-ratio: 3 / 2; cursor: pointer; transition: border-color var(--fast); }
+.people-photo:hover { border-color: var(--border-hover); }
+.people-photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.people-foot { flex: none; }

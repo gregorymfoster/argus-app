@@ -150,7 +150,8 @@ export function LookScreen({ onExport }: { onExport: () => void }) {
   useHotkeys('backslash', () => setSolo((s) => !s));
   useHotkeys('y', cycle);
   useHotkeys('shift+s', sync, [sel, canSync]);
-  useHotkeys('e', () => sel && go({ name: 'edit', id: sel.id }), [sel]);
+  // D opens Edit as in the grid and Loupe (Lightroom's Develop); E stays for old habits.
+  useHotkeys(['d', 'e'], () => sel && go({ name: 'edit', id: sel.id }), [sel]);
   useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
 
   const look = state.look;
@@ -264,12 +265,12 @@ export function LookScreen({ onExport }: { onExport: () => void }) {
             ))}
           </span>
           <span className="hints">
-            <Kbd>Y</Kbd> cycle
+            <Kbd quiet>Y</Kbd> cycle
           </span>
           <QueueMeter />
         </header>
         {!picks.length || !sel ? (
-          <div className="faint" style={{ padding: 24 }}>No Picks yet. Cull first, then come back to set a Look.</div>
+          <div className="faint" style={{ padding: 24 }}>No Picks yet. The AI cull only sets aside broken frames, so Pick the ones you want in the grid (P), then come back to set a Look.</div>
         ) : (
           <>
             <div className="stage look-stage">
@@ -281,7 +282,7 @@ export function LookScreen({ onExport }: { onExport: () => void }) {
                 Pick {at + 1} of {picks.length}
               </span>
               <span className="grow" />
-              <Hints items={[['← →', 'Picks'], ['\\', solo ? 'Before / after' : 'After only'], ['Y', 'Layout'], ['⇧ S', 'Sync'], ['E', 'Edit']]} />
+              <Hints items={[['← →', 'Picks'], ['\\', solo ? 'Before / after' : 'After only'], ['Y', 'Layout'], ['⇧ S', 'Sync'], ['D', 'Edit']]} />
             </div>
             <div className="filmstrip" aria-label="Picks" data-testid="look-strip">
               {picks.map((p) => (

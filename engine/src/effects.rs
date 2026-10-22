@@ -12,6 +12,7 @@
 //! original, so pixel-sized settings (sharpening radius, noise) look the same in a small
 //! preview as in a full-size export.
 
+use crate::color::smooth;
 use crate::masks::refine::{box_blur, guided_filter, resize};
 use crate::pipeline::{srgb_decode, srgb_encode, to8, LUMA};
 use crate::recipe::Adjust;
@@ -262,11 +263,6 @@ fn vignette_weight(
     let centre = 0.35 + 0.75 * mid;
     let width = 0.05 + 0.9 * feather;
     smooth(centre - width * 0.5, centre + width * 0.5, d)
-}
-
-fn smooth(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a).max(1e-4)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// Film-like grain, -1..1: value noise at the grain's cell size, roughened with per-pixel

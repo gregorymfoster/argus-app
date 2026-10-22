@@ -26,6 +26,9 @@ const STEPS: &[Step] = &[
     v7_facts,
     v8_usage_log,
     v9_exposure,
+    v10_keywords,
+    v11_albums,
+    v12_people,
 ];
 
 /// The schema version this Argus writes.
@@ -97,7 +100,7 @@ fn v5_ratings_best_photos(tx: &Transaction, _root: &Path) -> Result<()> {
     )
 }
 
-/// The background Queue and Suggestions (ADR 0010): the end of `schema.sql`.
+/// The background Queue and Suggestions (ADR 0016): the end of `schema.sql`.
 fn v6_queue_suggestions(tx: &Transaction, _root: &Path) -> Result<()> {
     let schema = include_str!("schema.sql");
     sql(
@@ -122,7 +125,10 @@ fn v8_usage_log(tx: &Transaction, _root: &Path) -> Result<()> {
     let schema = include_str!("schema.sql");
     sql(
         tx,
-        &schema[schema.find("-- Usage log").expect("usage log in schema")..],
+        &schema[schema.find("-- Usage log").expect("usage log in schema")
+            ..schema
+                .find("-- Keywords and captions")
+                .expect("keywords in schema")],
     )
 }
 
@@ -155,6 +161,41 @@ fn v9_exposure(tx: &Transaction, root: &Path) -> Result<()> {
         .map_err(db_err)?;
     }
     Ok(())
+}
+
+/// Keywords and captions on each Photo.
+fn v10_keywords(tx: &Transaction, _root: &Path) -> Result<()> {
+    let schema = include_str!("schema.sql");
+    sql(
+        tx,
+        &schema[schema
+            .find("-- Keywords and captions")
+            .expect("keywords in schema")
+            ..schema.find("-- Albums: saved").expect("albums in schema")],
+    )
+}
+
+/// Albums (saved searches).
+fn v11_albums(tx: &Transaction, _root: &Path) -> Result<()> {
+    let schema = include_str!("schema.sql");
+    sql(
+        tx,
+        &schema[schema.find("-- Albums: saved").expect("albums in schema")
+            ..schema
+                .find("-- People (the People")
+                .expect("people in schema")],
+    )
+}
+
+/// People: the end of `schema.sql`.
+fn v12_people(tx: &Transaction, _root: &Path) -> Result<()> {
+    let schema = include_str!("schema.sql");
+    sql(
+        tx,
+        &schema[schema
+            .find("-- People (the People")
+            .expect("people in schema")..],
+    )
 }
 
 fn sql(tx: &Transaction, sql: &str) -> Result<()> {

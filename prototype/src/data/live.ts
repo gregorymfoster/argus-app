@@ -48,7 +48,7 @@ interface EngineShoot {
 }
 
 /** Exposure settings as Lightroom writes them: 1/250, f/2.8, ISO 400, 35mm. */
-export function exposureParts(p: Pick<EnginePhoto, 'shutter' | 'aperture' | 'iso' | 'focal'>) {
+function exposureParts(p: Pick<EnginePhoto, 'shutter' | 'aperture' | 'iso' | 'focal'>) {
   const s = p.shutter;
   return {
     shutter: s ? (s < 0.4 ? `1/${Math.round(1 / s)}` : `${+s.toFixed(1)}s`) : null,
@@ -126,6 +126,7 @@ export async function loadLive(): Promise<boolean> {
   const [shoots] = await Promise.all([call<EngineShoot[]>('list_shoots'), loadProviders()]);
   const key = remembered(SHOOT_KEY) ?? '';
   if (shoots.length && key in COLLECTIONS) return loadCollection(key as Collection, shoots);
+  if (shoots.length && /^(search|album|person):/.test(key)) return loadFound(key, shoots);
   const want = Number(key);
   const shoot = shoots.find((s) => s.id === want) ?? shoots[shoots.length - 1];
   if (!shoot) {
@@ -155,12 +156,74 @@ export async function loadLive(): Promise<boolean> {
 export let photosQuery: Record<string, unknown> = {};
 
 /** Library-wide views, like Lightroom's All Photographs: every Photo, or every Pick. */
-export const COLLECTIONS = { all: 'All photos', picks: 'Picks' } as const;
-export type Collection = keyof typeof COLLECTIONS;
+const COLLECTIONS = { all: 'All photos', picks: 'Picks' } as const;
+type Collection = keyof typeof COLLECTIONS;
 
 /** True when the grid shows a Library-wide view, not one Shoot (so Shoot-only work is off). */
 export function inCollection(): boolean {
-  return LIVE && SHOOT.id in COLLECTIONS;
+  return LIVE && (SHOOT.id in COLLECTIONS || /^(search|album|person):/.test(SHOOT.id));
+}
+
+/** Open the grid on the Photos a search finds, across the Library (⌘↵ in ⌘K). */
+export function openSearch(query: string) {
+  openShoot(`search:${query.trim()}`);
+}
+
+/** Open an Album (a saved search) in the grid. */
+export function openAlbum(id: number) {
+  openShoot(`album:${id}`);
+}
+
+export interface Album {
+  id: number;
+  name: string;
+  query: { text?: string };
+  photos: number;
+}
+
+/** How many Shoots the open search or Album spans. */
+export let foundShoots = 0;
+
+/** The words of the open search (not an Album), or null. */
+export const openQuery = (): string | null => (SHOOT.id.startsWith('search:') ? SHOOT.id.slice(7) : null);
+
+/** A search, an Album or a person as the grid's view: SHOOT.id is `search:<words>`, `album:<id>` or `person:<id>`. */
+async function loadFound(key: string, shoots: EngineShoot[]): Promise<boolean> {
+  const [kind, rest] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+  let name = `“${rest}”`;
+  if (kind === 'album') {
+    const album = (await call<Album[]>('list_albums')).find((a) => String(a.id) === rest);
+    if (!album) {
+      remember(SHOOT_KEY, null);
+      return loadLive();
+    }
+    name = album.name;
+    photosQuery = { album_id: album.id };
+  } else if (kind === 'person') {
+    // One person's Photos, from the People view.
+    const person = await call<{ person: { name: string } }>('get_person', { person_id: Number(rest) }).catch(() => null);
+    if (!person) {
+      remember(SHOOT_KEY, null);
+      return loadLive();
+    }
+    name = person.person.name;
+    photosQuery = { person_id: Number(rest) };
+  } else photosQuery = { query: rest };
+  const found = await call<EnginePhoto[]>('photos', photosQuery);
+  foundShoots = new Set(found.map((p) => p.shoot_id)).size;
+  const photos = found.map(toPhoto);
+  PHOTOS.splice(0, PHOTOS.length, ...photos);
+  const stacks = new Map<string, string[]>();
+  for (const p of photos) if (p.stackId) stacks.set(p.stackId, [...(stacks.get(p.stackId) ?? []), p.id]);
+  STACKS.splice(0, STACKS.length, ...[...stacks].map(([id, photoIds]) => ({ id, photoIds })));
+  for (const k of Object.keys(PHOTO_BY_ID)) delete PHOTO_BY_ID[k];
+  for (const k of Object.keys(STACK_BY_ID)) delete STACK_BY_ID[k];
+  for (const p of photos) PHOTO_BY_ID[p.id] = p;
+  for (const s of STACKS) STACK_BY_ID[s.id] = s;
+  liveShoot = 0;
+  Object.assign(SHOOT, { id: key, name, count: photos.length, live: true });
+  OTHER_SHOOTS.splice(0, OTHER_SHOOTS.length, ...shoots.slice().reverse().map((s) => ({ id: String(s.id), name: s.name, count: s.photos, live: false })));
+  return true;
 }
 
 async function loadCollection(c: Collection, shoots: EngineShoot[]): Promise<boolean> {

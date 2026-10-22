@@ -310,7 +310,8 @@ impl GradingOp {
     }
 }
 
-fn smooth(a: f32, b: f32, x: f32) -> f32 {
+/// Smoothstep from `a` to `b`, safe when they meet.
+pub(crate) fn smooth(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a).max(1e-4)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }

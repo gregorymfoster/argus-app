@@ -22,7 +22,7 @@
 
 use crate::analyzers;
 use crate::compute::{Compute, OllamaProcesses, Throttle};
-use crate::library::{Author, Library, PhotoFilter, PhotoId, ShootId, Verdict};
+use crate::library::{time, Author, Library, PhotoFilter, PhotoId, ShootId, Verdict};
 use crate::signals::{self, Signals};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -149,6 +149,8 @@ pub struct SheetPhoto {
     pub tilt: Option<f32>,
     /// How sharp it is next to its Shoot and its look-alikes ([`crate::technical`]).
     pub sharpness: crate::technical::Sharpness,
+    /// A main face has its eyes shut without laughing ([`crate::technical::shut_eyes`]).
+    pub shut_eyes: bool,
 }
 
 impl SheetPhoto {
@@ -183,8 +185,45 @@ pub struct ContactSheet {
     pub context: Option<String>,
 }
 
+/// One Photo's image on the sheet (its preview at [`SHEET_LONG_EDGE`], with close-ups of small
+/// faces under it) as JPEG, and the close-up strip when there is one.
+fn sheet_image(
+    p: &crate::library::Photo,
+    f: &analyzers::Facts,
+) -> Result<(Vec<u8>, Option<image::RgbImage>)> {
+    let img = image::open(&p.preview)
+        .map_err(|e| Error(format!("preview {}: {e}", p.preview.display())))?;
+    let full = img.to_rgb8();
+    let img = img.thumbnail(SHEET_LONG_EDGE, SHEET_LONG_EDGE).to_rgb8();
+    let strip = face_strip(&full, f);
+    let img = match &strip {
+        Some(strip) => below(&img, strip),
+        None => img,
+    };
+    let mut jpeg = Vec::new();
+    jpeg_encoder::Encoder::new(&mut jpeg, 80)
+        .encode(
+            img.as_raw(),
+            img.width() as u16,
+            img.height() as u16,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .map_err(|e| Error(format!("sheet encode: {e}")))?;
+    Ok((jpeg, strip))
+}
+
 impl ContactSheet {
     pub fn build(lib: &Library, shoot: ShootId) -> Result<Self> {
+        Self::build_with(lib, shoot, true)
+    }
+
+    /// The sheet without its images (every `jpeg` empty): what Taste and the rules read, in a
+    /// fraction of the time, for [`rerate`].
+    pub fn facts_only(lib: &Library, shoot: ShootId) -> Result<Self> {
+        Self::build_with(lib, shoot, false)
+    }
+
+    fn build_with(lib: &Library, shoot: ShootId, images: bool) -> Result<Self> {
         let shoot_name = lib
             .shoots()?
             .into_iter()
@@ -205,7 +244,7 @@ impl ContactSheet {
             .zip(&taste)
             .map(|((p, f), &t)| crate::bursts::Frame {
                 id: p.id,
-                at: seconds(&p.captured_at),
+                at: time::capture_seconds(&p.captured_at),
                 embedding: f.get("embedding").and_then(analyzers::embedding::vector),
                 quality: t,
             })
@@ -221,24 +260,11 @@ impl ContactSheet {
             .zip(&facts)
             .enumerate()
             .map(|(i, (p, f))| {
-                let img = image::open(&p.preview)
-                    .map_err(|e| Error(format!("preview {}: {e}", p.preview.display())))?;
-                let full = img.to_rgb8();
-                let img = img.thumbnail(SHEET_LONG_EDGE, SHEET_LONG_EDGE).to_rgb8();
-                let strip = face_strip(&full, f);
-                let img = match &strip {
-                    Some(strip) => below(&img, strip),
-                    None => img,
+                let (jpeg, strip) = if images {
+                    sheet_image(p, f)?
+                } else {
+                    (Vec::new(), None)
                 };
-                let mut jpeg = Vec::new();
-                jpeg_encoder::Encoder::new(&mut jpeg, 80)
-                    .encode(
-                        img.as_raw(),
-                        img.width() as u16,
-                        img.height() as u16,
-                        jpeg_encoder::ColorType::Rgb,
-                    )
-                    .map_err(|e| Error(format!("sheet encode: {e}")))?;
                 let mut rest = f.clone();
                 rest.remove("embedding");
                 rest.remove("faces"); // the eyes caption counts and describes them
@@ -258,6 +284,7 @@ impl ContactSheet {
                     burst: burst_of.get(&p.id).copied(),
                     tilt: crate::taste::tilt(f),
                     sharpness: sharpness[i],
+                    shut_eyes: crate::technical::shut_eyes(f),
                     facts: [
                         analyzers::caption(&rest),
                         alike[i].clone(),
@@ -321,6 +348,7 @@ impl ContactSheet {
                     burst: p.burst,
                     tilt: p.tilt,
                     sharpness: p.sharpness,
+                    shut_eyes: p.shut_eyes,
                 }
             })
             .collect();
@@ -381,6 +409,33 @@ pub trait Provider {
     /// replying, for a bar that moves while a local model reads (None: no guess).
     fn read_pace(&self) -> Option<f64> {
         None
+    }
+
+    /// Which Photos of a Shoot it is asked about in a cull's Technical check: all of them,
+    /// unless [`cull_provider`] wrapped it in [`Doubtful`].
+    fn ask(&self) -> Ask {
+        Ask::All
+    }
+}
+
+/// A model Provider asked only about the doubtful frames of a cull ([`Ask::Doubtful`]).
+pub struct Doubtful(pub Box<dyn Provider>);
+
+impl Provider for Doubtful {
+    fn cull(&self, sheet: &ContactSheet) -> Result<CullResult> {
+        self.0.cull(sheet)
+    }
+    fn cull_streaming(&self, sheet: &ContactSheet, seen: &dyn Fn(Streamed)) -> Result<CullResult> {
+        self.0.cull_streaming(sheet, seen)
+    }
+    fn local_model(&self) -> bool {
+        self.0.local_model()
+    }
+    fn read_pace(&self) -> Option<f64> {
+        self.0.read_pace()
+    }
+    fn ask(&self) -> Ask {
+        Ask::Doubtful
     }
 }
 
@@ -608,7 +663,10 @@ pub fn cull_shoot_with(
     progress: &(dyn Fn(CullProgress) + Sync),
 ) -> Result<CullReport> {
     let sheet = ContactSheet::build(lib, shoot)?;
-    let result = cull_sheet(&sheet, provider, max, progress)?;
+    let result = match (taste(), provider.ask()) {
+        (Taste::Signals, Ask::Doubtful) => cull_doubtful(&sheet, provider, max, progress)?,
+        _ => cull_sheet(&sheet, provider, max, progress)?,
+    };
     // A model's check adds to the rules', never drops one of theirs.
     let result = match taste() {
         Taste::Signals => crate::technical::add_rejects(&sheet, result),
@@ -616,6 +674,72 @@ pub fn cull_shoot_with(
     };
     let result = crate::taste::rate(&sheet, result);
     apply(lib, &sheet, &result)
+}
+
+/// Which Photos a model's Technical check sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    /// Only the frames the rules find doubtful ([`crate::technical::doubtful`]): about one in
+    /// fifteen, so a local model takes minutes, not most of an hour, and has fewer clear
+    /// keepers to throw away (on the bench Shoots it rejected 16 of Greg's picks looking at
+    /// everything, 8 looking at the doubtful frames alone).
+    Doubtful,
+    /// Every Photo, as before 2026-10-22 (ARGUS_CULL_ASK=all).
+    All,
+}
+
+/// [`Ask`] for a model's check from ARGUS_CULL_ASK (`all` or `doubtful`, the default).
+pub fn ask_about() -> Ask {
+    match std::env::var("ARGUS_CULL_ASK").as_deref() {
+        Ok("all") => Ask::All,
+        _ => Ask::Doubtful,
+    }
+}
+
+/// The rules' answer for every Photo, plus the model's rejects among the doubtful ones, which
+/// it sees as a smaller sheet of their own.
+pub fn cull_doubtful(
+    sheet: &ContactSheet,
+    provider: &dyn Provider,
+    max: usize,
+    progress: &(dyn Fn(CullProgress) + Sync),
+) -> Result<CullResult> {
+    let mut out = crate::technical::Rules.cull(sheet)?;
+    let doubt: Vec<usize> = sheet
+        .photos
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| crate::technical::doubtful(p.sharpness, p.shut_eyes).is_some())
+        .map(|(i, _)| i)
+        .collect();
+    crate::logs::note(&format!(
+        "cull: asking the model about {} doubtful of {} Photos",
+        doubt.len(),
+        sheet.photos.len()
+    ));
+    if doubt.is_empty() {
+        return Ok(out);
+    }
+    let (sub, orig) = sheet.subset(
+        &doubt,
+        format!(
+            "These are the {} of the shoot's {} photos that may be soft, shaken or caught with eyes shut; the rest are sound.",
+            doubt.len(),
+            sheet.photos.len()
+        ),
+    );
+    let asked = cull_sheet(&sub, provider, max, progress)?;
+    for c in asked.photos.iter().filter(|c| c.verdict == Verdict::Reject) {
+        let Some(&n) = c.n.checked_sub(1).and_then(|i| orig.get(i)) else {
+            continue; // local models sometimes invent numbers
+        };
+        if let Some(o) = out.photos.iter_mut().find(|o| o.n == n) {
+            o.verdict = Verdict::Reject;
+            o.reason = c.reason.clone();
+        }
+    }
+    out.summary = asked.summary;
+    Ok(out)
 }
 
 /// Ask the Provider about a whole sheet, in chunks when it is larger than `max`.
@@ -862,7 +986,10 @@ fn cull_every_photo(
 pub fn split_chunks(photos: &[SheetPhoto], max: usize) -> Vec<std::ops::Range<usize>> {
     let n = photos.len();
     let k = n.div_ceil(max);
-    let secs: Vec<i64> = photos.iter().map(|p| seconds(&p.captured_at)).collect();
+    let secs: Vec<i64> = photos
+        .iter()
+        .map(|p| time::capture_seconds(&p.captured_at))
+        .collect();
     let mut cuts = vec![0];
     for i in 1..k {
         let start = *cuts.last().unwrap();
@@ -886,25 +1013,85 @@ pub fn split_chunks(photos: &[SheetPhoto], max: usize) -> Vec<std::ops::Range<us
     out
 }
 
-/// Seconds since an arbitrary epoch from `YYYY-MM-DDTHH:MM:SS...`; 0 if unparseable.
-pub(crate) fn seconds(t: &str) -> i64 {
-    let num = |a: usize, b: usize| t.get(a..b).and_then(|s| s.parse::<i64>().ok());
-    let (Some(y), Some(m), Some(d)) = (num(0, 4), num(5, 7), num(8, 10)) else {
-        return 0;
+/// What [`rerate`] did.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Rerate {
+    pub shoot_id: ShootId,
+    /// The person's own Picks and Rejects on this Shoot, which the Taste head learns from.
+    pub picks: usize,
+    pub rejects: usize,
+    /// Whether the person's flags (here or on other Shoots) are enough to learn from yet
+    /// ([`crate::taste::MIN_FLAGS`] of each).
+    pub learning: bool,
+    /// Photos whose AI stars changed.
+    pub changed: usize,
+}
+
+/// Learn as you cull: re-rate a Shoot's AI stars from the person's flags so far. Only stars the
+/// AI already gave change, and not on Rejects; flags, Stacks, Best Photos and the person's own stars stay
+/// as they are, and no undo step is recorded (it only refreshes the AI's hints). Takes well
+/// under a second for a card: it reads the stored Facts, not the images.
+pub fn rerate(lib: &mut Library, shoot: ShootId) -> Result<Rerate> {
+    let sheet = ContactSheet::facts_only(lib, shoot)?;
+    let current: HashMap<PhotoId, crate::library::Photo> = lib
+        .list_photos(&PhotoFilter {
+            shoot: Some(shoot),
+            verdict: None,
+        })?
+        .into_iter()
+        .map(|p| (p.id, p))
+        .collect();
+    let mine = |v: Verdict| {
+        current
+            .values()
+            .filter(|p| p.verdict_by == Some(Author::Person) && p.verdict == v)
+            .count()
     };
-    let (hh, mm, ss) = (
-        num(11, 13).unwrap_or(0),
-        num(14, 16).unwrap_or(0),
-        num(17, 19).unwrap_or(0),
-    );
-    // Days from civil (Howard Hinnant).
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe;
-    days * 86_400 + hh * 3600 + mm * 60 + ss
+    let flags = crate::taste::flags(lib)?;
+    let mut out = Rerate {
+        shoot_id: shoot,
+        picks: mine(Verdict::Pick),
+        rejects: mine(Verdict::Reject),
+        learning: crate::taste::Head::learn(&flags, shoot).is_some(),
+        changed: 0,
+    };
+    let result = CullResult {
+        summary: String::new(),
+        photos: sheet
+            .photos
+            .iter()
+            .map(|p| CullPhoto {
+                n: p.n,
+                verdict: current
+                    .get(&p.id)
+                    .map_or(Verdict::Unflagged, |c| match c.verdict {
+                        Verdict::Reject => Verdict::Reject,
+                        _ => Verdict::Unflagged,
+                    }),
+                reason: String::new(),
+                stack: Some(0),
+                rank: None,
+                stars: None,
+                best: Some(0),
+            })
+            .collect(),
+    };
+    let rated = crate::taste::rate(&sheet, result);
+    for (p, c) in sheet.photos.iter().zip(&rated.photos) {
+        let Some(now) = current.get(&p.id) else {
+            continue;
+        };
+        let (Some(stars), false) = (c.stars, c.verdict == Verdict::Reject) else {
+            continue;
+        };
+        // Only the AI's own stars: a Photo the cull hasn't rated yet waits for the cull.
+        if now.stars_by != Some(Author::Ai) || now.stars == stars {
+            continue;
+        }
+        lib.set_rating(&[p.id], stars, Author::Ai, None)?;
+        out.changed += 1;
+    }
+    Ok(out)
 }
 
 /// Write a [`CullResult`] to the Library. Split out so it is testable without a model.
@@ -1154,6 +1341,8 @@ pub fn cull_provider(
 ) -> Result<Box<dyn Provider>> {
     if name == Some("rules") || check(explicit) == Check::Rules {
         Ok(Box::new(crate::technical::Rules))
+    } else if taste() == Taste::Signals && ask_about() == Ask::Doubtful {
+        Ok(Box::new(Doubtful(model(name)?)))
     } else {
         model(name)
     }

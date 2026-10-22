@@ -15,6 +15,11 @@ pub struct Signals {
     /// Share of pixels blown to white, and crushed to black, 0 to 1.
     pub clipped: f32,
     pub crushed: f32,
+    /// How much the sharpest tiles' edges all run one way, 0 (every which way) to 1 (all
+    /// parallel): the coherence of their summed structure tensor. Camera shake smears a frame
+    /// along one direction, so only the edges across it survive and this climbs.
+    #[serde(default)]
+    pub streak: f32,
 }
 
 const TILE: u32 = 16;
@@ -41,31 +46,55 @@ pub fn measure(img: &RgbImage) -> Signals {
     // Laplacian energy per tile; the subject is usually a small part of the frame, so the
     // sharpest tiles say more about focus than the frame's average does.
     let (tw, th) = (w.div_ceil(TILE), h.div_ceil(TILE));
-    let mut sum = vec![0f32; (tw * th) as usize];
-    let mut count = vec![0u32; (tw * th) as usize];
+    let n_tiles = (tw * th) as usize;
+    let mut sum = vec![0f32; n_tiles];
+    let mut count = vec![0u32; n_tiles];
+    // Structure tensor per tile (gx², gy², gx·gy) for the streak.
+    let mut tensor = vec![[0f32; 3]; n_tiles];
     let at = |x: u32, y: u32| luma[(y * w + x) as usize];
     for y in 1..h - 1 {
         for x in 1..w - 1 {
             let lap = 4.0 * at(x, y) - at(x - 1, y) - at(x + 1, y) - at(x, y - 1) - at(x, y + 1);
+            let (gx, gy) = (
+                (at(x + 1, y) - at(x - 1, y)) / 2.0,
+                (at(x, y + 1) - at(x, y - 1)) / 2.0,
+            );
             let t = ((y / TILE) * tw + x / TILE) as usize;
             sum[t] += lap * lap;
             count[t] += 1;
+            tensor[t][0] += gx * gx;
+            tensor[t][1] += gy * gy;
+            tensor[t][2] += gx * gy;
         }
     }
-    let mut tiles: Vec<f32> = sum
+    let mut tiles: Vec<(f32, usize)> = sum
         .iter()
         .zip(&count)
-        .filter(|(_, &c)| c > 0)
-        .map(|(s, &c)| s / c as f32)
+        .enumerate()
+        .filter(|(_, (_, &c))| c > 0)
+        .map(|(i, (s, &c))| (s / c as f32, i))
         .collect();
-    tiles.sort_by(|a, b| b.total_cmp(a));
-    let top = (tiles.len() / 20).max(1);
-    let sharpness = tiles[..top].iter().sum::<f32>() / top as f32 * 1000.0;
+    tiles.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let top = &tiles[..(tiles.len() / 20).max(1)];
+    let sharpness = top.iter().map(|t| t.0).sum::<f32>() / top.len() as f32 * 1000.0;
+    let [a, b, c] = top.iter().fold([0f32; 3], |acc, &(_, i)| {
+        [
+            acc[0] + tensor[i][0],
+            acc[1] + tensor[i][1],
+            acc[2] + tensor[i][2],
+        ]
+    });
+    let streak = if a + b > 0.0 {
+        ((a - b).powi(2) + 4.0 * c * c).sqrt() / (a + b)
+    } else {
+        0.0
+    };
     Signals {
         sharpness,
         brightness,
         clipped,
         crushed,
+        streak,
     }
 }
 

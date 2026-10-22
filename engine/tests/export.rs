@@ -284,3 +284,87 @@ fn a_photo_that_cant_export_is_reported_and_the_rest_still_go() {
         "no empty placeholder for the failed one"
     );
 }
+
+/// Lightroom's Image Sizing and Output sharpening: a short edge or megapixels on the
+/// cropped Photo, never an upscale, and screen sharpening that adds edge contrast.
+#[test]
+fn short_edge_megapixels_and_output_sharpening() {
+    let l = library("Sizes");
+    let id = l.ids[0];
+    let out = l.tmp.path().join("Exports");
+    let export = |args: Value| {
+        let mut a =
+            json!({ "photo_ids": [id], "folder": out, "shoot_folder": false, "quality": 95 });
+        a.as_object_mut()
+            .unwrap()
+            .extend(args.as_object().unwrap().clone());
+        let r = json1(&l.tools, "export_photos", a);
+        assert_eq!(r["failed"], json!([]), "{r}");
+        let e = &r["exported"][0];
+        (
+            e["width"].as_u64().unwrap(),
+            e["height"].as_u64().unwrap(),
+            PathBuf::from(e["path"].as_str().unwrap()),
+        )
+    };
+    let (w, h, _) = export(json!({}));
+    let (sw, sh, _) = export(json!({ "short_edge": 120 }));
+    assert_eq!(sw.min(sh), 120, "short edge {sw}x{sh} of {w}x{h}");
+    let (mw, mh, _) = export(json!({ "megapixels": 0.02 }));
+    assert!((mw * mh).abs_diff(20_000) < 600, "megapixels {mw}x{mh}");
+    let (uw, uh, _) = export(json!({ "short_edge": 10_000 }));
+    assert_eq!((uw, uh), (w, h), "never upscales");
+
+    // Sharpening adds detail: more difference between neighbouring pixels.
+    let energy = |p: &Path| {
+        let img = image::open(p).unwrap().to_luma8();
+        let (w, h) = img.dimensions();
+        let mut e = 0u64;
+        for y in 0..h {
+            for x in 1..w {
+                e += (img.get_pixel(x, y)[0] as i64 - img.get_pixel(x - 1, y)[0] as i64)
+                    .unsigned_abs();
+            }
+        }
+        e
+    };
+    let (_, _, plain) = export(json!({ "long_edge": 160 }));
+    let (_, _, sharp) = export(json!({ "long_edge": 160, "sharpen": "high" }));
+    assert!(
+        energy(&sharp) > energy(&plain) * 105 / 100,
+        "{} vs {}",
+        energy(&sharp),
+        energy(&plain)
+    );
+}
+
+#[test]
+fn heic_is_named_heic_or_says_it_needs_a_mac() {
+    let l = library("Heic");
+    let out = l.tmp.path().join("Exports");
+    let r = json1(
+        &l.tools,
+        "export_photos",
+        json!({ "photo_ids": [l.ids[0]], "folder": out, "format": "heic", "long_edge": 160 }),
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(r["failed"], json!([]), "{r}");
+        let p = PathBuf::from(r["exported"][0]["path"].as_str().unwrap());
+        assert_eq!(p.extension().unwrap(), "heic");
+        let head = std::fs::read(&p).unwrap();
+        assert_eq!(&head[4..8], b"ftyp", "an ISO media file");
+    } else {
+        let err = r["failed"][0]["error"].as_str().unwrap();
+        assert!(err.contains("macOS"), "{err}");
+        let left: Vec<String> = std::fs::read_dir(&out)
+            .map(|d| {
+                d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            left.iter().all(|n| !n.ends_with(".heic")),
+            "no half-made file: {left:?}"
+        );
+    }
+}

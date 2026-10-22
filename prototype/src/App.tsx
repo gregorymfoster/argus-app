@@ -5,6 +5,7 @@ import { PHOTOS, SHOOT } from './data/dummy';
 import { lastRemovalAt, takeRemovedToast, undoRemoval } from './data/remove';
 import { RemoveDialog, askRemove, showRemoved } from './ui/Remove';
 import { PasteSettingsDialog } from './ui/PasteSettings';
+import { CreatePresetDialog } from './ui/CreatePreset';
 import { LIVE, inCollection, exportAfterLoad, noteImportFinished, refreshLivePhotos, runningImport, takeCullAfterLoad } from './data/live';
 import { zoom } from './ui/zoom';
 import { initialCull } from './agent/agent';
@@ -23,6 +24,7 @@ import { ImportDialog } from './screens/Import';
 import { CullScreen } from './screens/Cull';
 import { LoupeScreen } from './screens/Loupe';
 import { CompareScreen } from './screens/Compare';
+import { PeopleScreen } from './screens/People';
 import { BurstsScreen } from './screens/Bursts';
 import { LookScreen } from './screens/Look';
 import { EditScreen } from './screens/Edit';
@@ -97,13 +99,30 @@ export function App() {
     if (LIVE && exportAfterLoad()) setExporting(true);
   }, []);
 
-  // The store raises toasts; Sonner shows them, with Undo for batch changes.
+  // The store raises toasts; Sonner shows them, with Undo for batch changes. At most one
+  // per frame, the newest: Sonner commits each toast under flushSync, and a toast per key
+  // while ⌘Z is held down, with the Library's answers waiting to render, piled up past
+  // React's nested-update limit ("Maximum update depth exceeded", fuzz 2026-10-22).
+  const toastFrame = useRef<{ raf: number; t: typeof state.toast }>({ raf: 0, t: null });
   useEffect(() => {
-    const t = state.toast;
-    if (!t) return;
-    const action = t.undo ? { label: 'Undo', onClick: () => dispatch({ type: 'undo' }) } : t.redo ? { label: 'Redo', onClick: () => dispatch({ type: 'redo' }) } : undefined;
-    toast(t.text, { id: 'argus', action });
+    const f = toastFrame.current;
+    f.t = state.toast;
+    if (!f.t || f.raf) return;
+    f.raf = requestAnimationFrame(() => {
+      f.raf = 0;
+      const t = f.t;
+      if (!t) return;
+      const action = t.undo ? { label: 'Undo', onClick: () => dispatch({ type: 'undo' }) } : t.redo ? { label: 'Redo', onClick: () => dispatch({ type: 'redo' }) } : undefined;
+      toast(t.text, { id: 'argus', action });
+    });
   }, [state.toast, dispatch]);
+  useEffect(() => {
+    const f = toastFrame.current;
+    return () => {
+      cancelAnimationFrame(f.raf);
+      f.raf = 0;
+    };
+  }, []);
 
   // Live: once a change reaches the Library (edits, Auto, undo), thumbnails show it.
   const lastBatch = state.past[state.past.length - 1]?.batch;
@@ -146,6 +165,7 @@ export function App() {
   const commands: Command[] = useMemo(() => [
       { label: 'Export Picks…', hint: '⌘E', run: () => setExporting(true) },
       { label: 'Settings…', hint: '⌘,', run: () => openSettings() },
+      { label: 'Keyboard shortcuts', hint: '⌘/', run: () => openSettings('keys') },
       {
         label: 'Check for Updates…',
         run: () => {
@@ -167,8 +187,10 @@ export function App() {
   useHotkeys('mod+shift+i', () => go({ name: 'import' }), { preventDefault: true });
   // In the app the menu's Settings… item owns ⌘,; in a browser this does.
   useHotkeys('mod+comma', () => openSettings(), { preventDefault: true, enableOnFormTags: true });
+  // ⌘/ lists every shortcut, as Lightroom's Help › Keyboard Shortcuts does; ? as in Linear and Gmail.
+  useHotkeys(['mod+slash', 'shift+slash'], () => openSettings('keys'), { preventDefault: true });
   const screen: Screen = route.name;
-  const sidebar = route.name === 'import' || route.name === 'cull';
+  const sidebar = route.name === 'import' || route.name === 'cull' || route.name === 'people';
 
   let body;
   switch (route.name) {
@@ -199,6 +221,9 @@ export function App() {
     case 'edit':
       body = <EditScreen key={route.id} id={route.id} />;
       break;
+    case 'people':
+      body = <PeopleScreen key={route.id ?? ''} id={route.id} />;
+      break;
   }
 
   return (
@@ -212,6 +237,7 @@ export function App() {
         <SettingsDialog />
         <RemoveDialog />
         <PasteSettingsDialog />
+        <CreatePresetDialog onSaved={(text) => dispatch({ type: 'toast', text })} />
         <Palette open={palette} onOpenChange={setPalette} extra={commands} />
         <ExportDialog
           open={exporting}

@@ -23,14 +23,9 @@ if timeout 60 git fetch -q origin main 2>/dev/null && [ -z "$(git status --porce
   git checkout -q -B main origin/main 2>/dev/null || true
 fi
 
-# Sample RAWs: copy them from the project's shared folder when it holds them (fixtures/raw*/),
-# so sessions don't each pull ~1 GB from Greg's Mac. Copies, not links: Import refuses symlinks.
-for shared in /mnt/project-files/fixtures/raw /mnt/project-files/fixtures/raw-a7rv /mnt/project-files/fixtures/bench-raw; do
-  [ -d "$shared" ] || continue
-  dest="fixtures/$(basename "$shared")"
-  mkdir -p "$dest"
-  for f in "$shared"/*.ARW; do [ -e "$f" ] && [ ! -e "$dest/$(basename "$f")" ] && cp "$f" "$dest/"; done
-done
+# Sample RAWs from the project's shared folder and sccache over its shared cache (also run by
+# `just check`, since this hook doesn't run in every kind of session).
+scripts/cloud-ensure
 # The bench RAWs are stored xz-compressed in the shared folder (a third smaller; its 10 GB quota
 # filled up, 2026-10-20). Unpack them in the background: ~5 s each, so a session starts at once and
 # a bench run started before they're all out uses the camera JPEG for the rest (wait for the
@@ -43,27 +38,6 @@ if ls /mnt/project-files/fixtures/bench-raw/*.ARW.xz >/dev/null 2>&1; then
   done' > target/bench-raw-unpack.log 2>&1 < /dev/null &
 fi
 
-# sccache with its cache in the project's shared folder, so a new container reuses the dependency
-# builds earlier sessions made: a cold `cargo test --no-run` measured 416 s without, 130 s with
-# (2026-10-18, docs/agents/build-speed.md). Hits need the same target path, which cloud sessions share.
-# Capped at 1G: the shared folder's quota is 10 GB and the bench RAWs need most of it.
-# Set in the container's own ~/.cargo/config.toml, never the repo's, so Greg's Mac is untouched.
-if [ -d /mnt/project-files ] && [ ! -x "$HOME/.local/bin/sccache" ]; then
-  v=0.14.0
-  mkdir -p "$HOME/.local/bin" /mnt/project-files/cache/sccache
-  curl -fsSL --max-time 60 "https://github.com/mozilla/sccache/releases/download/v$v/sccache-v$v-x86_64-unknown-linux-musl.tar.gz" \
-    | tar -xz -C "$HOME/.local/bin" --strip-components=1 "sccache-v$v-x86_64-unknown-linux-musl/sccache" 2>/dev/null
-fi
-if [ -x "$HOME/.local/bin/sccache" ] && ! grep -q rustc-wrapper "$HOME/.cargo/config.toml" 2>/dev/null; then
-  cat > "$HOME/.local/bin/argus-sccache" <<EOS
-#!/bin/sh
-export SCCACHE_DIR=/mnt/project-files/cache/sccache SCCACHE_CACHE_SIZE=1G
-exec "$HOME/.local/bin/sccache" "\$@"
-EOS
-  chmod +x "$HOME/.local/bin/argus-sccache"
-  printf '[build]\nrustc-wrapper = "%s"\n' "$HOME/.local/bin/argus-sccache" >> "$HOME/.cargo/config.toml"
-fi
-
 # Warm the `fast` build in the background (a cold `just check` is 3-6 min of compiling).
 # Detached so the session starts at once; a `just check` started meanwhile waits on cargo's
 # lock and reuses whatever finished. `just status` shows how far it got (log: out/logs/cloud-warm.log).
@@ -72,6 +46,6 @@ nohup nice -n 10 scripts/progress cloud-warm -- sh -c 'cargo test --workspace --
   > target/cloud-warm.log 2>&1 < /dev/null &
 
 if ! ls fixtures/raw/*.ARW >/dev/null 2>&1; then
-  echo "fixtures/raw is empty: golden and RAW tests will skip. Copy fixtures/raw/*.ARW from Greg's Mac checkout with the device folder tools (CLAUDE.md)."
+  echo "fixtures/raw is empty and /mnt/project-files/fixtures/raw has none: golden and RAW tests will skip. Copy fixtures/raw/*.ARW from Greg's Mac checkout with the device folder tools (CLAUDE.md)."
 fi
 exit 0

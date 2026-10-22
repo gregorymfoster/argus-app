@@ -55,6 +55,10 @@ The twin check on the split (30 damaged twins over 5 Shoots) rejected 9 of 10 bl
 
 Rerun on fdd211a the next morning: same AUC (.62, top-k .57, Best Photos still 12 of 26), now 0 wrong rejects, 40 min. Its twin check ranked the original above its twin 29 of 30 times (24 before, 27 for the faces whole cull), including 4 of the 5 dark twins. It rejected 21 of 30 (blur 9, shake 10, crop 2), against 21 for the whole cull too; the badly cropped twins it stopped rejecting still rank below their originals, which is what a conservative cull wants. Files: `/mnt/project-files/argus-bench/cull-qwen/`.
 
+The next night (2026-10-22, 97a27a9) the stars-first prompt ran with Qwen's own Technical check unioned in (`ARGUS_CULL_CHECK=model`), 57 min: it rejected 23 of 30 twins (blur 9, shake 10, dark 1, crop 3) and ranked the original above its twin 27 of 30 times, dark 4 of 5. That is more rejects than the split (21) but a worse ordering than its 29 of 30, so the split stays the default.
+
+Since 2026-10-21 the default Technical check is rules on stored Facts, with Qwen only as an opt-in second opinion. The night of 2026-10-22 (97a27a9, all five bench Shoots, Full) compared the two: rules-only rejected none of Greg's picks, while adding Qwen's rejects cost 16 wrong rejects (10 on 2024-08-10, 4 on 2025-03-22, 2 on 2026-10-10). Star AUC was the same or better with rules (.51/.51, .44/.43, .57/.57, .61/.58, .65/.65 rules/model) and Best Photos identical, because Taste sets both. Rules took 10 s for the five Shoots, Qwen 1 h 36 min. Qwen's second opinion only adds wrong rejects here, so rules-only stays the default.
+
 ## Next
 
 A Qwen run of the split on the 1600 px 2026-10-10 photos and on `cull_degrade`, to confirm the Technical check holds up without the rest of the prompt. Then more clean, people-heavy Shoots, and the learned taste head on embeddings (`/mnt/project-files/research/local-decision-models.md`) once Greg wants it, which would give no-face frames and bursts a signal too.

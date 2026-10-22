@@ -9,16 +9,14 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::ms;
+
 type BoxError = Box<dyn std::error::Error>;
 
 /// Greg's test card from his A7R V (2026-10-18): 266 RAWs.
 const CARD_PHOTOS: f64 = 266.0;
 /// A metric this much slower than its baseline is a regression.
 const TOLERANCE: f64 = 1.3;
-
-fn ms(t: Instant) -> f64 {
-    (t.elapsed().as_secs_f64() * 10_000.0).round() / 10.0
-}
 
 fn round(v: f64) -> f64 {
     (v * 10.0).round() / 10.0

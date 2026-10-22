@@ -22,6 +22,16 @@
       "embedded": true
     },
     {
+      "file": "face_recognition_sface_2021dec.onnx",
+      "analyzer": "identity",
+      "what": "OpenCV Zoo SFace face recognizer (MobileFaceNet), 128 numbers per face for grouping People",
+      "source": "https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface",
+      "license": "Apache-2.0",
+      "bytes": 38696353,
+      "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+      "embedded": true
+    },
+    {
       "file": "deeplabv3_mnv2_ade20k.onnx",
       "analyzer": "sky",
       "what": "TensorFlow DeepLab v3 MobileNetV2 on ADE20K, frozen graph cut to logits, tf2onnx",
@@ -72,6 +82,16 @@
       "embedded": true
     },
     {
+      "file": "depth_anything_v2_small_f16.onnx",
+      "analyzer": "depth",
+      "what": "Depth Anything V2 Small (relative depth for Lens Blur), onnx-community's fp32 ONNX export (sha256 afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c) with fp16 weights and no symbolic shape notes, by scripts/models/depth_onnx.py. Only the Small model is Apache-2.0: Base and Large are non-commercial",
+      "source": "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx",
+      "license": "Apache-2.0",
+      "bytes": 49583099,
+      "sha256": "ef38620a3128291197808a5628f92d6e37b9ac587a0a36ea515716328583a656",
+      "embedded": true
+    },
+    {
       "file": "scunet_color_real.mlpackage/Manifest.json",
       "analyzer": "denoise",
       "what": "SCUNet for AI Denoise on the Mac through Core ML (ADR 0015): Core ML package manifest of the same network and weights as scunet_color_real_f16.onnx, converted by scripts/models/scunet_coreml.py",
@@ -100,6 +120,39 @@
       "bytes": 35928384,
       "sha256": "87d97c134963b416a999d962b748f09cb86f07fa0f2d2df8e4af22ca7a7e478c",
       "embedded": true
+    },
+    {
+      "file": "siglip-image.onnx",
+      "analyzer": "meaning",
+      "what": "SigLIP B/16 224 image tower (Google big_vision), via transformers and torch.onnx, weights stored float16; scripts/models/siglip/build.sh",
+      "source": "https://storage.googleapis.com/big_vision/siglip/webli_en_b16_224_63724782.npz",
+      "license": "Apache-2.0",
+      "bytes": 186088387,
+      "sha256": "a3077f70db428fcf686edba740f83338f501e2ae210cbb810ab699d6b8786470",
+      "embedded": false,
+      "folder": "models folder (crate::meaning::dir), not in the app"
+    },
+    {
+      "file": "siglip-text.onnx",
+      "analyzer": "meaning",
+      "what": "SigLIP B/16 224 text tower, same export",
+      "source": "https://storage.googleapis.com/big_vision/siglip/webli_en_b16_224_63724782.npz",
+      "license": "Apache-2.0",
+      "bytes": 220840461,
+      "sha256": "408b13c39df3ed854c34c68fec932ece59a247e397915ae741881a07c2c4f902",
+      "embedded": false,
+      "folder": "models folder (crate::meaning::dir), not in the app"
+    },
+    {
+      "file": "siglip-vocab.tsv",
+      "analyzer": "meaning",
+      "what": "SigLIP's SentencePiece vocabulary (T5 cc_en.32000) as piece and score lines",
+      "source": "https://storage.googleapis.com/t5-data/vocabs/cc_en.32000/sentencepiece.model",
+      "license": "Apache-2.0",
+      "bytes": 928066,
+      "sha256": "c0d3889f0fda907c393b050ff9e1ab39d0a05c206bb5ece19d4be73d4d77ec75",
+      "embedded": false,
+      "folder": "models folder (crate::meaning::dir), not in the app"
     }
   ]
 }

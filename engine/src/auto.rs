@@ -84,7 +84,8 @@ pub struct Params {
     pub vibrance_gain: f64,
     pub vibrance_max: f64,
     /// RAWs get the Edit head's offset on top (crate::edit_head): the person's own style,
-    /// learned from their finished edits. Off until the review page says it beats Auto.
+    /// learned from their finished edits. On by default since Greg's review-page taps
+    /// picked it over plain Auto 9 to 2 (2026-10-22); a variant can turn it off.
     pub edit_head: bool,
 }
 
@@ -110,7 +111,7 @@ impl Default for Params {
             vibrance_target: 0.22,
             vibrance_gain: 120.0,
             vibrance_max: 25.0,
-            edit_head: false,
+            edit_head: true,
         }
     }
 }
@@ -182,11 +183,51 @@ pub fn auto_adjust(render: impl Fn(&Adjust) -> Result<RgbImage>, raw: bool) -> R
     auto_adjust_with(render, raw, &Params::current()?)
 }
 
+/// What the Edit head needs to know about a Library Photo: the Library's own learned head
+/// (crate::edit_head::learn_library) and the Photo's Analysis, so it reads the scene.
+pub struct HeadInput {
+    pub head: std::sync::Arc<crate::edit_head::Head>,
+    pub analysis: Option<std::sync::Arc<crate::masks::Analysis>>,
+}
+
+/// [`auto_adjust`] with the Photo's [`HeadInput`], from [`head_input`].
+pub fn auto_adjust_for(
+    render: impl Fn(&Adjust) -> Result<RgbImage>,
+    raw: bool,
+    head: Option<&HeadInput>,
+) -> Result<Adjust> {
+    auto_adjust_in(render, raw, &Params::current()?, head)
+}
+
+/// The [`HeadInput`] for a Library Photo (its Analysis computed and stored if missing), or
+/// None when the head is off or the Photo isn't a RAW, so plain Auto costs nothing extra.
+pub fn head_input(
+    lib: &crate::library::Library,
+    photo: &crate::library::Photo,
+) -> Option<HeadInput> {
+    let on = Params::current().map(|k| k.edit_head).unwrap_or(true);
+    (photo.kind == "raw" && on).then(|| HeadInput {
+        head: crate::edit_head::Head::for_library(lib),
+        analysis: crate::render::analysis(lib, photo).ok(),
+    })
+}
+
 /// `auto_adjust` with these dials.
 pub fn auto_adjust_with(
     render: impl Fn(&Adjust) -> Result<RgbImage>,
     raw: bool,
     k: &Params,
+) -> Result<Adjust> {
+    auto_adjust_in(render, raw, k, None)
+}
+
+/// [`auto_adjust_with`] for a Library Photo, whose Edit head may be the Library's own and
+/// can read the scene (faces, people, sky) as well as the light.
+pub fn auto_adjust_in(
+    render: impl Fn(&Adjust) -> Result<RgbImage>,
+    raw: bool,
+    k: &Params,
+    input: Option<&HeadInput>,
 ) -> Result<Adjust> {
     let mut a = Adjust::default();
 
@@ -256,7 +297,9 @@ pub fn auto_adjust_with(
 
     a.exposure = solve(&a)?;
     if raw && k.edit_head {
-        let head = crate::edit_head::offset(&render(&Adjust::default())?, &a);
+        let head = input.map_or(crate::edit_head::Head::shipped(), |i| &i.head);
+        let analysis = input.and_then(|i| i.analysis.as_deref());
+        let head = head.offset(&render(&Adjust::default())?, &a, analysis);
         a = a.plus(&head);
     }
     Ok(a)
@@ -401,9 +444,14 @@ mod tests {
         auto_with(img, false)
     }
 
+    /// Plain Auto, without the Edit head (its own test below).
     fn auto_with(img: &RgbImage, raw: bool) -> (Adjust, Stats) {
         let render = |a: &Adjust| Ok(develop_rgb8(img, &applied(&Recipe::default(), a)));
-        let a = auto_adjust(render, raw).unwrap();
+        let plain = Params {
+            edit_head: false,
+            ..Params::default()
+        };
+        let a = auto_adjust_with(render, raw, &plain).unwrap();
         let s = Stats::of(&render(&a).unwrap());
         (a, s)
     }
@@ -446,11 +494,12 @@ mod tests {
     fn edit_head_adds_the_persons_style_on_a_raw_only() {
         let img = scene(0.9, [1.0; 3]);
         let render = |a: &Adjust| Ok(develop_rgb8(&img, &applied(&Recipe::default(), a)));
-        let on = Params {
-            edit_head: true,
+        let on = Params::default();
+        let off = Params {
+            edit_head: false,
             ..Params::default()
         };
-        let plain = auto_adjust_with(render, true, &Params::default()).unwrap();
+        let plain = auto_adjust_with(render, true, &off).unwrap();
         let head = auto_adjust_with(render, true, &on).unwrap();
         // Greg's finished edits run punchier and warmer than Auto (docs/research/edit-head.md).
         assert!(
@@ -461,12 +510,13 @@ mod tests {
         let expect = plain.plus(&crate::edit_head::offset(
             &render(&Adjust::default()).unwrap(),
             &plain,
+            None,
         ));
         assert_eq!(head, expect);
         // A JPEG is not what the head learned from: Auto as before.
         assert_eq!(
             auto_adjust_with(render, false, &on).unwrap(),
-            auto_adjust_with(render, false, &Params::default()).unwrap()
+            auto_adjust_with(render, false, &off).unwrap()
         );
     }
 

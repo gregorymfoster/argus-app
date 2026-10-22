@@ -1,6 +1,6 @@
 import type { Look } from './types';
 
-export const LOOKS: Look[] = [
+const LOOKS: Look[] = [
   { id: 'warm-film', name: 'Warm film', adjust: { temp: 30, tint: 3, contrast: -12, fade: 18, grain: 22, saturation: -6 } },
   { id: 'clean-natural', name: 'Clean natural', adjust: { temp: 4, contrast: 6, saturation: 4, shadows: 10 } },
   { id: 'cool-moody', name: 'Cool moody', adjust: { temp: -32, contrast: 22, saturation: -18, shadows: -12, fade: 8 } },

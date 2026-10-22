@@ -25,6 +25,7 @@
 
 use crate::geometry::Crop;
 use crate::heal::Spot;
+use crate::lens_blur::LensBlur;
 use crate::masks::Mask;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -658,6 +659,10 @@ pub struct Local {
     pub mask: Mask,
     #[serde(default, skip_serializing_if = "is_default_adjust")]
     pub adjust: Adjust,
+    /// Lightroom's Mask Amount, 0..200 percent: how strongly the whole adjustment applies.
+    /// Absent is 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
     /// Who made it: "ai" or "you" (the prototype's Actor).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -693,6 +698,9 @@ pub struct Recipe {
     /// Heal and Clone Spots, applied in order after the Masks and before the crop.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub spots: Vec<Spot>,
+    /// Lens Blur: a fake shallow depth of field from a depth map ([`crate::lens_blur`]).
+    #[serde(rename = "lensBlur", skip_serializing_if = "LensBlur::is_default")]
+    pub lens_blur: LensBlur,
     #[serde(flatten)]
     pub other: Map<String, Value>,
 }
@@ -707,6 +715,7 @@ impl Default for Recipe {
             local: Vec::new(),
             crop: Crop::default(),
             spots: Vec::new(),
+            lens_blur: LensBlur::default(),
             other: Map::new(),
         }
     }
@@ -737,11 +746,12 @@ impl Recipe {
         a.clamped()
     }
 
-    /// True when rendering needs the Mask path: local adjustments, light on faces or
-    /// retouching.
+    /// True when rendering needs the Mask path: local adjustments, Lens Blur, light on faces
+    /// or retouching.
     pub fn needs_masks(&self) -> bool {
         let g = &self.global;
         !self.local.is_empty()
+            || self.lens_blur.active()
             || self.correction.face != 0.0
             || g.skin > 0.0
             || g.eyes > 0.0
@@ -766,6 +776,21 @@ impl Recipe {
             return Err(Error(format!("{path}: not a number")));
         }
         let mut doc = self.to_value();
+        if let Some(k) = path.strip_prefix("lensBlur.") {
+            let mut b = self.lens_blur.clone();
+            let slot = match k {
+                "amount" => &mut b.amount,
+                "boost" => &mut b.boost,
+                _ => {
+                    return Err(Error(format!(
+                        "unknown setting {path:?}; lensBlur has amount, boost (numbers), bokeh, focus, focusBrush, blurBrush"
+                    )))
+                }
+            };
+            *slot = if relative { *slot + value } else { value };
+            self.lens_blur = b.clamped();
+            return Ok(());
+        }
         if let Some(k) = path.strip_prefix("crop.") {
             let mut c = self.crop;
             let slot = match k {
@@ -838,8 +863,25 @@ impl Recipe {
         if let Some(v) = value.as_f64() {
             return self.set(path, v, relative);
         }
-        let g = &mut self.global;
         let bad = |e: serde_json::Error| Error(format!("{path}: {e}"));
+        if path == "lensBlur" || path.starts_with("lensBlur.") {
+            let mut doc = serde_json::to_value(&self.lens_blur).map_err(bad)?;
+            match path.strip_prefix("lensBlur.") {
+                None => doc = value.clone(),
+                Some(k @ ("bokeh" | "focus" | "focusBrush" | "blurBrush")) => {
+                    doc[k] = value.clone();
+                }
+                Some(_) => {
+                    return Err(Error(format!(
+                        "{path}: lensBlur takes amount, boost, bokeh, focus, focusBrush, blurBrush"
+                    )))
+                }
+            }
+            let b: LensBlur = serde_json::from_value(doc).map_err(bad)?;
+            self.lens_blur = b.clamped();
+            return Ok(());
+        }
+        let g = &mut self.global;
         match path {
             "curve.rgb" | "curve.red" | "curve.green" | "curve.blue" => {
                 let pts: Points = serde_json::from_value(value.clone()).map_err(bad)?;

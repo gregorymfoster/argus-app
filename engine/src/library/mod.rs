@@ -11,12 +11,15 @@ mod backup;
 mod facts;
 mod import;
 mod jobs;
+mod keywords;
 mod looks;
 mod migrate;
+mod people;
 mod previews;
 mod ratings;
 mod remove;
 mod scan;
+mod search;
 mod shoots;
 mod storage;
 mod suggestions;
@@ -33,13 +36,22 @@ pub use backup::Backup;
 pub(crate) use facts::FactRow;
 pub(crate) use import::read_jpeg_upright;
 pub use import::{ImportOptions, ImportReport};
+
+/// Shutter, aperture, ISO, focal length and lens from a file's EXIF (the whole file's bytes),
+/// as Import reads them.
+pub fn exposure_of(data: &[u8]) -> Exposure {
+    import::Exif::read(data).exposure
+}
 pub use jobs::{Job, JobId, JobStatus, QueueSummary};
+pub use keywords::{Caption, KeywordCount, PhotoKeyword, TagReport, Tags};
 pub use looks::Look;
 pub use migrate::LATEST as SCHEMA_VERSION;
+pub use people::{FaceName, FaceRef, Person, PersonId};
 pub use previews::PreviewReport;
 pub use ratings::{BestPhoto, CullState};
 pub use remove::{Removal, RemoveReport, RestoreReport, TRASH_FILE};
 pub use scan::{find_cards, is_on_card, Card, Scan, ScannedPhoto};
+pub use search::{Album, Hit as SearchHit};
 pub use shoots::RenameReport;
 pub use storage::{
     move_library, move_library_via, ImportEstimate, MissingOriginal, MoveReport, RebuildReport,
@@ -228,6 +240,10 @@ impl Library {
              PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 10000;",
         )
         .map_err(db_err)?;
+        // Every transaction here writes, so take the write lock when it begins: a deferred
+        // one that reads first can't wait for the lock under WAL and fails with "database
+        // is locked" at once when another writer committed meanwhile (fuzz 2026-10-22).
+        db.set_transaction_behavior(TransactionBehavior::Immediate);
         migrate::run(&mut db, &root)?;
         Ok(Self { root, db })
     }

@@ -587,9 +587,12 @@ mod tests {
     }
 
     /// The model removes most of the noise from a noisy gradient and keeps the gradient.
+    /// Two tiles side by side, so the seam blend runs on real model output: one row costs what
+    /// one tile does (tiles in a row run in parallel), where 300x260 took 2x2 tiles and ~11 s.
     #[test]
     fn model_removes_noise_and_keeps_the_picture() {
-        let (w, h) = (300, 260);
+        let (w, h) = (360, 192);
+        assert_eq!(tiles(w, h), 2);
         let mut seed = 7u32;
         let mut noise = || {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);

@@ -1,4 +1,4 @@
-# 0010: The background Queue lives in the Library, and Suggestions are never applied
+# 0016: The background Queue lives in the Library, and Suggestions are never applied
 
 Greg wants to import a shoot, walk away for a couple of hours, and come back to edits waiting for him: two or three Suggestions per Photo (sliders, crop and straighten) and, after he edits one Photo by hand, matched Suggestions for the rest of the Shoot. He stays the final reviewer.
 

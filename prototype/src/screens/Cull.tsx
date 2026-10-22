@@ -16,6 +16,8 @@ import type { Photo, Verdict } from '../domain/types';
 import { recipeOf, starsOf, useLibrary, verdictOf } from '../store/library';
 import { autoAction, runAuto } from '../data/auto';
 import { usePref } from '../store/variants';
+import { MIN_FLAGS, useLearnAsYouCull, type Learning } from '../data/learn';
+import { sortToString } from '../domain/sort';
 import { go } from '../router';
 import { Agent } from '../agent/AgentPanel';
 import { PhotoView } from '../ui/PhotoView';
@@ -30,6 +32,7 @@ import { ESC_OUTSIDE_DIALOGS, Kbd, MenuKeys, Seg, Tip, VERDICT_KEYS } from '../u
 import { askSettings, hasCopiedSettings, pasteClip, pasteSettings, useSettingsKeys } from '../ui/PasteSettings';
 import { ALL_GROUPS } from '../domain/settings';
 import { Button } from '@/components/ui/button';
+import { FoundLine } from '../ui/Search';
 import { Slider } from '@/components/ui/slider';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
 
@@ -99,6 +102,10 @@ interface TileMenu {
   selected: boolean;
 }
 
+type TileInfo = 'full' | 'compact' | 'photo';
+const TILE_INFO: TileInfo[] = ['full', 'compact', 'photo'];
+const TILE_INFO_LABEL: Record<TileInfo, string> = { full: 'everything', compact: 'flag, Stack and stars', photo: 'photo only' };
+
 // A grid tile re-renders only when what it shows changed (a flag used to re-render every
 // tile on screen). Its handlers are ignored here: the screen routes them through its latest
 // state, so a tile that skipped a render never acts on an old selection.
@@ -163,7 +170,7 @@ const Tile = memo(function Tile({ p, v, you, stars, best, hero, takes, ai, eyes,
           </div>
           <figcaption title={p.reason || undefined}>
             {!culling && (stars.stars > 0 || stars.you) && <Stars n={stars.stars} you={stars.you} onSet={onStars} />}
-            {v && p.reason ? p.reason : culling ? 'Scoring…' : p.file}
+            <span className="cap-text">{v && p.reason ? p.reason : culling ? 'Scoring…' : p.file}</span>
           </figcaption>
         </figure>
       </ContextMenuTrigger>
@@ -269,11 +276,22 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   // Thumbnail size: pinch on the grid, the toolbar slider, or = and − as in Lightroom's
   // Grid (⌘+ / ⌘− zoom the whole app). Remembered for this viewer.
   const [thumb, setThumb] = usePref<string>('thumb', String(THUMB_DEFAULT));
+  // Lightroom's grid view styles, cycled with J: everything, compact (flag, Stack, stars), or the photo alone.
+  const [tileInfo, setTileInfo] = usePref<TileInfo>('tile-info', 'compact');
   const [filter, setFilter] = useState<Filter>('all');
   const [minStars, setMinStars] = useState(0);
   // Lightroom has no AI filter; ours narrows to what the background AI has done or not yet.
   const [aiFilter, setAiFilter] = useState<'any' | 'ready' | 'waiting'>('any');
   const [sort, setSort] = useSort();
+  // Learn as you cull: the AI's stars refresh from the person's flags (data/learn.ts).
+  const learn = useLearnAsYouCull(state, dispatch, true);
+  // Sorted by Stars, the grid holds the order it had when the sort was chosen while the AI's
+  // stars refresh, so nothing moves under the person (Greg, 2026-10-22); choosing it again re-sorts.
+  const held = useRef<Record<string, number> | null>(null);
+  const sortKey = sortToString(sort);
+  useEffect(() => {
+    held.current = null;
+  }, [sortKey]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [cur, setCur] = useState(0);
   const [sel, setSel] = useState<Set<string>>(new Set());
@@ -303,7 +321,9 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   }, [all, state]);
   const stackCount = Object.keys(cover).length;
   const visible = useMemo(() => {
-    const facts = { stars: (id: string) => starsOf(state, id).stars, verdict: (id: string) => verdictOf(state, id) };
+    if (sort.key === 'stars' && !held.current) held.current = Object.fromEntries(all.map((p) => [p.id, starsOf(state, p.id).stars]));
+    const stars = (id: string) => (sort.key === 'stars' && starsOf(state, id).you === false ? held.current?.[id] ?? starsOf(state, id).stars : starsOf(state, id).stars);
+    const facts = { stars, verdict: (id: string) => verdictOf(state, id) };
     if (filter === 'best') {
       const best = bestPhotos.filter((p) => starsOf(state, p.id).stars >= minStars && aiOk(p));
       // Best Photos stay in rank order unless another sort is chosen.
@@ -421,7 +441,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const pad = dense ? 8 : 10;
   const cols = Math.max(1, Math.floor((width - pad * 2 + gap) / (size + gap)));
   const tileW = (width - pad * 2 - gap * (cols - 1)) / cols;
-  const rowH = tileW * (2 / 3) + 27 + gap;
+  const rowH = tileW * (2 / 3) + (tileInfo === 'photo' ? 0 : 27) + gap;
   const small = tileW * (window.devicePixelRatio || 1) <= THUMB_EDGE;
   const rows = Math.ceil(visible.length / cols);
   const virt = useVirtualizer({ count: rows, getScrollElement: () => gridRef.current, estimateSize: () => rowH, overscan: 3, paddingStart: pad, paddingEnd: pad });
@@ -541,6 +561,11 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   // N (Lightroom's Survey key) culls the Shoot's bursts one Stack at a time, from the current Photo's.
   const openBursts = () => (stackCount ? go({ name: 'bursts', id: current?.stackId }) : dispatch({ type: 'toast', text: 'No Stacks yet: bursts stack once Import has looked at the Photos, or after an AI cull' }));
   useHotkeys('n', openBursts, [current, stackCount]);
+  useHotkeys('j', () => {
+    const next = TILE_INFO[(TILE_INFO.indexOf(tileInfo) + 1) % TILE_INFO.length];
+    setTileInfo(next);
+    toast(`Tiles: ${TILE_INFO_LABEL[next]}`, { id: 'tile-info', description: 'J cycles what the grid tiles show' });
+  }, [tileInfo]);
   useHotkeys(
     'c',
     () => {
@@ -631,6 +656,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
       <main className="panel main">
         <header className="panel-head toolbar cull-head">
           <h1 title={SHOOT.name}>{SHOOT.name}</h1>
+          <FoundLine />
           <ViewSwitch view="grid" id={current?.id} compareIds={sel.size > 1 ? [...sel] : current?.stackId ? STACK_BY_ID[current.stackId].photoIds : undefined} />
           {state.importing && <ImportProgress />}
           <span className="grow" />
@@ -723,6 +749,19 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
           </Tip>
           )}
         </header>
+        {culled && !state.culling && counts.pick === 0 && !inCollection() && (
+          <NextStep
+            shootId={String(SHOOT.id)}
+            rejects={counts.reject}
+            fourUp={all.filter((p) => starsOf(state, p.id).stars >= 4 && verdictOf(state, p.id) !== 'reject').map((p) => p.id)}
+            best={bestPhotos.map((p) => p.id)}
+            onPick={(ids) => setVerdict(ids, 'pick')}
+            onReview={() => {
+              const first = visible.find((p) => (verdictOf(state, p.id) ?? 'unflagged') === 'unflagged') ?? visible[0];
+              if (first) go({ name: 'loupe', id: first.id });
+            }}
+          />
+        )}
         {filter === 'best' && (
           <BestPhotos
             photos={visible}
@@ -755,7 +794,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             )}
           />
         )}
-        <div ref={gridRef} className={`scroll grid-v ${dense ? 'dense' : ''}`} hidden={filter === 'best'}>
+        <div ref={gridRef} className={`scroll grid-v ${dense ? 'dense' : ''} tiles-${tileInfo}`} hidden={filter === 'best'}>
           <div style={{ height: virt.getTotalSize(), position: 'relative' }}>
             {virt.getVirtualItems().map((row) => (
               <div
@@ -833,6 +872,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             </span>
           ) : null}
           <span className="grow" />
+          {culled && <LearnHint l={learn} />}
           <span className="foot-keys">
             <span><Kbd quiet>P</Kbd> Pick</span>
             <span><Kbd quiet>X</Kbd> Reject</span>
@@ -904,5 +944,68 @@ function ImportProgress() {
         </button>
       )}
     </div>
+  );
+}
+
+/** The footer's quiet note on learning as you cull: how far the person's flags have got, then
+ * how many AI stars the last refresh changed. */
+/** After a cull, which never Picks (it only sets aside broken frames), the next step in one line:
+ * Pick 4★ and up, Pick the Best Photos (each one Undo step), or review in the Loupe. It goes away with
+ * the first Pick, or with ✕ for this Shoot (Greg, 2026-10-22). */
+function NextStep({ shootId, rejects, fourUp, best, onPick, onReview }: { shootId: string; rejects: number; fourUp: string[]; best: string[]; onPick: (ids: string[]) => void; onReview: () => void }) {
+  const key = `argus-next-step-closed-${shootId}`;
+  const [closed, setClosed] = useState(() => {
+    try {
+      return localStorage.getItem(key) === '1';
+    } catch {
+      return false;
+    }
+  });
+  if (closed || (!fourUp.length && !best.length)) return null;
+  const close = () => {
+    setClosed(true);
+    try {
+      localStorage.setItem(key, '1');
+    } catch {
+      /* fine: it comes back next time */
+    }
+  };
+  return (
+    <div className="ai-bar next-step" data-testid="next-step">
+      <span>
+        <b>AI cull done.</b> {rejects ? `${rejects} broken frame${rejects === 1 ? '' : 's'} set aside. ` : 'No broken frames. '}
+        <span className="faint">Nothing is Picked yet.</span>
+      </span>
+      <span className="grow" />
+      {fourUp.length > 0 && (
+        <Button variant="ghost" size="sm" onClick={() => onPick(fourUp)} data-testid="next-pick-four">
+          Pick 4★ and up · {fourUp.length}
+        </Button>
+      )}
+      {best.length > 0 && (
+        <Button variant="ghost" size="sm" onClick={() => onPick(best)} data-testid="next-pick-best">
+          <Award size={12} /> Pick Best Photos · {best.length}
+        </Button>
+      )}
+      <Button variant="ghost" size="sm" onClick={onReview} data-testid="next-review">
+        Review one by one
+      </Button>
+      <button className="next-close" onClick={close} aria-label="Hide for this Shoot" title="Hide for this Shoot">
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+function LearnHint({ l }: { l: Learning }) {
+  const text = l.learning
+    ? `Learning from ${l.picks} Picks, ${l.rejects} Rejects${l.changed && Date.now() - l.at < 8000 ? ` · ${l.changed} re-rated` : ''}`
+    : `Learns after ${MIN_FLAGS} Picks, ${MIN_FLAGS} Rejects · ${Math.min(l.picks, MIN_FLAGS)}, ${Math.min(l.rejects, MIN_FLAGS)}`;
+  return (
+    <Tip label="As you flag, the AI's stars on the rest of this Shoot refresh from your Picks and Rejects. Your own flags and stars never change.">
+      <span className="foot-learn" data-testid="learn-hint" data-learning={l.learning}>
+        <Sparkles size={11} /> {text}
+      </span>
+    </Tip>
   );
 }

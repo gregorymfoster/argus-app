@@ -388,3 +388,33 @@ fn killing_a_writer_mid_write_loses_nothing_it_committed() {
     }
     assert!(total > 50, "only {total} writes across all rounds");
 }
+
+#[test]
+fn several_writers_at_once_wait_their_turn_instead_of_failing() {
+    // `argus serve` opens the Library per request, beside the Queue, the app and MCP.
+    // A write transaction that reads before it writes must take the write lock up front:
+    // a deferred one can't wait for it under WAL and failed with "database is locked"
+    // (keyboard fuzz, 2026-10-22).
+    let dir = tempfile::tempdir().unwrap();
+    let (root, ids) = library(dir.path());
+    let writers: Vec<_> = (0..6)
+        .map(|w| {
+            let (root, ids) = (root.clone(), ids.clone());
+            std::thread::spawn(move || {
+                let mut lib = Library::open(&root).unwrap();
+                for i in 0..40u8 {
+                    let batch = Some(lib.begin_batch(Author::Person, "fuzz").unwrap());
+                    lib.set_rating(&ids, (i + w) % 6, Author::Person, batch)
+                        .unwrap_or_else(|e| panic!("writer {w}, rating {i}: {e}"));
+                    let verdict =
+                        [Verdict::Pick, Verdict::Reject, Verdict::Unflagged][i as usize % 3];
+                    lib.set_verdict(&ids, verdict, Author::Person, None, batch)
+                        .unwrap_or_else(|e| panic!("writer {w}, flag {i}: {e}"));
+                }
+            })
+        })
+        .collect();
+    for w in writers {
+        w.join().unwrap();
+    }
+}

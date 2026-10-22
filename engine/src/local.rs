@@ -23,6 +23,14 @@ pub fn finish(
     recipe: &Recipe,
     analysis: Option<&Analysis>,
 ) -> Vec<u8> {
+    let blurred;
+    let cam = match recipe.lens_blur.active() {
+        true => {
+            blurred = lens_blur(cam, (w, h), matrix, look, recipe, analysis);
+            blurred.as_deref().unwrap_or(cam)
+        }
+        false => cam,
+    };
     let global = recipe.render_adjust();
     let base_fin = Finish::new(matrix, look, &global);
     let mut out: Vec<f32> = cam
@@ -34,7 +42,9 @@ pub fn finish(
         .map(|p| (LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2]).clamp(0.0, 1.0))
         .collect();
 
-    let mut locals: Vec<(Mask, Adjust)> = Vec::new();
+    // Each local with its Amount (Lightroom's, 0..2 here): how much of the adjusted render
+    // the Mask lets through, so 150% pushes past the sliders the way Lightroom's does.
+    let mut locals: Vec<(Mask, Adjust, f32)> = Vec::new();
     if recipe.correction.face != 0.0 {
         locals.push((
             Mask::new(Shape::Faces { face: None }),
@@ -42,21 +52,20 @@ pub fn finish(
                 exposure: recipe.correction.face,
                 ..Default::default()
             },
+            1.0,
         ));
     }
-    locals.extend(
-        recipe
-            .local
-            .iter()
-            .map(|l| (l.mask.clone(), l.adjust.clone())),
-    );
+    locals.extend(recipe.local.iter().map(|l| {
+        let amount = l.amount.unwrap_or(100.0).clamp(0.0, 200.0) / 100.0;
+        (l.mask.clone(), l.adjust.clone(), amount as f32)
+    }));
 
     let g = &recipe.global;
-    let wants_ai = locals.iter().any(|(m, _)| m.needs_analysis())
+    let wants_ai = locals.iter().any(|(m, _, _)| m.needs_analysis())
         || g.skin > 0.0
         || g.eyes > 0.0
         || g.teeth > 0.0
-        || locals.iter().any(|(_, a)| a.eyes > 0.0 || a.teeth > 0.0);
+        || locals.iter().any(|(_, a, _)| a.eyes > 0.0 || a.teeth > 0.0);
     let made;
     let analysis = match analysis {
         Some(a) => Some(a),
@@ -77,10 +86,17 @@ pub fn finish(
         }
         None => None,
     };
+    let wants_rgb = locals.iter().any(|(m, _, _)| {
+        m.all()
+            .iter()
+            .any(|x| matches!(x.shape, Shape::Color { .. }))
+    });
+    let base_rgb = wants_rgb.then(|| out.clone());
     let canvas = Canvas {
         width: w,
         height: h,
         guide: &guide,
+        rgb: base_rgb.as_deref(),
         analysis,
     };
 
@@ -92,13 +108,18 @@ pub fn finish(
         dst.par_iter_mut().zip(src).for_each(|(d, s)| *d += s * k);
     };
     let eye_plane =
-        (g.eyes > 0.0 || locals.iter().any(|(_, a)| a.eyes > 0.0)).then(|| canvas.eyes());
+        (g.eyes > 0.0 || locals.iter().any(|(_, a, _)| a.eyes > 0.0)).then(|| canvas.eyes());
     let mouth_plane =
-        (g.teeth > 0.0 || locals.iter().any(|(_, a)| a.teeth > 0.0)).then(|| canvas.mouths());
+        (g.teeth > 0.0 || locals.iter().any(|(_, a, _)| a.teeth > 0.0)).then(|| canvas.mouths());
 
-    for (mask, delta) in &locals {
+    for (mask, delta, amount) in &locals {
         let weight = match canvas.plane(mask) {
-            Ok(p) => p,
+            Ok(mut p) => {
+                if *amount != 1.0 {
+                    p.par_iter_mut().for_each(|v| *v *= amount);
+                }
+                p
+            }
             Err(e) => {
                 eprintln!("masks: skipping a {} Mask: {e}", mask.kind());
                 continue;
@@ -143,11 +164,11 @@ pub fn finish(
                 .collect();
             if let (Some(e), true) = (&eye_plane, delta.eyes > 0.0) {
                 let gated: Vec<f32> = e.iter().zip(&near).map(|(a, b)| a * b).collect();
-                add(&mut eyes, &gated, (delta.eyes / 100.0) as f32);
+                add(&mut eyes, &gated, (delta.eyes / 100.0) as f32 * amount);
             }
             if let (Some(m), true) = (&mouth_plane, delta.teeth > 0.0) {
                 let gated: Vec<f32> = m.iter().zip(&near).map(|(a, b)| a * b).collect();
-                add(&mut teeth, &gated, (delta.teeth / 100.0) as f32);
+                add(&mut teeth, &gated, (delta.teeth / 100.0) as f32 * amount);
             }
         }
     }
@@ -178,6 +199,112 @@ pub fn finish(
     }
     crate::effects::apply(&mut out, w, h, &global, scale);
     out.into_par_iter().map(to8).collect()
+}
+
+/// Lens Blur ([`crate::lens_blur`]) over the upright camera RGB, before anything else, with
+/// the Photo's depth map and subject, or ones found in the image itself when there's no
+/// Analysis (a render with no Photo behind it). None when there's no depth to go on.
+fn lens_blur(
+    cam: &[f32],
+    (w, h): (usize, usize),
+    matrix: [[f32; 3]; 3],
+    look: &Look,
+    recipe: &Recipe,
+    analysis: Option<&Analysis>,
+) -> Option<Vec<f32>> {
+    use crate::lens_blur as lb;
+    use crate::masks::models::{self, SEG_SIZE};
+    let blur = &recipe.lens_blur;
+    // The image as it will look, for the edge guide and for the models when they must run.
+    let fin = Finish::new(matrix, look, &recipe.render_adjust());
+    let enc: Vec<f32> = cam
+        .par_chunks(3)
+        .flat_map_iter(|p| fin.px([p[0], p[1], p[2]]))
+        .collect();
+    let guide: Vec<f32> = enc
+        .par_chunks(3)
+        .map(|p| (LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2]).clamp(0.0, 1.0))
+        .collect();
+    let small = std::sync::OnceLock::new();
+    let small = || {
+        small.get_or_init(|| {
+            let img = RgbImage {
+                width: w,
+                height: h,
+                data: enc.iter().map(|&v| to8(v)).collect(),
+            };
+            crate::masks::shrink(&img, crate::analyzers::SMALL_EDGE)
+        })
+    };
+    let depth = match analysis.and_then(|a| a.depth.clone()) {
+        Some(d) => d,
+        None => match crate::analyzers::depth::estimate(small()) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("lens blur: no depth map ({e}); rendering without it");
+                return None;
+            }
+        },
+    };
+    // Focus on the subject: the people the segmenter finds, kept sharp edge to edge.
+    let subject: Option<Vec<f32>> = if blur.focus.is_none() {
+        let bg = match analysis {
+            Some(a) => Some(a.class("background").to_vec()),
+            None => models::segment(small()).ok().map(|s| s[0].clone()),
+        };
+        bg.map(|b| b.iter().map(|v| 1.0 - v).collect())
+    } else {
+        None
+    };
+    let n = SEG_SIZE;
+    let range = lb::focus_range(
+        blur,
+        &depth,
+        subject
+            .as_ref()
+            .map(|s| refine::resize(s, n, n, depth.width, depth.height))
+            .as_deref(),
+    );
+    let canvas = Canvas {
+        width: w,
+        height: h,
+        guide: &guide,
+        rgb: None,
+        analysis: None,
+    };
+    let brush = |dots: &[crate::masks::Dot]| {
+        (!dots.is_empty())
+            .then(|| {
+                canvas
+                    .plane(&Mask::new(Shape::Brush {
+                        dots: dots.to_vec(),
+                        erase: Vec::new(),
+                    }))
+                    .ok()
+            })
+            .flatten()
+    };
+    let mut keep = subject.map(|s| refine::refine(&s, n, n, &guide, w, h, 1.5 / n as f32));
+    if let Some(f) = brush(&blur.focus_brush) {
+        keep = Some(match keep {
+            Some(k) => k.iter().zip(&f).map(|(a, b)| a.max(*b)).collect(),
+            None => f,
+        });
+    }
+    let push = brush(&blur.blur_brush);
+    let full = lb::depth_at_size(&depth, &guide, w, h);
+    let defocus = lb::defocus(&full, range, keep.as_deref(), push.as_deref());
+    let mut out = cam.to_vec();
+    lb::apply(
+        &mut out,
+        w,
+        h,
+        &lb::Plan {
+            blur,
+            defocus: &defocus,
+        },
+    );
+    Some(out)
 }
 
 fn channel(img: &[f32], c: usize) -> Vec<f32> {

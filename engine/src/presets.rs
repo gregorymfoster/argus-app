@@ -12,12 +12,19 @@
 //! Preset: id, amount, and each setting's value before and after), so a later Amount or
 //! removal can take it back off exactly, leaving the person's own changes since. Applying
 //! a Look-style Preset replaces the one before it; Adaptive ones stack, one of each.
+//!
+//! The person's own Presets (group Yours) are saved from a Photo, as Lightroom's Create
+//! Preset does: the Settings groups they tick ([`crate::paste`]) are kept in the Library's
+//! settings, so they travel with it. Theirs set values rather than add them, and a setting
+//! in a ticked group the Preset leaves out goes back to neutral, as a paste does; Amount
+//! moves each setting from the Photo's own value toward the Preset's.
 
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::library::Library;
 use crate::recipe::Recipe;
 use crate::{Error, Result};
 
@@ -40,6 +47,10 @@ pub struct Preset {
     /// Local adjustments it adds, each on a Mask the engine finds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub local: Vec<PresetLocal>,
+    /// Set on the person's own Presets only: the Settings groups it covers. Its settings are
+    /// set, not added, and the rest of these groups goes back to neutral.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,18 +108,37 @@ impl Preset {
     fn local_id(&self, i: usize) -> String {
         format!("preset-{}-{i}", self.id)
     }
+
+    /// One of the person's own, saved from a Photo.
+    pub fn is_yours(&self) -> bool {
+        !self.groups.is_empty()
+    }
+}
+
+/// The slot of an applied Preset by id, among the built-ins and `yours`. One of the
+/// person's that has since been deleted still holds the Look slot, so it can be replaced.
+fn slot_of(id: &str, yours: &[Preset]) -> Option<String> {
+    builtin()
+        .iter()
+        .chain(yours)
+        .find(|p| p.id == id)
+        .map(|p| p.slot().to_string())
+        .or_else(|| id.starts_with(YOURS_PREFIX).then(|| "look".to_string()))
 }
 
 /// `recipe` with `p` applied at `amount` (1.0 = as designed, 0..2), replacing a Preset in
 /// the same slot (and this one, if it was on already). Amount 0 just takes it off.
 pub fn apply(recipe: &Recipe, p: &Preset, amount: f64) -> Result<Recipe> {
+    apply_among(recipe, p, amount, &[])
+}
+
+/// [`apply`], where the Recipe may also carry the person's own Presets, `yours`.
+pub fn apply_among(recipe: &Recipe, p: &Preset, amount: f64, yours: &[Preset]) -> Result<Recipe> {
     let amount = amount.clamp(0.0, 2.0);
     let mut v = recipe.to_value();
     for e in applied(&v) {
-        if let Ok(other) = find(&e.id) {
-            if other.slot() == p.slot() {
-                take_off(&mut v, other);
-            }
+        if slot_of(&e.id, yours).as_deref() == Some(p.slot()) {
+            take_off(&mut v, &e.id);
         }
     }
     if amount > 0.0 {
@@ -134,7 +164,7 @@ pub fn apply(recipe: &Recipe, p: &Preset, amount: f64) -> Result<Recipe> {
 /// `recipe` without `p` (unchanged if it isn't on).
 pub fn remove(recipe: &Recipe, p: &Preset) -> Result<Recipe> {
     let mut v = recipe.to_value();
-    take_off(&mut v, p);
+    take_off(&mut v, &p.id);
     Recipe::from_value(&v)
 }
 
@@ -257,41 +287,70 @@ fn put_on(v: &mut Value, p: &Preset, amount: f64) {
         before: Map::new(),
         after: Map::new(),
     };
-    if let Some(g) = &p.global {
-        let mut ls = Vec::new();
-        leaves(g, &mut Vec::new(), &mut ls);
-        let global = v.get_mut("global").expect("a Recipe has global");
-        if !global.is_object() {
-            *global = json!({});
+    let empty = json!({});
+    let mut ls: Vec<(Vec<&str>, Option<&Value>)> = Vec::new();
+    let mut named = Vec::new();
+    leaves(
+        p.global.as_ref().unwrap_or(&empty),
+        &mut Vec::new(),
+        &mut named,
+    );
+    let current = v["global"].clone();
+    if p.is_yours() {
+        // A setting in its groups that it leaves out goes back to neutral, as a paste does.
+        let mut have = Vec::new();
+        leaves(&current, &mut Vec::new(), &mut have);
+        for (path, x) in have {
+            let covered =
+                crate::paste::group_of(path[0]).is_some_and(|g| p.groups.iter().any(|x| x == g));
+            if covered
+                && (x.is_number() || is_points(&path))
+                && !named.iter().any(|(n, _)| *n == path)
+            {
+                ls.push((path, None));
+            }
         }
-        for (path, x) in ls {
-            let old = get(global, &path).cloned();
-            let new = if is_points(&path) {
-                scale_points(x, amount)
+    }
+    ls.extend(named.into_iter().map(|(path, x)| (path, Some(x))));
+    let global = v.get_mut("global").expect("a Recipe has global");
+    if !global.is_object() {
+        *global = json!({});
+    }
+    for (path, x) in ls {
+        let old = get(global, &path).cloned();
+        let new = if is_points(&path) {
+            match x {
+                Some(x) if p.is_yours() => x.clone(),
+                Some(x) => scale_points(x, amount),
+                None => json!([[0, 0], [255, 255]]),
+            }
+        } else if let Some(x) = x.filter(|x| !x.is_number()) {
+            // A choice rather than a number (lens corrections As camera): set.
+            x.clone()
+        } else {
+            let x = x.and_then(Value::as_f64).unwrap_or(neutral(&path));
+            let cur = old
+                .as_ref()
+                .and_then(Value::as_f64)
+                .unwrap_or(neutral(&path));
+            let last = *path.last().expect("non-empty");
+            let to = if last == "hue" {
+                x
+            } else if p.is_yours()
+                || neutral(&path) != 0.0
+                || path.len() == 1 && p.absolute.iter().any(|a| a == last)
+            {
+                // Shape settings (grain size, vignette feather) are set, not added.
+                cur + (x - cur) * amount
             } else {
-                let x = x.as_f64().unwrap_or(0.0);
-                let cur = old
-                    .as_ref()
-                    .and_then(Value::as_f64)
-                    .unwrap_or(neutral(&path));
-                let last = *path.last().expect("non-empty");
-                let to = if last == "hue" {
-                    x
-                } else if neutral(&path) != 0.0
-                    || path.len() == 1 && p.absolute.iter().any(|a| a == last)
-                {
-                    // Shape settings (grain size, vignette feather) are set, not added.
-                    cur + (x - cur) * amount
-                } else {
-                    cur + x * amount
-                };
-                json!(round(to))
+                cur + x * amount
             };
-            let key = path.join(".");
-            entry.before.insert(key.clone(), old.unwrap_or(Value::Null));
-            entry.after.insert(key, new.clone());
-            set(global, &path, Some(new));
-        }
+            json!(round(to))
+        };
+        let key = path.join(".");
+        entry.before.insert(key.clone(), old.unwrap_or(Value::Null));
+        entry.after.insert(key, new.clone());
+        set(global, &path, Some(new));
     }
     let local = v["local"].as_array_mut().expect("a Recipe has local");
     for (i, l) in p.local.iter().enumerate() {
@@ -318,9 +377,9 @@ fn put_on(v: &mut Value, p: &Preset, amount: f64) {
 
 /// Take `p` back off: each setting it changed goes back to before, unless the person moved
 /// it since, in which case only what the Preset added comes off. Its Masks go.
-fn take_off(v: &mut Value, p: &Preset) {
+fn take_off(v: &mut Value, id: &str) {
     let mut list = applied(v);
-    let Some(i) = list.iter().position(|e| e.id == p.id) else {
+    let Some(i) = list.iter().position(|e| e.id == id) else {
         return;
     };
     let e = list.remove(i);
@@ -328,7 +387,10 @@ fn take_off(v: &mut Value, p: &Preset) {
     for (key, after) in &e.after {
         let path: Vec<&str> = key.split('.').collect();
         let before = e.before.get(key).cloned().unwrap_or(Value::Null);
-        let cur = get(global, &path).cloned();
+        // A Recipe leaves out settings at neutral, so a missing one reads as neutral.
+        let cur = get(global, &path)
+            .cloned()
+            .or_else(|| after.is_number().then(|| json!(neutral(&path))));
         let untouched = cur.as_ref().is_some_and(|c| same(c, after));
         let back = if untouched {
             (!before.is_null()).then_some(before)
@@ -348,7 +410,7 @@ fn take_off(v: &mut Value, p: &Preset) {
         set(global, &path, back);
     }
     prune(global);
-    let prefix = format!("preset-{}-", p.id);
+    let prefix = format!("preset-{id}-");
     if let Some(local) = v["local"].as_array_mut() {
         local.retain(|l| !l["id"].as_str().is_some_and(|id| id.starts_with(&prefix)));
     }
@@ -370,6 +432,178 @@ fn prune(v: &mut Value) {
         }
         m.retain(|_, x| !x.as_object().is_some_and(Map::is_empty));
     }
+}
+
+// --- the person's own Presets ---
+
+/// The panel group of the person's own Presets, shown above the built-ins.
+pub const YOURS: &str = "Yours";
+const YOURS_PREFIX: &str = "yours-";
+/// Where they live: the Library's settings table, so they move with the Library.
+const YOURS_KEY: &str = "presets.yours";
+
+/// Settings groups a Preset can hold. Spots and crop belong to one frame, so, as in
+/// Lightroom, a Preset leaves them out.
+pub const PRESET_GROUPS: &[&str] = &[
+    "wb",
+    "light",
+    "color",
+    "effects",
+    "detail",
+    "optics",
+    "calibration",
+    "retouch",
+    "masks",
+];
+
+/// The groups ticked when the person doesn't choose: all but White balance and Masks,
+/// which belong to the light and the people of one Photo more than to a look.
+pub fn default_groups() -> Vec<&'static str> {
+    PRESET_GROUPS
+        .iter()
+        .copied()
+        .filter(|g| !matches!(*g, "wb" | "masks"))
+        .collect()
+}
+
+/// The person's own Presets, in the order they made them.
+pub fn yours(lib: &Library) -> Result<Vec<Preset>> {
+    Ok(lib
+        .setting(YOURS_KEY)?
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default())
+}
+
+fn put_yours(lib: &Library, list: &[Preset]) -> Result<()> {
+    lib.set_setting(YOURS_KEY, &json!(list))
+}
+
+/// A built-in Preset or one of the person's, by id.
+pub fn find_in(lib: &Library, id: &str) -> Result<Preset> {
+    if let Some(p) = yours(lib)?.into_iter().find(|p| p.id == id) {
+        return Ok(p);
+    }
+    find(id).cloned()
+}
+
+/// A Preset named `name` from `recipe`'s settings in `groups` (as it renders: the caller
+/// folds in its Look). Not saved; see [`save`].
+pub fn from_recipe(name: &str, recipe: &Recipe, groups: &[&str]) -> Result<Preset> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error("a Preset needs a name".into()));
+    }
+    if groups.is_empty() {
+        return Err(Error("choose at least one settings group".into()));
+    }
+    if let Some(g) = groups.iter().find(|g| !PRESET_GROUPS.contains(g)) {
+        return Err(Error(format!(
+            "a Preset can't hold {g:?}; its groups are {}",
+            PRESET_GROUPS.join(", ")
+        )));
+    }
+    let v = recipe.to_value();
+    let global: Map<String, Value> = v["global"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(k, _)| crate::paste::group_of(k).is_some_and(|g| groups.contains(&g)))
+        .map(|(k, x)| (k.clone(), x.clone()))
+        .collect();
+    let local = if groups.contains(&"masks") {
+        recipe
+            .local
+            .iter()
+            .map(|l| -> Result<PresetLocal> {
+                Ok(PresetLocal {
+                    name: if l.name.is_empty() {
+                        "Mask".into()
+                    } else {
+                        l.name.clone()
+                    },
+                    mask: serde_json::to_value(&l.mask).map_err(|e| Error(e.to_string()))?,
+                    adjust: serde_json::to_value(&l.adjust).map_err(|e| Error(e.to_string()))?,
+                })
+            })
+            .collect::<Result<_>>()?
+    } else {
+        Vec::new()
+    };
+    Ok(Preset {
+        id: String::new(),
+        name: name.to_string(),
+        group: YOURS.into(),
+        why: String::new(),
+        global: (!global.is_empty()).then_some(Value::Object(global)),
+        absolute: Vec::new(),
+        local,
+        groups: groups.iter().map(|g| g.to_string()).collect(),
+    })
+}
+
+/// Save `p` among the person's Presets: as a new one, or in place of `replace` (Lightroom's
+/// Update with current settings). Names are unique among theirs.
+pub fn save(lib: &Library, mut p: Preset, replace: Option<&str>) -> Result<Preset> {
+    let mut list = yours(lib)?;
+    let same_name =
+        |x: &Preset| x.name.eq_ignore_ascii_case(&p.name) && Some(x.id.as_str()) != replace;
+    if list.iter().any(same_name) {
+        return Err(Error(format!(
+            "you already have a Preset named {:?}; pass its id to update it",
+            p.name
+        )));
+    }
+    match replace {
+        Some(id) => {
+            let i = list
+                .iter()
+                .position(|x| x.id == id)
+                .ok_or_else(|| Error(format!("no Preset of yours {id:?}")))?;
+            p.id = id.to_string();
+            list[i] = p.clone();
+        }
+        None => {
+            let base = format!(
+                "{YOURS_PREFIX}{}",
+                crate::naming::id_slug(&p.name, "preset")
+            );
+            let mut id = base.clone();
+            let mut n = 2;
+            while list.iter().any(|x| x.id == id) {
+                id = format!("{base}-{n}");
+                n += 1;
+            }
+            p.id = id;
+            list.push(p.clone());
+        }
+    }
+    put_yours(lib, &list)?;
+    Ok(p)
+}
+
+/// Rename one of the person's Presets.
+pub fn rename(lib: &Library, id: &str, name: &str) -> Result<Preset> {
+    let mut p = yours(lib)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| Error(format!("no Preset of yours {id:?}")))?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error("a Preset needs a name".into()));
+    }
+    p.name = name.to_string();
+    save(lib, p, Some(id))
+}
+
+/// Delete one of the person's Presets. Photos it was applied to keep their settings.
+pub fn delete(lib: &Library, id: &str) -> Result<()> {
+    let mut list = yours(lib)?;
+    let before = list.len();
+    list.retain(|p| p.id != id);
+    if list.len() == before {
+        return Err(Error(format!("no Preset of yours {id:?}")));
+    }
+    put_yours(lib, &list)
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@
 import { IN_APP } from '../data/backend';
 
 const PREVIEW = new URLSearchParams(location.search).get('chrome') === 'mac';
-export const MAC_CHROME = PREVIEW || (IN_APP && /Mac/.test(navigator.platform));
+const MAC_CHROME = PREVIEW || (IN_APP && /Mac/.test(navigator.platform));
 
 const DRAG = '.panel-head, .sidebar-top';
 const INTERACTIVE = 'button, a, input, textarea, select, [role="button"], [role="group"], [role="tab"], kbd';

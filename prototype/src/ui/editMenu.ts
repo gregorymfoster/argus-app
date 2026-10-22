@@ -26,7 +26,7 @@ function editable(el: Element | null): boolean {
   return (el as HTMLElement).isContentEditable;
 }
 
-export function runEditMenu(action: EditAction) {
+function runEditMenu(action: EditAction) {
   const k = KEYS[action];
   if (lastKey.combo === combo(k.key, k.shift) && performance.now() - lastKey.at < 300) return;
   const el = document.activeElement;

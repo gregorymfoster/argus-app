@@ -12,7 +12,7 @@
     "color": 2
   },
   "src/styles.css": {
-    "color": 115,
+    "color": 113,
     "font-size": 1,
     "radius": 6
   },
@@ -36,7 +36,7 @@
     "color": 5
   },
   "src/views.css": {
-    "color": 18,
+    "color": 16,
     "radius": 3
   }
 }

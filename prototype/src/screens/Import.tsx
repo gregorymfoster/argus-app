@@ -22,7 +22,7 @@ import { whileShown } from '../data/poll';
 
 const AI_NAME_OFF = 'AI naming is off in Settings';
 
-export function useImportRunner() {
+function useImportRunner() {
   const { dispatch } = useLibrary();
   return () => {
     dispatch({ type: 'reset' });

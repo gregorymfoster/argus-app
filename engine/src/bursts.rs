@@ -3,7 +3,8 @@
 //! burst apart; these fill the gaps, so every burst can be culled as one Stack.
 
 use crate::analyzers::{self, embedding};
-use crate::cull::{seconds, NEAR_IDENTICAL, SAME_SCENE};
+use crate::cull::{NEAR_IDENTICAL, SAME_SCENE};
+use crate::library::time::capture_seconds;
 use crate::library::{Library, Photo, PhotoFilter, PhotoId, ShootId};
 use crate::Result;
 use std::collections::HashMap;
@@ -132,7 +133,7 @@ pub fn find(lib: &Library, photos: &[Photo]) -> Result<Vec<Vec<PhotoId>>> {
             .unwrap_or(0);
         frames.push(Frame {
             id: p.id,
-            at: seconds(&p.captured_at),
+            at: capture_seconds(&p.captured_at),
             embedding: emb,
             // Sharpness is a few thousand at most, so a closed pair of eyes always weighs more.
             quality: sharp - closed as f32 * 1e6,

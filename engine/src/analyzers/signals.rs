@@ -11,7 +11,7 @@ impl Analyzer for Signals {
         "signals"
     }
     fn version(&self) -> u32 {
-        1
+        2
     }
     fn cost(&self) -> Cost {
         Cost::Cheap

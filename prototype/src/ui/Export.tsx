@@ -21,9 +21,12 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Slider } from '@/components/ui/slider';
 import { Select } from '@/components/ui/select';
 
-type Format = 'jpeg' | 'tiff' | 'original';
+type Format = 'jpeg' | 'heic' | 'tiff' | 'original';
 type Naming = 'shoot' | 'sequence' | 'original';
-type Size = 'full' | '4096' | '2048' | '1080';
+/** Full, a long edge in px, `short-N` a short edge, `mp-N` megapixels. */
+type Size = 'full' | '4096' | '2048' | '1080' | 'short-1080' | 'mp-12';
+/** Lightroom's Output sharpening for screen. */
+type Sharpen = 'off' | 'low' | 'standard' | 'high';
 
 interface Settings {
   folder: string;
@@ -32,6 +35,7 @@ interface Settings {
   format: Format;
   quality: number;
   size: Size;
+  sharpen: Sharpen;
   reveal: boolean;
 }
 
@@ -44,14 +48,15 @@ interface Preset {
 const BUILT_IN: Preset[] = [
   { id: 'full', label: 'Full size JPEG', set: { format: 'jpeg', size: 'full', quality: 92 } },
   { id: 'web', label: 'Web · 2048 px', set: { format: 'jpeg', size: '2048', quality: 85 } },
-  { id: 'social', label: 'Social · 1080 px', set: { format: 'jpeg', size: '1080', quality: 85 } },
+  { id: 'social', label: 'Instagram · 1080 short edge', set: { format: 'jpeg', size: 'short-1080', quality: 85, sharpen: 'standard' } },
+  { id: 'phone', label: 'Phone · HEIC 12 MP', set: { format: 'heic', size: 'mp-12', quality: 85, sharpen: 'low' } },
   { id: 'print', label: 'Print · TIFF', set: { format: 'tiff', size: 'full' } },
   { id: 'lightroom', label: 'To Lightroom · RAW + XMP', set: { format: 'original' } },
 ];
 // What a preset carries: file settings, never where the files go.
-const PRESET_KEYS: (keyof Settings)[] = ['format', 'size', 'quality', 'naming'];
+const PRESET_KEYS: (keyof Settings)[] = ['format', 'size', 'quality', 'naming', 'sharpen'];
 
-const DEFAULTS: Settings = { folder: '~/Pictures/Argus/Exports', shootFolder: true, naming: 'shoot', format: 'jpeg', quality: 92, size: 'full', reveal: false };
+const DEFAULTS: Settings = { folder: '~/Pictures/Argus/Exports', shootFolder: true, naming: 'shoot', format: 'jpeg', quality: 92, size: 'full', sharpen: 'off', reveal: false };
 const KEY = 'argus-export';
 const PRESETS_KEY = 'argus-export-presets';
 
@@ -87,9 +92,24 @@ export const savedExportPresets = (): { id: string; label: string; summary: stri
 export const deleteExportPreset = (id: string) => write(PRESETS_KEY, read<Preset[]>(PRESETS_KEY, []).filter((p) => p.id !== id));
 
 function summary(s: Partial<Settings>): string {
-  const format = s.format === 'tiff' ? 'TIFF' : s.format === 'original' ? 'Original' : `JPEG${s.quality ? ` ${s.quality}` : ''}`;
-  const size = !s.size || s.size === 'full' ? 'full size' : `${s.size} px`;
-  return s.format === 'original' ? format : `${format} · ${size}`;
+  const format = s.format === 'tiff' ? 'TIFF' : s.format === 'original' ? 'Original' : `${s.format === 'heic' ? 'HEIC' : 'JPEG'}${s.quality ? ` ${s.quality}` : ''}`;
+  const size = !s.size || s.size === 'full' ? 'full size' : sizeLabel(s.size);
+  const sharp = s.sharpen && s.sharpen !== 'off' ? ` · sharpen ${s.sharpen}` : '';
+  return s.format === 'original' ? format : `${format} · ${size}${sharp}`;
+}
+
+function sizeLabel(size: Size): string {
+  if (size.startsWith('short-')) return `${size.slice(6)} px short edge`;
+  if (size.startsWith('mp-')) return `${size.slice(3)} MP`;
+  return `${size} px`;
+}
+
+/** What `export_photos` takes for a size. */
+function sizeArgs(size: Size): Record<string, number> {
+  if (size === 'full') return {};
+  if (size.startsWith('short-')) return { short_edge: Number(size.slice(6)) };
+  if (size.startsWith('mp-')) return { megapixels: Number(size.slice(3)) };
+  return { long_edge: Number(size) };
 }
 
 function matches(p: Preset, s: Settings) {
@@ -102,7 +122,7 @@ const shootFolder = () => SHOOT.name.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(
 
 /** What the first file will be called, as the engine names it (docs/naming.md). */
 function example(s: Settings, file: string, total: number): string {
-  const ext = s.format === 'jpeg' ? 'jpg' : s.format === 'tiff' ? 'tif' : (file.split('.').pop() ?? '');
+  const ext = s.format === 'jpeg' ? 'jpg' : s.format === 'heic' ? 'heic' : s.format === 'tiff' ? 'tif' : (file.split('.').pop() ?? '');
   const shoot = shootFolder();
   const name = s.naming === 'original' ? stem(file) : s.naming === 'sequence' ? `${shoot}_${'1'.padStart(Math.max(3, String(total).length), '0')}` : `${shoot}_${stem(file)}`;
   return `${name}.${ext}`;
@@ -110,13 +130,14 @@ function example(s: Settings, file: string, total: number): string {
 
 /** Rough size and time per Photo, for the footer, before anything has run. A7R-size frames. */
 function estimate(s: Settings): { bytes: number | null; secs: number } {
-  const px = s.size === 'full' ? 42e6 : (Number(s.size) ** 2 * 2) / 3;
+  const px = s.size === 'full' ? 42e6 : s.size.startsWith('mp-') ? Number(s.size.slice(3)) * 1e6 : s.size.startsWith('short-') ? Number(s.size.slice(6)) ** 2 * 1.5 : (Number(s.size) ** 2 * 2) / 3;
   if (s.format === 'original') return { bytes: null, secs: 0.3 };
   if (s.format === 'tiff') return { bytes: px * 3, secs: 1.6 };
-  return { bytes: px * (0.1 + ((s.quality - 50) / 50) * 0.35), secs: s.size === 'full' ? 1.3 : 0.6 };
+  const jpeg = px * (0.1 + ((s.quality - 50) / 50) * 0.35);
+  return { bytes: s.format === 'heic' ? jpeg * 0.6 : jpeg, secs: (s.size === 'full' ? 1.3 : 0.6) + (s.format === 'heic' ? 0.4 : 0) };
 }
 
-export function bytes(n: number): string {
+function bytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
   if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;
   return `${Math.max(1, Math.round(n / 1e3))} KB`;
@@ -240,8 +261,9 @@ async function startExport(photos: Photo[], s: Settings) {
           shoot_folder: s.shootFolder,
           format: s.format,
           naming: s.naming,
-          ...(s.format === 'jpeg' ? { quality: s.quality } : {}),
-          ...(s.size === 'full' || s.format === 'original' ? {} : { long_edge: Number(s.size) }),
+          ...(s.format === 'jpeg' || s.format === 'heic' ? { quality: s.quality } : {}),
+          ...(s.format === 'original' ? {} : sizeArgs(s.size)),
+          ...(s.format !== 'original' && s.sharpen !== 'off' ? { sharpen: s.sharpen } : {}),
           sequence_start: i + 1,
           sequence_total: total,
         });
@@ -318,7 +340,11 @@ export function ExportDialog({ open, onOpenChange, ids }: { open: boolean; onOpe
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="export-v2" data-testid="export-dialog" onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || !(e.target instanceof HTMLInputElement)) && (e.preventDefault(), go())}>
+      <DialogContent className="export-v2" data-testid="export-dialog" onOpenAutoFocus={(e) => {
+        // Focus lands on Export (↵ runs it), not the first preset, which drew a focus ring on open.
+        e.preventDefault();
+        (e.currentTarget as HTMLElement).querySelector<HTMLElement>('[data-testid="export-start"]')?.focus();
+      }} onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || !(e.target instanceof HTMLInputElement)) && (e.preventDefault(), go())}>
         <div className="ex-head">
           <DialogTitle asChild>
             <h2>Export</h2>
@@ -430,6 +456,7 @@ export function ExportDialog({ open, onOpenChange, ids }: { open: boolean; onOpe
                   onValueChange={(format) => set({ format })}
                   items={[
                     { value: 'jpeg', label: 'JPEG' },
+                    { value: 'heic', label: 'HEIC' },
                     { value: 'tiff', label: 'TIFF' },
                     { value: 'original', label: 'Original + XMP' },
                   ]}
@@ -437,7 +464,7 @@ export function ExportDialog({ open, onOpenChange, ids }: { open: boolean; onOpe
                 />
                 {s.format !== 'original' && <span className="v-chip">sRGB</span>}
               </div>
-              {s.format === 'jpeg' && (
+              {(s.format === 'jpeg' || s.format === 'heic') && (
                 <div className="ex-row">
                   <span className="k">Quality</span>
                   <Slider className="export-quality" style={{ width: 220 }} min={50} max={100} step={1} value={[s.quality]} onValueChange={([q]) => set({ quality: q })} aria-label="Quality" />
@@ -458,6 +485,25 @@ export function ExportDialog({ open, onOpenChange, ids }: { open: boolean; onOpe
                       { value: '4096', label: 'Long edge 4096 px' },
                       { value: '2048', label: 'Long edge 2048 px' },
                       { value: '1080', label: 'Long edge 1080 px' },
+                      { value: 'short-1080', label: 'Short edge 1080 px' },
+                      { value: 'mp-12', label: '12 megapixels' },
+                    ]}
+                    className="w-[180px]"
+                  />
+                </div>
+              ) : null}
+              {s.format !== 'original' ? (
+                <div className="ex-row">
+                  <span className="k">Sharpen</span>
+                  <Select
+                    label="Output sharpening"
+                    value={s.sharpen}
+                    onValueChange={(sharpen) => set({ sharpen })}
+                    items={[
+                      { value: 'off', label: 'Off' },
+                      { value: 'low', label: 'Screen, low' },
+                      { value: 'standard', label: 'Screen, standard' },
+                      { value: 'high', label: 'Screen, high' },
                     ]}
                     className="w-[180px]"
                   />

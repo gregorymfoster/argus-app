@@ -66,7 +66,7 @@ export const LENS: Def[] = [
 ];
 
 /** `obj` with `path` set to `v`, dropping it (and emptied parents) when it is `def`. */
-export function setIn<T extends object>(obj: T, path: string[], v: unknown, def: unknown = 0): T {
+function setIn<T extends object>(obj: T, path: string[], v: unknown, def: unknown = 0): T {
   const [k, ...rest] = path;
   const cur = (obj as Record<string, unknown>)[k];
   const next = rest.length ? setIn((cur as object) ?? {}, rest, v, def) : v;

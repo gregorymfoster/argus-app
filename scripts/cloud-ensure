@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# The parts of cloud setup that `just check` needs, made idempotent and cheap to repeat:
+#   1. sample RAWs: copy any missing fixtures/raw*/ *.ARW from the project's shared folder
+#   2. sccache: install it and point the container's ~/.cargo/config.toml at the shared cache
+# `scripts/cloud-setup.sh` (the SessionStart hook) runs it, and so does `just check`, because the
+# hook does not always run: a projects session resumes a container snapshot made when the hook
+# first ran (2026-10-20, before /mnt/project-files was mounted), so it had neither (2026-10-22),
+# and agent worktrees start without fixtures/raw. Does nothing on Greg's Mac (no shared folder).
+# Never fails the caller: every step is best-effort. Quiet unless it changes something.
+set -u
+cd "$(dirname "$0")/.."
+shared=/mnt/project-files
+[ -d "$shared" ] || exit 0
+
+# Sample RAWs (A7R II in raw/, A7R V in raw-a7rv/). Copies, not links: Import refuses symlinks.
+copied=0
+for src in "$shared"/fixtures/raw "$shared"/fixtures/raw-a7rv; do
+  [ -d "$src" ] || continue
+  dest="fixtures/$(basename "$src")"
+  for f in "$src"/*.ARW; do
+    [ -e "$f" ] || continue
+    out="$dest/$(basename "$f")"
+    [ -e "$out" ] && continue
+    mkdir -p "$dest"
+    cp "$f" "$out.part" && mv "$out.part" "$out" && copied=$((copied + 1))
+  done
+done
+[ "$copied" -gt 0 ] && echo "cloud-ensure: copied $copied sample RAWs from $shared/fixtures"
+
+# sccache over the shared cache, so a new container reuses dependency builds earlier sessions made
+# (a cold `cargo test --no-run` measured 416 s without, 130 s with; docs/agents/build-speed.md).
+# Set in the container's own ~/.cargo/config.toml, never the repo's, so Greg's Mac is untouched.
+# Capped at 1G: the shared folder's quota is 10 GB and the bench RAWs need most of it.
+[ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
+grep -q rustc-wrapper "$HOME/.cargo/config.toml" 2>/dev/null && exit 0
+bin="$HOME/.local/bin"
+if [ ! -x "$bin/sccache" ]; then
+  v=0.14.0
+  mkdir -p "$bin" "$shared/cache/sccache"
+  curl -fsSL --max-time 60 "https://github.com/mozilla/sccache/releases/download/v$v/sccache-v$v-x86_64-unknown-linux-musl.tar.gz" \
+    | tar -xz -C "$bin" --strip-components=1 "sccache-v$v-x86_64-unknown-linux-musl/sccache" 2>/dev/null
+fi
+[ -x "$bin/sccache" ] || { echo "cloud-ensure: sccache download failed, building without it"; exit 0; }
+cat > "$bin/argus-sccache" <<EOS
+#!/bin/sh
+export SCCACHE_DIR=$shared/cache/sccache SCCACHE_CACHE_SIZE=1G
+exec "$bin/sccache" "\$@"
+EOS
+chmod +x "$bin/argus-sccache"
+mkdir -p "$HOME/.cargo"
+# Cargo's fingerprints leave out the wrapper, so turning it on rebuilds nothing.
+printf '[build]\nrustc-wrapper = "%s"\n' "$bin/argus-sccache" >> "$HOME/.cargo/config.toml"
+echo "cloud-ensure: sccache on (cache in $shared/cache/sccache)"
+exit 0

@@ -71,11 +71,6 @@ pub struct NameSuggestion {
     pub note: Option<String>,
 }
 
-/// `2026-10-12T14:03:00` -> `2026-10-12`.
-pub fn date_label(captured_at: &str) -> Option<String> {
-    super::capture_date(captured_at).map(str::to_string)
-}
-
 /// A Shoot name by the rules in docs/naming.md: the Shoot's date first, then its words
 /// joined by hyphens (`2026-10-18_Boat-Trip`). A name that already starts with a date
 /// keeps it; with no capture time, today's date stands in.
@@ -177,11 +172,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn date_labels_and_clean_names() {
-        assert_eq!(
-            date_label("2026-10-12T14:03:00").as_deref(),
-            Some("2026-10-12")
-        );
+    fn shoot_slugs_and_clean_names() {
         assert_eq!(
             shoot_slug("Maya's Birthday", Some("2026-10-12T09:00:00")),
             "2026-10-12_Mayas-Birthday"
@@ -191,7 +182,6 @@ mod tests {
             "2026-10-11_Boat-Trip"
         );
         assert!(shoot_slug("Lisbon, Old Town", None).ends_with("_Lisbon-Old-Town"));
-        assert_eq!(date_label("garbage"), None);
         assert_eq!(
             clean_name("  \"Pickleball.\" ").as_deref(),
             Some("Pickleball")

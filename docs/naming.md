@@ -77,4 +77,6 @@ When Argus writes metadata to an export or a Sidecar, it uses these fields. They
 | Creator, copyright | `dc:creator`, `dc:rights`, `xmpRights:Marked` | Creator, Copyright Notice (Core) |
 | Verdict | `xmp:Rating` of -1 for a Reject, as Bridge writes it (Lightroom keeps Picks in its catalog only) | not IPTC |
 
+Today Argus writes the Keywords and caption a Photo keeps (never AI suggestions still waiting) to the Sidecar of an Original export and as an XMP packet inside each exported JPEG, after its EXIF, the way Lightroom embeds them. The Library keeps Keywords in `photo_keywords` as full paths, each with who added it and whether it is kept, suggested or dismissed; a dismissed AI Keyword stays as a row so the AI doesn't offer it again (`engine/src/library/keywords.rs`). The AI's suggestions come from the `tag_photos` job (`engine/src/tagging.rs`), which drops anything under People.
+
 The flat list leaves out the Facet names because "Places" and "Subjects" are filing drawers, not words anyone searches for. Lightroom treats such parent keywords the same way when they're marked not to export.

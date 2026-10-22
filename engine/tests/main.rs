@@ -1,6 +1,8 @@
 //! All engine integration tests, in one binary (`--test engine`): one link instead of one per
 //! file, which made `just check` after an engine edit mostly linking. Run one file's tests with
-//! `cargo test --profile fast -p argus-engine --test engine golden::` (the module is the old file).
+//! `cargo test --profile fast --test engine golden::` (the module is the old file).
+//! Leave out `-p argus-engine`: on its own the engine resolves fewer dependency features (serde,
+//! libc, syn, chrono, tracing) than the workspace, so cargo rebuilds ~90 crates (4-5 min cold).
 //! Tests share this process, so anything that sets a process-wide env var takes `env_lock()`.
 
 use std::sync::{Mutex, MutexGuard};
@@ -29,15 +31,20 @@ mod commands;
 mod compute;
 mod cull;
 mod denoise;
+mod edit_head;
 mod exemplars;
 mod export;
 mod golden;
 mod jobs;
+mod keywords;
 mod lens;
+mod lens_blur;
 mod libraries;
 mod library;
 mod library_safety;
 mod masks;
+mod meaning;
+mod people;
 mod previews;
 mod rawcheck;
 mod recipe_render;

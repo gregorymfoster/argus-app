@@ -94,6 +94,31 @@ impl Library {
         Ok(out)
     }
 
+    /// One Analyzer's inline blobs at `version` for every Photo of a Shoot (or of the
+    /// Library), with each Photo's Shoot, in one query: the vectors a search compares.
+    pub(crate) fn fact_blobs(
+        &self,
+        analyzer: &str,
+        version: u32,
+        shoot: Option<ShootId>,
+    ) -> Result<Vec<(PhotoId, ShootId, Vec<u8>)>> {
+        let mut q = self
+            .db
+            .prepare_cached(
+                "SELECT f.photo_id, p.shoot_id, f.blob FROM facts f JOIN photos p ON p.id = f.photo_id
+                 WHERE f.analyzer = ?1 AND f.version = ?2 AND f.blob IS NOT NULL
+                   AND (?3 IS NULL OR p.shoot_id = ?3)
+                 ORDER BY p.captured_at, p.file_name",
+            )
+            .map_err(db_err)?;
+        let rows = q
+            .query_map(params![analyzer, version, shoot], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(db_err)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db_err)
+    }
+
     pub(crate) fn put_fact(&self, photo: PhotoId, analyzer: &str, row: &FactRow) -> Result<()> {
         let (blob, file) = match &row.blob {
             Some(b) if b.len() > INLINE_BLOB => {

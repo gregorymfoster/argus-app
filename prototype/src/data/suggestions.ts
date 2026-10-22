@@ -307,11 +307,3 @@ export async function applyToRest(hero: string, heroRecipe: Recipe): Promise<num
 export function useQueue(): QueueStatus | null {
   return usePoll<QueueStatus>(LIVE ? 'progress' : null, {}, 3000) ?? null;
 }
-
-/** "~38 min", "~2 h", or null. */
-export function eta(s: number | null): string | null {
-  if (s == null || !isFinite(s)) return null;
-  if (s < 90) return `~${Math.max(1, Math.round(s))} s`;
-  if (s < 5400) return `~${Math.round(s / 60)} min`;
-  return `~${(s / 3600).toFixed(1)} h`;
-}

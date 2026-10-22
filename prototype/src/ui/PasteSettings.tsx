@@ -1,6 +1,6 @@
-// Copy, Paste and Sync settings, as in Lightroom: ⌘⇧C asks which groups to copy, ⌘⇧V
+// Copy, Paste and Sync settings, as in Lightroom: ⇧⌘C asks which groups to copy, ⇧⌘V
 // pastes them on the selection (or the current Photo), ⌥⌘V pastes the previous Photo's
-// settings, and ⌘⇧S syncs the current Photo's settings to the rest of the selection.
+// settings, and ⇧⌘S syncs the current Photo's settings to the rest of the selection.
 // Live, every paste is one `paste_settings` batch in the Library, so ⌘Z undoes it.
 
 import { useEffect, useRef, useState } from 'react';
@@ -14,7 +14,7 @@ import { DEFAULT_GROUPS, GROUPS, groupsLabel, pasteRecipe, type GroupId } from '
 import { recipeOf, useLibrary, type Action, type State } from '../store/library';
 import { Kbd } from './kit';
 
-/** What ⌘⇧C copied: the Photo (read when pasting, as the engine does) and its groups. */
+/** What ⇧⌘C copied: the Photo (read when pasting, as the engine does) and its groups. */
 let clip: { from: string; groups: GroupId[] } | null = null;
 /** The Photo the person had open before this one, for ⌥⌘V. */
 let previous: string | null = null;
@@ -103,13 +103,13 @@ export function useSettingsKeys(current: string | null, targets: string[]) {
   );
 }
 
-/** ⌘⇧V: what ⌘⇧C copied, onto `to`. */
+/** ⇧⌘V: what ⇧⌘C copied, onto `to`. */
 export function pasteClip(state: State, dispatch: (a: Action) => void, to: string[]) {
   if (!clip) return dispatch({ type: 'toast', text: 'Nothing copied yet: ⇧⌘C copies settings' });
   pasteSettings(state, dispatch, clip.from, to, clip.groups);
 }
 
-/** Whether ⌘⇧V has something to paste, for menus. */
+/** Whether ⇧⌘V has something to paste, for menus. */
 export const hasCopiedSettings = () => clip != null;
 
 /** The Copy settings / Sync settings dialog, mounted once by the app. */

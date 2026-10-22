@@ -1,9 +1,13 @@
 //! Export: Photos out of Argus as files, laid out like Lightroom's Export dialog (file
 //! settings, image sizing, file naming, metadata, location), simplified.
 //!
-//! - **Format**: JPEG (quality 50..100), TIFF (8-bit, uncompressed), or Original: a copy of
+//! - **Format**: JPEG (quality 50..100), HEIC (macOS only: the system's own encoder, through
+//!   `sips`, at the same quality), TIFF (8-bit, uncompressed), or Original: a copy of
 //!   the untouched original with an XMP sidecar holding its Recipe and Verdict, so the work
 //!   travels to Lightroom (Lightroom reads `<name>.xmp` next to a RAW when it imports it).
+//! - **Size**: full, or a long edge, a short edge (Instagram's 1080) or megapixels, measured
+//!   on the cropped Photo. **Output sharpening** for screen (low, standard, high), as in
+//!   Lightroom's Export, sharpens the resized pixels a little so they don't look soft.
 //! - **Naming** follows docs/naming.md (no spaces, ever): `shoot` (the default) gives
 //!   `2026-10-18_Boat-Trip_DSC08005.jpg`, `sequence` gives `2026-10-18_Boat-Trip_001.jpg`,
 //!   `original` keeps `DSC08005.jpg`. Files go in a folder named after the Shoot under
@@ -28,6 +32,8 @@ use std::path::{Path, PathBuf};
 pub enum Format {
     #[default]
     Jpeg,
+    /// HEIC through macOS's own encoder; a JPEG elsewhere is the alternative.
+    Heic,
     Tiff,
     /// The original file, untouched, plus an XMP sidecar.
     Original,
@@ -45,6 +51,25 @@ pub enum Naming {
     Original,
 }
 
+/// Lightroom's Output sharpening for screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sharpen {
+    Low,
+    Standard,
+    High,
+}
+
+impl Sharpen {
+    fn amount(self) -> f32 {
+        match self {
+            Sharpen::Low => 0.35,
+            Sharpen::Standard => 0.7,
+            Sharpen::High => 1.1,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Options {
     /// The export location the person chose.
@@ -55,6 +80,12 @@ pub struct Options {
     pub format: Format,
     /// Long edge in pixels; None is full size. Ignored for Original.
     pub long_edge: Option<usize>,
+    /// Short edge in pixels, in place of `long_edge` (Instagram's 1080).
+    pub short_edge: Option<usize>,
+    /// Megapixels, in place of `long_edge`.
+    pub megapixels: Option<f64>,
+    /// Output sharpening for screen; None is off.
+    pub sharpen: Option<Sharpen>,
     /// JPEG quality, 50..100.
     pub quality: u8,
     pub naming: Naming,
@@ -72,6 +103,10 @@ pub struct Item<'a> {
     pub shoot_name: &'a str,
     /// The Photo's Mask analysis, when the Recipe has AI Masks ([`render::masks_for`]).
     pub masks: Option<std::sync::Arc<crate::masks::Analysis>>,
+    /// The Keywords the Photo keeps, written as `dc:subject` and `lr:hierarchicalSubject`.
+    pub keywords: Vec<crate::naming::Keyword>,
+    /// The caption the Photo keeps, written as `dc:description` (IPTC Description).
+    pub caption: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,29 +261,42 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
                 bytes,
             })
         }
-        Format::Jpeg | Format::Tiff => {
+        Format::Jpeg | Format::Heic | Format::Tiff => {
             // AI Denoise needs its base; an export waits for it rather than leaving it out.
             if crate::denoise::amount(item.recipe) > 0.0
                 && crate::denoise::base_file(item.photo).is_some()
             {
                 crate::denoise::compute(item.photo, &|_, _| {})?;
             }
-            let img =
-                render::render_photo(item.photo, item.recipe, opts.long_edge, item.masks.clone())?;
-            let ext = if opts.format == Format::Jpeg {
-                "jpg"
-            } else {
-                "tif"
+            let mut img = render::render_photo(
+                item.photo,
+                item.recipe,
+                long_edge(item, opts),
+                item.masks.clone(),
+            )?;
+            if let Some(s) = opts.sharpen {
+                sharpen(&mut img, s.amount());
+            }
+            let ext = match opts.format {
+                Format::Jpeg => "jpg",
+                Format::Heic => "heic",
+                _ => "tif",
             };
             let path = claim(folder, &stem_of(ext), &[ext])?.remove(0);
             if same_file(&path, original) {
                 return Err(Error("refusing to write over an original".into()));
             }
-            let data = if opts.format == Format::Jpeg {
-                let jpeg = render::encode_jpeg(&img, opts.quality.clamp(50, 100))?;
-                with_exif(&jpeg, &exif(item))
-            } else {
-                encode_tiff(&img)?
+            let data = match opts.format {
+                Format::Tiff => encode_tiff(&img)?,
+                _ => {
+                    let jpeg = render::encode_jpeg(&img, opts.quality.clamp(50, 100))?;
+                    let jpeg = with_xmp(&with_exif(&jpeg, &exif(item)), item);
+                    if opts.format == Format::Heic {
+                        heic(&jpeg, opts.quality.clamp(50, 100), &path)?
+                    } else {
+                        jpeg
+                    }
+                }
             };
             let bytes = put(&path, |f| f.write_all(&data))?;
             Ok(Exported {
@@ -261,6 +309,93 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
             })
         }
     }
+}
+
+/// The long edge to render at for the chosen size, from the cropped Photo's shape.
+pub fn long_edge(item: &Item, opts: &Options) -> Option<usize> {
+    let (w, h) = (item.photo.width as f64, item.photo.height as f64);
+    if w <= 0.0 || h <= 0.0 {
+        return opts.long_edge;
+    }
+    let c = &item.recipe.crop;
+    let (w, h) = (w * c.w.clamp(0.01, 1.0), h * c.h.clamp(0.01, 1.0));
+    let ratio = w.max(h) / w.min(h);
+    let full = w.max(h);
+    let want = match (opts.short_edge, opts.megapixels) {
+        (Some(s), _) => s as f64 * ratio,
+        (None, Some(mp)) if mp > 0.0 => (mp * 1e6 * ratio).sqrt(),
+        _ => return opts.long_edge,
+    };
+    // Never upscale: a size past the Photo's own is full size.
+    (want < full).then(|| want.round().max(64.0) as usize)
+}
+
+/// Unsharp mask on luminance (a 3x3 blur, so a fine radius at output size), the way
+/// Lightroom sharpens for screen: detail gets crisper without colour fringes.
+pub fn sharpen(img: &mut crate::RgbImage, amount: f32) {
+    let (w, h) = (img.width, img.height);
+    if w < 3 || h < 3 {
+        return;
+    }
+    let luma: Vec<f32> = img
+        .data
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32)
+        .collect();
+    const K: [[f32; 3]; 3] = [[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]];
+    for y in 0..h {
+        for x in 0..w {
+            let mut blur = 0.0;
+            for (dy, row) in K.iter().enumerate() {
+                let yy = (y + dy).saturating_sub(1).min(h - 1);
+                for (dx, k) in row.iter().enumerate() {
+                    let xx = (x + dx).saturating_sub(1).min(w - 1);
+                    blur += k * luma[yy * w + xx];
+                }
+            }
+            let detail = (luma[y * w + x] - blur / 16.0) * amount;
+            let i = (y * w + x) * 3;
+            for c in &mut img.data[i..i + 3] {
+                *c = (*c as f32 + detail).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
+/// A JPEG as HEIC, through macOS's own encoder (`sips`, part of every Mac).
+fn heic(jpeg: &[u8], quality: u8, near: &Path) -> Result<Vec<u8>> {
+    if !cfg!(target_os = "macos") {
+        return Err(Error(
+            "HEIC export needs macOS (it uses the Mac's own encoder); choose JPEG here".into(),
+        ));
+    }
+    let dir = near.parent().unwrap_or(Path::new("."));
+    let name = near.file_name().unwrap_or_default().to_string_lossy();
+    let src = dir.join(format!(".{name}.argus-src.jpg"));
+    let out = dir.join(format!(".{name}.argus-heic.heic"));
+    let res = (|| {
+        std::fs::write(&src, jpeg).map_err(|e| io(&src, e))?;
+        let run = std::process::Command::new("/usr/bin/sips")
+            .args(["-s", "format", "heic", "-s", "formatOptions"])
+            .arg(quality.to_string())
+            .arg(&src)
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .map_err(|e| Error(format!("HEIC: can't run sips: {e}")))?;
+        if !run.status.success() {
+            return Err(Error(format!(
+                "HEIC: sips failed: {}",
+                String::from_utf8_lossy(&run.stderr).trim()
+            )));
+        }
+        std::fs::read(&out).map_err(|e| io(&out, e))
+    })();
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    res
 }
 
 fn encode_tiff(img: &crate::RgbImage) -> Result<Vec<u8>> {
@@ -438,15 +573,95 @@ pub fn sidecar(item: &Item) -> String {
         Verdict::Reject => "\n    xmp:Rating=\"-1\"",
         _ => "",
     };
+    let tags = xmp_tags(item);
+    let close = if tags.is_empty() {
+        "/>".to_string()
+    } else {
+        format!(">{tags}\n  </rdf:Description>")
+    };
     format!(
         r#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Argus">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
     xmlns:xmp="http://ns.adobe.com/xap/1.0/"
     xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
-    xmp:CreatorTool="Argus"{rating}{attrs}/>
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:lr="http://ns.adobe.com/lightroom/1.0/"
+    xmp:CreatorTool="Argus"{rating}{attrs}{close}
  </rdf:RDF>
 </x:xmpmeta>
 "#
     )
+}
+
+/// The Keywords and caption as XMP elements (empty when there are none): `dc:subject`
+/// with every level (IPTC Keywords), `lr:hierarchicalSubject` with full paths, and
+/// `dc:description` (IPTC Description).
+fn xmp_tags(item: &Item) -> String {
+    let bag = |name: &str, items: &[String]| -> String {
+        if items.is_empty() {
+            return String::new();
+        }
+        let li: String = items
+            .iter()
+            .map(|k| format!("\n     <rdf:li>{}</rdf:li>", xml_escape(k)))
+            .collect();
+        format!("\n   <{name}>\n    <rdf:Bag>{li}\n    </rdf:Bag>\n   </{name}>")
+    };
+    let mut out = bag("dc:subject", &crate::naming::flat_keywords(&item.keywords));
+    out += &bag(
+        "lr:hierarchicalSubject",
+        &crate::naming::hierarchical_subject(&item.keywords),
+    );
+    if let Some(c) = item
+        .caption
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        out += &format!(
+            "\n   <dc:description>\n    <rdf:Alt>\n     <rdf:li xml:lang=\"x-default\">{}</rdf:li>\n    </rdf:Alt>\n   </dc:description>",
+            xml_escape(c)
+        );
+    }
+    out
+}
+
+/// The JPEG with an XMP packet of its Keywords and caption after its EXIF, as Lightroom
+/// embeds them, so Photos, Finder and stock sites see them. Nothing to say, no packet.
+fn with_xmp(jpeg: &[u8], item: &Item) -> Vec<u8> {
+    let tags = xmp_tags(item);
+    if tags.is_empty() || !jpeg.starts_with(&[0xFF, 0xD8]) {
+        return jpeg.to_vec();
+    }
+    let packet = format!(
+        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>
+<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"Argus\">
+ <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">
+  <rdf:Description rdf:about=\"\"
+    xmlns:dc=\"http://purl.org/dc/elements/1.1/\"
+    xmlns:lr=\"http://ns.adobe.com/lightroom/1.0/\">{tags}
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end=\"w\"?>"
+    );
+    const NS: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+    let len = NS.len() + packet.len() + 2;
+    if len > u16::MAX as usize {
+        return jpeg.to_vec();
+    }
+    // After SOI, and after the EXIF APP1 when there is one: EXIF must come first.
+    let mut at = 2;
+    if jpeg.get(2..4) == Some(&[0xFF, 0xE1][..]) && jpeg.get(6..10) == Some(&b"Exif"[..]) {
+        at = 4 + u16::from_be_bytes([jpeg[4], jpeg[5]]) as usize;
+    }
+    let mut out = Vec::with_capacity(jpeg.len() + len + 2);
+    out.extend_from_slice(&jpeg[..at]);
+    out.extend_from_slice(&[0xFF, 0xE1]);
+    out.extend_from_slice(&(len as u16).to_be_bytes());
+    out.extend_from_slice(NS);
+    out.extend_from_slice(packet.as_bytes());
+    out.extend_from_slice(&jpeg[at..]);
+    out
 }

@@ -16,6 +16,12 @@ use std::time::SystemTime;
 /// What the Mask models see in a Photo: the `segment`, `sky` and `faces` Facts (ADR
 /// 0013), kept in memory while the preview is unchanged so slider drags don't re-read them.
 pub fn analysis(lib: &Library, photo: &Photo) -> Result<Arc<Analysis>> {
+    analysis_with(lib, photo, false)
+}
+
+/// [`analysis`], with the depth map too when `depth` (Lens Blur), computing it the first
+/// time.
+pub fn analysis_with(lib: &Library, photo: &Photo, depth: bool) -> Result<Arc<Analysis>> {
     type Stamp = (u64, SystemTime);
     type Mem = HashMap<PathBuf, (Stamp, Arc<Analysis>)>;
     static MEM: OnceLock<Mutex<Mem>> = OnceLock::new();
@@ -24,11 +30,15 @@ pub fn analysis(lib: &Library, photo: &Photo) -> Result<Arc<Analysis>> {
         .map(|m| (m.len(), m.modified().unwrap_or(SystemTime::UNIX_EPOCH)))
         .map_err(|e| Error(format!("preview of Photo {}: {e}", photo.id)))?;
     if let Some((at, a)) = mem.lock().unwrap().get(&photo.preview) {
-        if *at == stamp {
+        if *at == stamp && (!depth || a.depth.is_some()) {
             return Ok(a.clone());
         }
     }
-    let facts = crate::analyzers::facts(lib, photo, crate::masks::ANALYSIS_FACTS)?;
+    let mut ids = crate::masks::ANALYSIS_FACTS.to_vec();
+    if depth {
+        ids.push(crate::masks::DEPTH_FACT);
+    }
+    let facts = crate::analyzers::facts(lib, photo, &ids)?;
     let a = Arc::new(Analysis::from_facts(&facts)?);
     mem.lock()
         .unwrap()
@@ -36,13 +46,13 @@ pub fn analysis(lib: &Library, photo: &Photo) -> Result<Arc<Analysis>> {
     Ok(a)
 }
 
-/// The Analysis `recipe` needs, if it has AI Masks or retouching. A Photo that can't be
-/// analysed renders with the analysis made from the render itself.
+/// The Analysis `recipe` needs, if it has AI Masks, retouching or Lens Blur. A Photo that
+/// can't be analysed renders with the analysis made from the render itself.
 pub fn masks_for(lib: &Library, photo: &Photo, recipe: &Recipe) -> Option<Arc<Analysis>> {
     if !recipe.needs_masks() {
         return None;
     }
-    match analysis(lib, photo) {
+    match analysis_with(lib, photo, recipe.lens_blur.active()) {
         Ok(a) => Some(a),
         Err(e) => {
             eprintln!("masks: {e}; analysing the render instead");

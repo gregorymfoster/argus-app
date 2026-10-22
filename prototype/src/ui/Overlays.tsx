@@ -7,7 +7,13 @@ import { DECISIONS, feedbackMarkdown, useVariants, type Screen } from '../store/
 import { go } from '../router';
 import { CommandDialog, CommandGroup, CommandInput, CommandFooter, CommandItem, CommandList } from '@/components/ui/command';
 import { Button } from '@/components/ui/button';
-import { Kbd } from './kit';
+import { Kbd, MenuKeys } from './kit';
+import { openSearch } from '../data/live';
+import { PHOTO_BY_ID } from '../data/dummy';
+import { libraryUrl } from '../data/backend';
+import { PhotoView } from './PhotoView';
+import { keywordLabel } from '../data/tags';
+import { matchedText, saveAsAlbum, useSearch } from './Search';
 
 export interface Command {
   label: string;
@@ -28,6 +34,13 @@ export function Palette({ open, onOpenChange, extra }: { open: boolean; onOpenCh
   useEffect(() => {
     if (!open) setQuery('');
   }, [open]);
+  const found = useSearch(open ? query : '');
+  const q = query.trim();
+  const showAll = () => {
+    onOpenChange(false);
+    if (LIVE) openSearch(q);
+    else dispatch({ type: 'toast', text: 'Search across Shoots needs a real Library' });
+  };
   const groups: [string, Command[]][] = [
     [
       'Go',
@@ -51,8 +64,83 @@ export function Palette({ open, onOpenChange, extra }: { open: boolean; onOpenCh
   ];
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange} label="Command palette">
-      <CommandInput placeholder="Type a command, a file name, or ask the Agent…" value={query} onValueChange={setQuery} />
+      <CommandInput
+        placeholder="Search photos by Keyword or caption, type a command, or ask the Agent…"
+        value={query}
+        onValueChange={setQuery}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && q) {
+            e.preventDefault();
+            showAll();
+          }
+        }}
+      />
       <CommandList>
+        {found && found.count > 0 && (
+          <CommandGroup heading={`Photos · ${found.count} in ${found.shoots} ${found.shoots === 1 ? 'Shoot' : 'Shoots'}`} forceMount data-testid="palette-photos">
+            <div className="found-strip">
+              {found.photos.map((h) => (
+                <button
+                  key={h.id}
+                  className="found-thumb"
+                  title={h.file_name}
+                  onClick={() => {
+                    onOpenChange(false);
+                    if (PHOTO_BY_ID[h.id] && !LIVE) go({ name: 'loupe', id: h.id });
+                    else showAll();
+                  }}
+                >
+                  {LIVE ? <img src={libraryUrl(h.preview)} alt="" loading="lazy" /> : PHOTO_BY_ID[h.id] && <PhotoView photo={PHOTO_BY_ID[h.id]} size="tile" style={{ width: '100%', height: '100%', borderRadius: 0 }} />}
+                  <span className="trunc">{matchedText(h.matched) || h.file_name}</span>
+                </button>
+              ))}
+            </div>
+            <CommandItem value="search-show-all" forceMount onSelect={showAll} data-testid="palette-show-all">
+              <span className="grow">Show all {found.count} in the grid</span>
+              <MenuKeys keys={['⌘', '↵']} />
+            </CommandItem>
+          </CommandGroup>
+        )}
+        {found && found.keywords.length > 0 && (
+          <CommandGroup heading="Keywords" forceMount>
+            {found.keywords.map((k) => (
+              <CommandItem
+                key={k.keyword}
+                value={`keyword ${k.keyword}`}
+                forceMount
+                onSelect={() => {
+                  const leaf = k.keyword.split('|').pop() ?? '';
+                  onOpenChange(false);
+                  if (LIVE) openSearch(leaf);
+                  else setQuery(leaf);
+                }}
+              >
+                <span className="grow">{k.keyword.split('|')[0]} › {keywordLabel(k.keyword)}</span>
+                <span className="faint" style={{ fontSize: 12 }}>
+                  {k.photos.toLocaleString()} {k.photos === 1 ? 'photo' : 'photos'}
+                </span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+        {LIVE && found && found.count > 0 && (
+          <CommandGroup heading="Search" forceMount>
+            <CommandItem
+              value="search-save-album"
+              forceMount
+              onSelect={() => {
+                onOpenChange(false);
+                void saveAsAlbum(q);
+              }}
+              data-testid="palette-save-album"
+            >
+              <span className="grow">Save this search as an Album</span>
+              <span className="faint" style={{ fontSize: 12 }}>
+                updates as you import
+              </span>
+            </CommandItem>
+          </CommandGroup>
+        )}
                 {groups.map(([heading, items]) => (
           <CommandGroup key={heading} heading={heading}>
             {items.map((c) => (
@@ -87,7 +175,7 @@ export function Palette({ open, onOpenChange, extra }: { open: boolean; onOpenCh
           </CommandGroup>
         )}
       </CommandList>
-      <CommandFooter />
+      <CommandFooter>{found && found.count > 0 ? <span className="flex items-center gap-1.5"><MenuKeys keys={['⌘', '↵']} /> All in the grid</span> : null}</CommandFooter>
     </CommandDialog>
   );
 }
@@ -107,7 +195,8 @@ export function VariantsPanel({ screen }: { screen: Screen }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-  if (!DECISIONS.length) return null;
+  // Open questions are for the design prototype; the app runs the default until Greg picks.
+  if (!DECISIONS.length || LIVE) return null;
   const copy = async () => {
     const md = feedbackMarkdown(choice, notes);
     try {

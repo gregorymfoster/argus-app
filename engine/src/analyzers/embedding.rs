@@ -25,26 +25,32 @@ impl Analyzer for Embedding {
         Cost::Model
     }
     fn run(&self, input: &Input) -> Result<Fact> {
-        // The whole frame stretched to the model's square, RGB 0..1, as MediaPipe does.
-        let img = image::imageops::resize(
-            input.preview,
-            SIZE as u32,
-            SIZE as u32,
-            image::imageops::FilterType::Triangle,
-        );
-        let data: Vec<f32> = img.as_raw().iter().map(|&v| v as f32 / 255.0).collect();
-        let t: Tensor = ndarray::Array4::from_shape_vec((1, SIZE, SIZE, 3), data)
-            .map_err(|e| Error(format!("embedder input: {e}")))?
-            .into();
-        let out = MODEL.run(t)?;
-        let v = floats(&out[0])?;
-        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
-        let blob = v.iter().flat_map(|x| (x / norm).to_le_bytes()).collect();
+        let v = embed(input.preview)?;
+        let blob = v.iter().flat_map(|x| x.to_le_bytes()).collect();
         Ok(Fact {
             value: json!({ "dims": DIMS }),
             blob: Some(blob),
         })
     }
+}
+
+/// The unit-length embedding of an image.
+pub fn embed(preview: &image::RgbImage) -> Result<Vec<f32>> {
+    // The whole frame stretched to the model's square, RGB 0..1, as MediaPipe does.
+    let img = image::imageops::resize(
+        preview,
+        SIZE as u32,
+        SIZE as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    let data: Vec<f32> = img.as_raw().iter().map(|&v| v as f32 / 255.0).collect();
+    let t: Tensor = ndarray::Array4::from_shape_vec((1, SIZE, SIZE, 3), data)
+        .map_err(|e| Error(format!("embedder input: {e}")))?
+        .into();
+    let out = MODEL.run(t)?;
+    let v = floats(&out[0])?;
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+    Ok(v.iter().map(|x| x / norm).collect())
 }
 
 /// The unit vector in a Fact this Analyzer made.

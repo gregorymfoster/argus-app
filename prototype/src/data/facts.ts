@@ -35,7 +35,7 @@ export interface PhotoFacts {
 }
 
 /** Eye focus under which a face reads as soft (the engine's `eyes::SOFT`). */
-export const SOFT_FOCUS = 0.25;
+const SOFT_FOCUS = 0.25;
 
 const cache = new Map<string, Promise<PhotoFacts>>();
 

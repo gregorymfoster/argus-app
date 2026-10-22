@@ -219,13 +219,21 @@ export type MaskRef = (
   | { kind: 'linear'; from: { x: number; y: number }; to: { x: number; y: number } }
   | { kind: 'radial'; x: number; y: number; rx: number; ry: number; feather?: number }
   | { kind: 'brush'; dots: { x: number; y: number; r: number }[]; erase?: { x: number; y: number; r: number }[] }
-) & { invert?: boolean };
+  | { kind: 'luminance'; lo: number; hi: number; smooth?: number }
+  | { kind: 'color'; points: { x: number; y: number }[]; range?: number }
+) & { invert?: boolean; components?: MaskComponent[] };
+
+/** How a component joins its Mask: Lightroom's Add, Subtract and Intersect. */
+export type MaskOp = 'add' | 'subtract' | 'intersect';
+export type MaskComponent = MaskRef & { op: MaskOp };
 
 export interface LocalAdjust {
   id: string;
   name: string;
   mask: MaskRef;
   adjust: Adjust;
+  /** Lightroom's Mask Amount, 0..200 percent; absent is 100. */
+  amount?: number;
   source: Actor;
 }
 
@@ -263,6 +271,25 @@ export interface Recipe {
   presets?: AppliedPreset[];
   /** Heal and Clone Spots, on the uncropped frame; absent means none. */
   spots?: Spot[];
+  /** Lens Blur (engine/src/lens_blur.rs); absent means off. */
+  lensBlur?: LensBlur;
+}
+
+export type Bokeh = 'circle' | 'bubble' | 'blade' | 'ring';
+
+/**
+ * Lens Blur: a fake shallow depth of field from a depth map. `amount` 0..100 (0 is off),
+ * `boost` 0..100 (absent 50), `focus` [from, to] on depth 0 (far) .. 100 (near), absent for
+ * the subject; the Refine brushes are brush dots (x, y 0..1 of the uncropped frame, r of its
+ * long edge).
+ */
+export interface LensBlur {
+  amount?: number;
+  bokeh?: Bokeh;
+  boost?: number;
+  focus?: [number, number];
+  focusBrush?: { x: number; y: number; r: number }[];
+  blurBrush?: { x: number; y: number; r: number }[];
 }
 
 /**

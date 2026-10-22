@@ -1,6 +1,6 @@
-// The Edit tool (design pass v2): Auto and B&W, Profile, a Recommended row of Looks with an
-// Amount, one-click fixes, then Lightroom's panels in its order: Light, Tone curve, Color,
-// Color mixer and Point color, Color grading, Effects, Retouch, Detail, Optics and
+// The Edit tool (design pass v2): Auto and B&W, Profile, the AI takes with their Amount
+// (Recommended Looks moved to Presets, Greg 2026-10-22), one-click fixes, then Lightroom's panels in its order: Light, Tone curve, Color,
+// Color mixer and Point color, Color grading, Effects, Lens Blur, Retouch, Detail, Optics and
 // Calibration (EditSections.tsx), the rarely used ones closed at the bottom.
 // Every change is a Recipe change through the store, so Undo and the engine see it.
 
@@ -8,13 +8,12 @@ import { useState, type ReactNode } from 'react';
 import { Check, ChevronDown, Cloud, Contrast, Pipette, RefreshCw, Smile, Sparkles, Sun, Wand2 } from 'lucide-react';
 import type { Adjust, HslBand, HslShift, Look, Photo, Recipe } from '../domain/types';
 import { HSL_BANDS } from '../domain/types';
-import { FIXES, appliedIn, applyPreset, hasFix, recommended, removePreset, type Preset } from '../domain/presets';
-import { usePresetRanking } from '../data/presetRanking';
+import { FIXES, applyPreset, hasFix, removePreset, type Preset } from '../domain/presets';
 import { fmt, useLibrary } from '../store/library';
-import { PhotoView } from './PhotoView';
 import { Section } from './Develop';
 import { Seg, Slider, Tip } from './kit';
 import { CalibrationSection, ColorGrading, Detail, Effects, Optics, PointColors, ToneCurve, pointFrom, type Def, type Picked } from './EditSections';
+import { LensBlurSection, type LensBlurUi } from './LensBlur';
 import { call } from '../data/backend';
 import { LIVE } from '../data/live';
 import { Button } from '@/components/ui/button';
@@ -39,7 +38,7 @@ export const PRESENCE: Def[] = [
   { key: 'vibrance', label: 'Vibrance', min: -100, max: 100, track: 'linear-gradient(90deg, #8a8a8a, #c9a04a 50%, #e0543f)' },
   { key: 'saturation', label: 'Saturation', min: -100, max: 100, track: 'linear-gradient(90deg, #8a8a8a, #b06ed0 50%, #e0543f)' },
 ];
-export const RETOUCH: Def[] = [
+const RETOUCH: Def[] = [
   { key: 'skin', label: 'Skin smooth', min: 0, max: 100 },
   { key: 'eyes', label: 'Eyes', min: 0, max: 100 },
   { key: 'teeth', label: 'Teeth', min: 0, max: 100 },
@@ -80,11 +79,13 @@ interface Props {
   onSync: () => void;
   /** Ask for a click on the photo (white balance eyedropper, Point Color). */
   onPick: (label: string, then: (p: Picked) => void) => void;
-  /** A Suggestion being previewed, against this edit. */
-  diff?: ReactNode;
+  /** The AI takes, first in the panel (Suggestions.tsx TakesPanel). */
+  takes?: ReactNode;
+  /** Lens Blur's depth view and Refine brush, which live on the stage. */
+  lensBlur: LensBlurUi;
 }
 
-export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, onHover, onAuto, onSync, onPick, diff }: Props) {
+export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, onHover, onAuto, onSync, onPick, takes, lensBlur }: Props) {
   const { dispatch } = useLibrary();
   const [band, setBand] = useState<HslBand>(() => HSL_BANDS.find((b) => recipe.global.hsl?.[b]) ?? 'orange');
   const set = (r: Recipe, label: string, key?: string) => dispatch({ type: 'recipe/set', id: p.id, recipe: r, label, by: 'you', key });
@@ -95,21 +96,6 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
   const toggleBw = () => dispatch({ type: 'recipe/global', id: p.id, key: 'saturation', value: bw ? 0 : -100, by: 'you' });
   const edited = Object.values(recipe.global).some((v) => v && (typeof v === 'number' || Object.keys(v).length)) || recipe.local.length > 0;
 
-  // Recommended: one Look at a time, at an Amount; picking another replaces it (the Recipe
-  // remembers which, so the Amount and taking it off work after a reload too). With the
-  // Shoot's AI ranking, its top Looks.
-  const { ranking } = usePresetRanking(p);
-  const looks = recommended(p, ranking);
-  const applied = appliedIn(recipe, 'look');
-  const recOn = applied && looks.some((l) => l.id === applied.preset.id) ? applied : null;
-  const pickLook = (l: Preset) => {
-    if (recOn?.preset.id === l.id) return set(removePreset(recipe, l), `Removed ${l.name}`);
-    set(applyPreset(recipe, l, applied?.amount ?? 1), `Recommended: ${l.name}`);
-  };
-  const setAmount = (v: number) => {
-    if (!recOn) return;
-    set(applyPreset(recipe, recOn.preset, Math.max(0.01, v / 100)), `${recOn.preset.name} amount`, 'rec-amount');
-  };
   const toggleFix = (f: Preset) => (hasFix(recipe, f) ? set(removePreset(recipe, f), `Removed ${f.name}`) : set(applyPreset(recipe, f), f.name));
 
   const row = (d: Def) => (
@@ -200,27 +186,12 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
         <span className="grow" />
         <span className="mono dev-note">{edited ? `edited${versions ? ` · v${versions}` : ''}` : 'as shot'}</span>
       </div>
-      {diff}
-      <div className="dev-block" data-testid="recommended" onMouseLeave={() => onHover(null)}>
+      {takes}
+      <div className="dev-block" data-testid="quick-fixes" onMouseLeave={() => onHover(null)}>
         <div className="dev-sub">
-          <Sparkles size={12} className="acc" />
-          <span style={{ marginLeft: 6, fontWeight: 500 }}>Recommended</span>
+          <span style={{ fontWeight: 500 }}>Quick fixes</span>
           <span className="grow" />
-          <span className="dev-note">for this photo</span>
-        </div>
-        <div className="rec-grid">
-          {looks.map((l) => {
-            const preview = applyPreset(recipe, l, recOn?.preset.id === l.id ? 0 : (applied?.amount ?? 1));
-            return (
-              <button key={l.id} className={`preset ${recOn?.preset.id === l.id ? 'on' : ''}`} onMouseEnter={() => onHover(preview)} onFocus={() => onHover(preview)} onClick={() => pickLook(l)} data-testid={`rec-${l.id}`} aria-pressed={recOn?.preset.id === l.id} title={l.why}>
-                <PhotoView photo={p} recipe={preview} look={look} />
-                <span>{l.name}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div className={recOn ? '' : 'dim'}>
-          <Slider label="Amount" min={0} max={200} def={100} value={Math.round((recOn?.amount ?? 1) * 100)} display={`${Math.round((recOn?.amount ?? 1) * 100)}`} onChange={(v) => setAmount(Math.round(v))} />
+          <span className="dev-note">stack on your edit</span>
         </div>
         <div className="fix-chips" data-testid="fixes">
           {FIXES.map((f) => {
@@ -286,6 +257,7 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
       </Section>
       <ColorGrading g={recipe.global} set={setGlobal} />
       <Effects g={recipe.global} set={setGlobal} />
+      <LensBlurSection photo={p} recipe={recipe} set={set} onPick={onPick} ui={lensBlur} />
       <Section id="retouch" title="Retouch" closed aside={retouched.length ? <span className="mono dev-note">{retouched.join(' · ')}</span> : null}>
         <div className="slider-list">{RETOUCH.map(row)}</div>
       </Section>

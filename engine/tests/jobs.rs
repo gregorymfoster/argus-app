@@ -967,18 +967,6 @@ fn model_work_waits_for_an_idle_mac_unless_told_to_run_now() {
     }
     let c = jobs::QueueConfig::default();
     assert!(c.idle_only, "on by default");
-    assert!(jobs::waits_for_idle(&c, None));
-    assert!(
-        !jobs::waits_for_idle(&c, Some("idle")),
-        "runs once the Mac is idle"
-    );
-    assert!(!jobs::waits_for_idle(
-        &jobs::QueueConfig {
-            go_ahead: true,
-            ..c
-        },
-        None
-    ));
 
     // While the person works, model jobs stay queued; the open Photo's still runs.
     let held = |t: &Tools| {

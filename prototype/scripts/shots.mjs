@@ -243,6 +243,22 @@ await shot('13b-sort-menu', '#/cull', {
     await p.waitForTimeout(300);
   },
 });
+// Learn as you cull: after a few Picks and Rejects the AI's stars refresh (data/learn.ts).
+{
+  await shot('13c-learn-as-you-cull', '#/cull', {
+    act: async (p) => {
+      // Flag among the Unflagged, where every press is the person's own call.
+      await p.getByTitle('Unflagged').click();
+      for (let i = 0; i < 14; i++) {
+        await p.keyboard.press(i % 2 ? 'x' : 'p');
+        await p.waitForTimeout(60);
+      }
+      await p.getByTitle('All').click();
+      await p.keyboard.press('Shift+S');
+      await p.waitForTimeout(1500);
+    },
+  });
+}
 await shot('14-cull-hover-stars', '#/cull', {
   act: async (p) => {
     await p.locator('.tile').nth(1).locator('.stars button').nth(3).hover();
@@ -569,14 +585,23 @@ await check('smoke-agent-edit-masks', async () => {
   await ctx.close();
 });
 
+// Applies a built-in Preset from the Presets tab (its group opened if closed), then back to Edit.
+async function applyPresetTab(p, id, group) {
+  await p.getByRole('tab', { name: 'Presets' }).click();
+  const sec = p.getByTestId(`section-presets-${group}`);
+  if ((await sec.getAttribute('class')).split(' ').indexOf('open') < 0) await sec.locator('.dev-section-toggle').click();
+  await sec.getByTestId(`preset-${id}`).click();
+  await p.getByRole('tab', { name: 'Edit', exact: true }).click();
+}
+
 await check('smoke-edit-v2-recommended-fixes-people-crop', async () => {
   const { p, ctx } = await page('#/edit/p15');
-  // Recommended at an Amount, then a fix that toggles.
+  // A Look from Presets (Edit's Recommended row moved there, Greg 2026-10-22), then a fix that toggles.
   const temp = async () => Number((await p.locator('.slider', { hasText: 'Temp' }).first().locator('.val').textContent()).replace('−', '-'));
   const t0 = await temp();
-  await p.getByTestId('rec-warm-film').click();
+  await applyPresetTab(p, 'warm-film', 'Film');
   if ((await temp()) !== t0 + 12) throw new Error(`Warm film should add 12 to temp ${t0}, got ${await temp()}`);
-  await p.getByTestId('rec-natural').click();
+  await applyPresetTab(p, 'natural', 'Essentials');
   if ((await temp()) !== t0) throw new Error(`switching Looks left temp ${await temp()}, was ${t0}`);
   await p.getByTestId('fix-shadows').click();
   if ((await p.getByTestId('fix-shadows').getAttribute('aria-pressed')) !== 'true') throw new Error('Lift shadows did not turn on');
@@ -616,7 +641,7 @@ await check('smoke-lens-corrections', async () => {
 await check('smoke-copy-paste-settings', async () => {
   const { p, ctx } = await page('#/edit/p15');
   const temp = async () => Number((await p.locator('.slider', { hasText: 'Temp' }).first().locator('.val').textContent()).replace('−', '-'));
-  await p.getByTestId('rec-warm-film').click();
+  await applyPresetTab(p, 'warm-film', 'Film');
   // ⇧⌘C asks which groups, Lightroom-style; untick White balance and nothing of it travels.
   await p.keyboard.press('Control+Shift+c');
   await p.getByTestId('settings-dialog').waitFor();
@@ -809,9 +834,50 @@ await check('smoke-ai-marks-show-queued-and-working', async () => {
   await ctx.close();
 });
 
+await check('smoke-next-step-after-cull', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').first().click();
+  if (await p.getByTestId('next-step').count()) throw new Error('the next-step line should hide while there are Picks');
+  // The demo cull Picks; clear every flag to get the live rules cull's state (nothing Picked).
+  await p.locator('.tile').first().click({ button: 'right' });
+  await p.getByRole('menuitem', { name: 'Expand all Stacks' }).click();
+  await p.keyboard.press('ControlOrMeta+a');
+  await p.keyboard.press('u');
+  await p.keyboard.press('Escape');
+  await p.getByTestId('next-step').waitFor();
+  await p.locator('.tile').first().click({ button: 'right' });
+  await p.getByRole('menuitem', { name: 'Collapse all Stacks' }).click();
+  await p.waitForTimeout(1200);
+  await p.screenshot({ path: `${out}19-next-step.png` });
+  const label = await p.getByTestId('next-pick-best').textContent();
+  const n = Number(label?.match(/(\d+)\s*$/)?.[1]);
+  await p.getByTestId('next-pick-best').click();
+  await p.waitForTimeout(200);
+  const picks = await p.locator('.grid-v .tile[data-verdict="pick"]').count();
+  if (!n || picks < 1) throw new Error(`Pick Best Photos (${n}) made ${picks} visible Picks`);
+  if (await p.getByTestId('next-step').count()) throw new Error('the line should go once something is Picked');
+  await p.keyboard.press('ControlOrMeta+z');
+  await p.getByTestId('next-step').waitFor();
+  await ctx.close();
+});
+
+await check('smoke-tiles-compact-by-default-j-cycles', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.tile').first().waitFor();
+  const shown = () => p.locator('.grid-v [data-testid="takes-badge"]').evaluateAll((els) => els.filter((e) => e.offsetParent).length);
+  if (await shown()) throw new Error('compact tiles (the default) should hide the Suggestions badges');
+  await p.keyboard.press('j'); // photo only
+  if (await p.locator('.grid-v .tile figcaption').first().isVisible()) throw new Error('photo only should drop the caption row');
+  await p.keyboard.press('j'); // everything
+  if (!(await shown())) throw new Error('everything should show the Suggestions badges');
+  await ctx.close();
+});
+
 await check('smoke-eye-badges-on-tiles-and-loupe', async () => {
   const { p, ctx } = await page('#/cull');
   await p.locator('.tile').first().waitFor();
+  await p.keyboard.press('j');
+  await p.keyboard.press('j'); // compact -> photo only -> everything, so the tile shot shows its badges
   const closed = await p.locator('.grid-v [data-testid="eyes-closed"]').count();
   const soft = await p.locator('.grid-v [data-testid="soft-focus"]').count();
   if (!closed || !soft) throw new Error(`badges: ${closed} closed, ${soft} soft`);

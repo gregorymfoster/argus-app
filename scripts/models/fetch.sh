@@ -5,11 +5,14 @@
 # - selfie_multiclass_256x256: MediaPipe Image Segmenter (Apache 2.0). Shipped as TFLite;
 #   converted to ONNX because tract can't run TFLite's TRANSPOSE_CONV.
 # - face_detection_yunet_2023mar: OpenCV Zoo YuNet (MIT).
+# - face_recognition_sface_2021dec: OpenCV Zoo SFace (Apache 2.0), for grouping People.
 # - deeplabv3_mnv2_ade20k: TensorFlow DeepLab v3, MobileNetV2 on ADE20K (Apache 2.0). A
 #   frozen TF graph, cut to the normalised input and the logits, then converted to ONNX.
 # - scunet_color_real_f16: SCUNet's blind real-noise model (Apache 2.0) for AI Denoise,
 #   exported from PyTorch by scunet_onnx.py (fp16 weights), and as a Core ML package by
 #   scunet_coreml.py for the Mac's GPU path.
+# - depth_anything_v2_small_f16: Depth Anything V2 Small (Apache 2.0; Base and Large are
+#   non-commercial) for Lens Blur, onnx-community's export with fp16 weights by depth_onnx.py.
 set -euo pipefail
 out="$(cd "$(dirname "$0")/../../engine/models" && pwd)"
 work="$(mktemp -d)"
@@ -50,6 +53,9 @@ curl -fsSL -o "$work/embedder.tflite" \
 curl -fsSL -o "$out/face_detection_yunet_2023mar.onnx" \
   https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
 
+curl -fsSL -o "$out/face_recognition_sface_2021dec.onnx" \
+  https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+
 sha256sum "$out"/*.onnx
 echo "Now update engine/models/manifest.json with these hashes and sizes."
 
@@ -68,3 +74,7 @@ python3 -m venv "$work/torch"
 rm -rf "$out/scunet_color_real.mlpackage"
 "$work/torch/bin/python" "$(dirname "$0")/scunet_coreml.py" "$work/network_scunet.py" "$work/scunet.pth" \
   "$out/scunet_color_real.mlpackage" "$out/scunet_color_real_f16.onnx"
+
+# Depth Anything V2 Small (Apache 2.0): onnx-community's fp32 export, then depth_onnx.py.
+curl -fsSL -o "$work/depth.onnx" https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx
+"$work/venv/bin/python" "$(dirname "$0")/depth_onnx.py" "$work/depth.onnx" "$out/depth_anything_v2_small_f16.onnx"

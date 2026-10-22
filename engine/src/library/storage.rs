@@ -556,7 +556,7 @@ pub fn move_library_via(from: &Path, to: &Path, rename: bool) -> Result<MoveRepo
     // Fold the write-ahead log into library.db so the folder is complete on its own.
     {
         let db = rusqlite::Connection::open(from.join(DB_FILE)).map_err(db_err)?;
-        // Background work writes into the folder; let it finish first (ADR 0010).
+        // Background work writes into the folder; let it finish first (ADR 0016).
         let running: Option<String> = db
             .query_row(
                 "SELECT label FROM jobs WHERE status = 'running' LIMIT 1",

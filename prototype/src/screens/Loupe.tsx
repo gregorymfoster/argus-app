@@ -24,9 +24,10 @@ import { longEdge, useNeed, useZoomPan, useZoomed } from '../ui/zoomPan';
 import { ZoomReadout } from '../ui/Navigator';
 import { useDetailRender } from '../data/liveEdit';
 import { useSettingsKeys } from '../ui/PasteSettings';
+import { TagsPanel } from '../ui/TagsPanel';
 
 /** Face boxes (F shows them all; closed eyes always show). Live, from the faces Analyzer's Facts. */
-export function Faces({ p, all = true, found }: { p: Photo; all?: boolean; found?: FaceFacts[] }) {
+function Faces({ p, all = true, found }: { p: Photo; all?: boolean; found?: FaceFacts[] }) {
   const boxes = found
     ? found.map((f) => ({ left: f.x, top: f.y, w: f.w, h: f.h, closed: !!f.eyes_closed }))
     : p.faces.map((f) => ({ left: f.x - f.r, top: f.y - f.r * 1.5, w: f.r * 2, h: f.r * 3, closed: f.eyesClosed }));
@@ -226,6 +227,7 @@ export function LoupeScreen({ id }: { id: string }) {
                   </div>
                 </section>
               )}
+              <TagsPanel photoId={p.id} faces={LIVE ? (facts?.faces.length ?? 0) : p.faces.length} />
               <Takes p={p} />
               <section style={{ borderBottom: 'none' }}>
                 <h2>Metadata</h2>

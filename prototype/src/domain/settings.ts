@@ -4,7 +4,7 @@
 
 import type { Recipe } from './types';
 
-export type GroupId = 'wb' | 'light' | 'color' | 'effects' | 'detail' | 'optics' | 'calibration' | 'retouch' | 'masks' | 'spots' | 'crop';
+export type GroupId = 'wb' | 'light' | 'color' | 'effects' | 'detail' | 'optics' | 'calibration' | 'retouch' | 'masks' | 'spots' | 'crop' | 'lensBlur';
 
 export const GROUPS: { id: GroupId; label: string; default: boolean }[] = [
   { id: 'wb', label: 'White balance', default: true },
@@ -18,6 +18,7 @@ export const GROUPS: { id: GroupId; label: string; default: boolean }[] = [
   { id: 'masks', label: 'Masks', default: false },
   { id: 'spots', label: 'Spot removal', default: false },
   { id: 'crop', label: 'Crop', default: false },
+  { id: 'lensBlur', label: 'Lens Blur', default: false },
 ];
 
 export const DEFAULT_GROUPS: GroupId[] = GROUPS.filter((g) => g.default).map((g) => g.id);
@@ -58,6 +59,7 @@ export function pasteRecipe(from: Recipe, into: Recipe, groups: GroupId[]): Reci
   if (groups.includes('masks')) out.local = from.local;
   if (groups.includes('spots')) (out as { spots?: unknown }).spots = (from as { spots?: unknown }).spots;
   if (groups.includes('crop')) out.crop = from.crop;
+  if (groups.includes('lensBlur')) out.lensBlur = from.lensBlur;
   return out;
 }
 

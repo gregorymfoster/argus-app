@@ -58,13 +58,19 @@ const state = async () => {
   return Object.fromEntries(photos.map((p) => [p.id, `${p.verdict}/${p.stars ?? 0}`]));
 };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-// The UI saves in order behind the keys, so wait until the Library stops changing.
+// The page's Library writes (flags, stars, Undo, Redo) still on their way.
+const WRITES = /\/api\/(flag|rate|undo_batch|edit|as_person)$/;
+let writing = 0;
+let wroteAt = 0;
+// The UI saves in order behind the keys, so wait until no write is in flight and the
+// Library has stopped changing. A row of Undos of no-op batches changes nothing for a
+// while, so a quiet Library alone doesn't mean the queue is done.
 const settled = async () => {
   let last = await state();
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 120; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const now = await state();
-    if (same(now, last)) return now;
+    if (same(now, last) && !writing && Date.now() - wroteAt > 1000) return now;
     last = now;
   }
   return last;
@@ -74,8 +80,21 @@ const diff = (a, b) => Object.keys(a).filter((k) => a[k] !== b[k]).map((k) => `$
 try {
   const start = await state();
   const p = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
-  p.on('pageerror', (e) => note(`page error: ${e.message}`));
-  p.on('console', (m) => m.type() === 'error' && !/Failed to load resource/.test(m.text()) && note(`console: ${m.text().slice(0, 200)}`));
+  // The first full stack of each kind goes to the log: it names the component in a loop.
+  const stacks = new Set();
+  const stack = (kind, text) => !stacks.has(kind) && (stacks.add(kind), console.log(`--- first ${kind} in full:\n${text}\n---`));
+  p.on('pageerror', (e) => (stack('page error', e.stack ?? e.message), note(`page error: ${e.message}`)));
+  p.on('console', (m) => {
+    if (m.type() !== 'error' || /Failed to load resource/.test(m.text())) return;
+    stack('console error', m.text());
+    note(`console: ${m.text().slice(0, 200)}`);
+  });
+  // FUZZ_CPU=4 slows the page's CPU fourfold, to shake out timing-dependent bugs.
+  if (process.env.FUZZ_CPU) await (await p.context().newCDPSession(p)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.FUZZ_CPU) });
+  p.on('request', (r) => WRITES.test(new URL(r.url()).pathname) && writing++);
+  const wrote = (r) => WRITES.test(new URL(r.url()).pathname) && (writing--, (wroteAt = Date.now()));
+  p.on('requestfinished', wrote);
+  p.on('requestfailed', wrote);
   p.on('response', async (r) => {
     if (!r.url().includes('/api/') || r.ok()) return;
     note(`${r.status()} ${new URL(r.url()).pathname}: ${(await r.text().catch(() => '')).slice(0, 160)}`);

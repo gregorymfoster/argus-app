@@ -5,7 +5,8 @@
 //!
 //! Groups follow Lightroom's Copy Settings dialog, simplified. A group is a set of
 //! Recipe keys: flat slider keys and nested objects in `global`, plus `correction`'s
-//! fields, `local` (Masks), `spots` (Heal and Clone) and `crop`. Pasting a group replaces those keys on the
+//! fields, `local` (Masks), `spots` (Heal and Clone), `crop` and
+//! `lensBlur`. Pasting a group replaces those keys on the
 //! target, so a slider the source never moved is reset to its default there, which is
 //! what Lightroom does. Keys no group knows (a setting from a newer Argus) stay as the
 //! target has them. The prototype's copy of this list is `prototype/src/domain/settings.ts`.
@@ -68,8 +69,18 @@ pub const GROUPS: &[Group] = &[
         default: false,
     },
     Group {
+        id: "spots",
+        label: "Spot removal",
+        default: false,
+    },
+    Group {
         id: "crop",
         label: "Crop",
+        default: false,
+    },
+    Group {
+        id: "lensBlur",
+        label: "Lens Blur",
         default: false,
     },
 ];
@@ -167,7 +178,12 @@ pub fn paste(from: &Recipe, into: &Recipe, groups: &[&str]) -> Result<Recipe> {
         paste_keys(&object(src[field].clone()), &mut mine, groups, group);
         o.insert(field.into(), Value::Object(mine));
     }
-    for (field, group) in [("local", "masks"), ("spots", "spots"), ("crop", "crop")] {
+    for (field, group) in [
+        ("local", "masks"),
+        ("spots", "spots"),
+        ("crop", "crop"),
+        ("lensBlur", "lensBlur"),
+    ] {
         if groups.contains(&group) {
             match src.get(field) {
                 Some(v) => o.insert(field.into(), v.clone()),

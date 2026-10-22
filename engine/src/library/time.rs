@@ -46,22 +46,41 @@ pub fn from_exif(s: &str) -> Option<String> {
     ))
 }
 
-// Howard Hinnant's days-to-civil algorithm.
 /// Seconds from `a` to `b`, both `YYYY-MM-DDTHH:MM:SS` (a trailing `Z` is fine).
 pub fn seconds_between(a: &str, b: &str) -> Option<f64> {
     Some((to_secs(b)? - to_secs(a)?) as f64)
 }
 
+/// A capture time `YYYY-MM-DDTHH:MM:SS...` as Unix seconds, for gaps between frames: a
+/// missing time of day reads as midnight, an unparseable date as 0.
+pub fn capture_seconds(t: &str) -> i64 {
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    let Some(days) = days_of(t) else {
+        return 0;
+    };
+    let (hh, mm, ss) = (
+        n(11..13).unwrap_or(0),
+        n(14..16).unwrap_or(0),
+        n(17..19).unwrap_or(0),
+    );
+    days * 86_400 + hh * 3600 + mm * 60 + ss
+}
+
 fn to_secs(s: &str) -> Option<i64> {
     let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    Some(days_of(s)? * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)?)
+}
+
+/// Days since 1970-01-01 of a `YYYY-MM-DD...` date (Howard Hinnant's days from civil, the
+/// inverse of [`civil_from_days`]).
+fn days_of(s: &str) -> Option<i64> {
+    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
     let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
-    // Days from civil (Howard Hinnant), the inverse of civil_from_days.
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)?)
+    Some(era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468)
 }
 
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
@@ -96,6 +115,12 @@ mod tests {
         );
         let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_760_000_000);
         assert_eq!(to_secs(&from_system(t)), Some(1_760_000_000));
+        assert_eq!(capture_seconds(&from_system(t)), 1_760_000_000);
+        assert_eq!(
+            capture_seconds("2026-10-18"),
+            capture_seconds("2026-10-18T00:00:00")
+        );
+        assert_eq!(capture_seconds("unknown"), 0);
     }
 
     #[test]

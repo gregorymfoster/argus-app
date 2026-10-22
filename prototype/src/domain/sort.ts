@@ -17,7 +17,7 @@ export const SORTS: { key: SortKey; label: string; short: string; desc: boolean;
   { key: 'file', label: 'File name', short: 'Name', desc: false, dirs: ['A to Z', 'Z to A'] },
 ];
 
-export const DEFAULT_SORT: Sort = { key: 'capture', desc: false };
+const DEFAULT_SORT: Sort = { key: 'capture', desc: false };
 
 /** "stars:desc" and back, for a remembered pref. */
 export const sortToString = (s: Sort) => `${s.key}:${s.desc ? 'desc' : 'asc'}`;

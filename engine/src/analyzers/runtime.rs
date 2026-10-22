@@ -56,6 +56,38 @@ fn load(bytes: &[u8], shape: &[usize]) -> Result<Model> {
         .map_err(err)
 }
 
+/// An ONNX model from a file (the models folder), with a fixed f32 input shape.
+pub fn load_file(path: &std::path::Path, shape: &[usize]) -> Result<Model> {
+    load_from(path, f32::fact(shape).into())
+}
+
+/// [`load_file`] for a model whose input is i64 token ids.
+pub fn load_file_i64(path: &std::path::Path, shape: &[usize]) -> Result<Model> {
+    load_from(path, i64::fact(shape).into())
+}
+
+fn load_from(path: &std::path::Path, input: InferenceFact) -> Result<Model> {
+    let err = |e: TractError| Error(format!("model {}: {e}", path.display()));
+    tract_onnx::onnx()
+        .model_for_path(path)
+        .map_err(err)?
+        .with_input_fact(0, input)
+        .map_err(err)?
+        .into_optimized()
+        .map_err(err)?
+        .into_runnable()
+        .map_err(err)
+}
+
+/// Run a loaded model on one input, returning its first output as f32s.
+pub fn run_first(model: &Model, input: Tensor) -> Result<Vec<f32>> {
+    let out = model
+        .run(tvec!(input.into()))
+        .map_err(|e| Error(format!("model: {e}")))?;
+    let t = out[0].clone().into_tensor();
+    Ok(floats(&t)?.to_vec())
+}
+
 /// A model output as a flat f32 slice.
 pub fn floats(t: &Tensor) -> Result<&[f32]> {
     t.try_as_plain_ram()

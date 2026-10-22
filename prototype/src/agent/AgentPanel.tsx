@@ -242,7 +242,7 @@ export function Agent({ ctx, chips, placeholder, selected, picks, onReview, head
         ))}
         {down && (
           <p className="prose muted" data-testid="provider-down">
-            {down}, so I can't cull or edit yet. Open it{others.length ? `, or pick ${others[0]} below` : ''}.
+            {down}, so I can't chat or make AI edits yet; culls and Auto still work without it. Open it{others.length ? `, or pick ${others[0]} below` : ''}.
           </p>
         )}
         {after}
@@ -318,7 +318,7 @@ function turns(messages: ChatMessage[]): Turn[] {
  * Live mode: the engine's Agent carries out the request through the tool layer, as one
  * batch. The Photo in Edit picks up its new Recipe; Verdict changes reload the grid.
  */
-export async function liveAgentChat(ctx: string, prompt: string, photoId: string | null, earlier: ChatMessage[], dispatch: React.Dispatch<Action>) {
+async function liveAgentChat(ctx: string, prompt: string, photoId: string | null, earlier: ChatMessage[], dispatch: React.Dispatch<Action>) {
   const at = Date.now();
   const id = `agent-${at}`;
   dispatch({ type: 'chat/push', ctx, msg: { id: `you-${at}`, role: 'you', text: prompt } });

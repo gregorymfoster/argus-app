@@ -15,6 +15,17 @@
 //! | `linear`     | `from: {x, y}`, `to: {x, y}`             | full at `from`, none at `to`      |
 //! | `radial`     | `x, y, rx, ry`, `feather`? (0..1)        | an ellipse, soft edge             |
 //! | `gradient`   | `side: left/right/bottom`, `extent`      | the prototype's edge gradient     |
+//! | `luminance`  | `lo`, `hi` (0..1), `smooth`? (0..1)      | tones of the render in that range |
+//! | `color`      | `points: [{x, y}]`, `range`? (0..1)      | colours like those at the points  |
+//!
+//! `luminance` and `color` are Lightroom's range Masks: they read the Photo as it renders
+//! under the global sliders, so they follow the picture, and are mostly used to intersect
+//! another Mask (sky, but only its bright part). A `color` Mask samples the render around
+//! each point, so the Agent and the eyedropper pick colours the same way.
+//!
+//! Any Mask can carry `components`: more Masks combined into it in order, each with `op`
+//! `add` (either), `subtract` (this one, minus that) or `intersect` (both), Lightroom's
+//! Add, Subtract and Intersect. A component is a Mask too, so it takes `invert`.
 //!
 //! A `person` Mask is Lightroom's Select People: `parts` is any of `face_skin`, `body_skin`,
 //! `eyes`, `teeth`, `hair` and `whole` (the whole person), combined, and `person` keeps it to
@@ -120,6 +131,38 @@ pub enum Shape {
         side: Side,
         extent: f64,
     },
+    Luminance {
+        lo: f64,
+        hi: f64,
+        #[serde(default = "quarter")]
+        smooth: f64,
+    },
+    Color {
+        points: Vec<Point>,
+        #[serde(default = "half")]
+        range: f64,
+    },
+}
+
+fn quarter() -> f64 {
+    0.25
+}
+
+/// How a component joins the Mask it belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Op {
+    Add,
+    Subtract,
+    Intersect,
+}
+
+/// A Mask combined into another (Lightroom's Add, Subtract and Intersect).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Component {
+    pub op: Op,
+    #[serde(flatten)]
+    pub mask: Mask,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -132,6 +175,8 @@ pub struct Mask {
     pub shape: Shape,
     #[serde(default, skip_serializing_if = "is_false")]
     pub invert: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<Component>,
 }
 
 impl Mask {
@@ -139,10 +184,12 @@ impl Mask {
         Mask {
             shape,
             invert: false,
+            components: Vec::new(),
         }
     }
 
-    /// True when the Mask needs an [`Analysis`] of the Photo (a model or the sky finder).
+    /// True when the Mask, or any of its components, needs an [`Analysis`] of the Photo
+    /// (a model or the sky finder).
     pub fn needs_analysis(&self) -> bool {
         matches!(
             self.shape,
@@ -153,7 +200,16 @@ impl Mask {
                 | Shape::Hair
                 | Shape::Sky
                 | Shape::Person { .. }
-        )
+        ) || self.components.iter().any(|c| c.mask.needs_analysis())
+    }
+
+    /// Every Mask this one is made of: itself, then its components in order.
+    pub fn all(&self) -> Vec<&Mask> {
+        let mut out = vec![self];
+        for c in &self.components {
+            out.extend(c.mask.all());
+        }
+        out
     }
 
     pub fn kind(&self) -> &'static str {
@@ -169,6 +225,8 @@ impl Mask {
             Shape::Linear { .. } => "linear",
             Shape::Radial { .. } => "radial",
             Shape::Gradient { .. } => "gradient",
+            Shape::Luminance { .. } => "luminance",
+            Shape::Color { .. } => "color",
         }
     }
 }
@@ -184,6 +242,8 @@ pub struct Analysis {
     pub sky_w: usize,
     pub sky_h: usize,
     pub faces: Vec<Face>,
+    /// The depth map, when Lens Blur asked for it ([`DEPTH_FACT`]).
+    pub depth: Option<crate::lens_blur::Depth>,
 }
 
 /// See [`Analysis::coverage`].
@@ -196,6 +256,8 @@ pub struct Coverage {
 
 /// The Facts an [`Analysis`] is made from (ADR 0013).
 pub const ANALYSIS_FACTS: &[&str] = &["segment", "sky", "faces"];
+/// The Fact Lens Blur adds to an [`Analysis`].
+pub const DEPTH_FACT: &str = "depth";
 
 impl Analysis {
     /// Run the models on an upright 8-bit image (any size): for renders with no Photo
@@ -213,10 +275,11 @@ impl Analysis {
             sky_w: n,
             sky_h: n,
             faces: faces?,
+            depth: None,
         })
     }
 
-    /// Assemble from a Photo's `segment`, `sky` and `faces` Facts.
+    /// Assemble from a Photo's `segment`, `sky` and `faces` Facts, and `depth` if given.
     pub fn from_facts(facts: &crate::analyzers::Facts) -> Result<Analysis> {
         use crate::analyzers::{faces, segment, sky};
         let get = |id: &str| {
@@ -231,11 +294,15 @@ impl Analysis {
             sky_w: n,
             sky_h: n,
             faces: faces::read(get("faces")?),
+            depth: facts
+                .get(DEPTH_FACT)
+                .map(crate::analyzers::depth::read)
+                .transpose()?,
         })
     }
 
     /// A probability plane by class name, at segmenter size.
-    fn class(&self, name: &str) -> &[f32] {
+    pub fn class(&self, name: &str) -> &[f32] {
         let i = models::CLASSES
             .iter()
             .position(|c| *c == name)
@@ -309,13 +376,15 @@ pub fn shrink(img: &RgbImage, edge: usize) -> RgbImage {
     }
 }
 
-/// Where Masks are drawn: the upright render's size, its luma as the edge guide, and the
-/// Analysis when an AI Mask needs one.
+/// Where Masks are drawn: the upright render's size, its luma as the edge guide, its
+/// colours for a `color` Mask, and the Analysis when an AI Mask needs one.
 pub struct Canvas<'a> {
     pub width: usize,
     pub height: usize,
     /// Luma of the base render (encoded 0..1), `width` x `height`.
     pub guide: &'a [f32],
+    /// The base render itself (encoded 0..1, interleaved RGB), for `color` Masks.
+    pub rgb: Option<&'a [f32]>,
     pub analysis: Option<&'a Analysis>,
 }
 
@@ -325,8 +394,24 @@ impl Canvas<'_> {
             .ok_or_else(|| Error(format!("a {} Mask needs the Photo's analysis", m.kind())))
     }
 
-    /// The Mask's weight (0..1) at every pixel.
+    /// The Mask's weight (0..1) at every pixel, its components combined in.
     pub fn plane(&self, m: &Mask) -> Result<Vec<f32>> {
+        let mut p = self.shape_plane(m)?;
+        for c in &m.components {
+            let q = self.plane(&c.mask)?;
+            p.par_iter_mut().zip(&q).for_each(|(a, &b)| {
+                *a = match c.op {
+                    Op::Add => a.max(b),
+                    Op::Subtract => *a * (1.0 - b),
+                    Op::Intersect => *a * b,
+                }
+            });
+        }
+        Ok(p)
+    }
+
+    /// One Mask's own weight, without its components.
+    fn shape_plane(&self, m: &Mask) -> Result<Vec<f32>> {
         let (w, h) = (self.width, self.height);
         let n = models::SEG_SIZE;
         let ai = |coarse: Vec<f32>, cw: usize, ch: usize| {
@@ -469,6 +554,37 @@ impl Canvas<'_> {
                 });
                 out
             }
+            Shape::Luminance { lo, hi, smooth } => {
+                let (lo, hi) = (lo.min(*hi) as f32, lo.max(*hi) as f32);
+                // Smoothness widens the soft edge on both sides, as Lightroom's does.
+                let s = (smooth.clamp(0.0, 1.0) as f32 * 0.25).max(1e-3);
+                self.guide
+                    .par_iter()
+                    .map(|&l| smoothstep(lo - s, lo, l) * (1.0 - smoothstep(hi, hi + s, l)))
+                    .collect()
+            }
+            Shape::Color { points, range } => {
+                let rgb = self
+                    .rgb
+                    .ok_or_else(|| Error("a color Mask needs the render's colours".into()))?;
+                let samples: Vec<[f32; 3]> =
+                    points.iter().map(|p| hsl(sample(rgb, w, h, *p))).collect();
+                if samples.is_empty() {
+                    return Err(Error("a color Mask needs at least one point".into()));
+                }
+                // How far a colour may be from a sample and still count, from the Refine
+                // slider: 0 keeps only near twins, 1 takes in neighbouring hues.
+                let r = 0.08 + 0.4 * range.clamp(0.0, 1.0) as f32;
+                rgb.par_chunks(3)
+                    .map(|px| {
+                        let c = hsl([px[0], px[1], px[2]]);
+                        samples
+                            .iter()
+                            .map(|s| 1.0 - smoothstep(r * 0.5, r, color_distance(c, *s)))
+                            .fold(0.0, f32::max)
+                    })
+                    .collect()
+            }
         };
         if m.invert {
             p.par_iter_mut().for_each(|v| *v = 1.0 - *v);
@@ -537,6 +653,59 @@ impl Canvas<'_> {
     }
 }
 
+/// The render's mean colour in a small square around `p` (a few pixels at any size).
+fn sample(rgb: &[f32], w: usize, h: usize, p: Point) -> [f32; 3] {
+    let r = (w.max(h) / 200).max(1) as isize;
+    let (cx, cy) = (
+        (p.x.clamp(0.0, 1.0) * (w - 1) as f64).round() as isize,
+        (p.y.clamp(0.0, 1.0) * (h - 1) as f64).round() as isize,
+    );
+    let mut sum = [0f32; 3];
+    let mut n: f32 = 0.0;
+    for y in (cy - r).max(0)..=(cy + r).min(h as isize - 1) {
+        for x in (cx - r).max(0)..=(cx + r).min(w as isize - 1) {
+            let i = (y as usize * w + x as usize) * 3;
+            for c in 0..3 {
+                sum[c] += rgb[i + c];
+            }
+            n += 1.0;
+        }
+    }
+    sum.map(|v| v / n.max(1.0))
+}
+
+/// Hue (0..1 around the wheel), chroma (max minus min) and lightness (0..1) of an encoded
+/// RGB colour. Chroma rather than HSL saturation, which calls a black jacket with a blue
+/// cast as saturated as a blue vest.
+fn hsl([r, g, b]: [f32; 3]) -> [f32; 3] {
+    let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (mx + mn) / 2.0;
+    let d = mx - mn;
+    if d < 1e-5 {
+        return [0.0, 0.0, l];
+    }
+    let h = if mx == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if mx == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } / 6.0;
+    [h, d, l]
+}
+
+/// How unlike two colours look: hue counts as much as both are colourful (greys have no
+/// hue to compare), then chroma, then lightness less, so one picked blue takes in the
+/// whole sky from its bright top to its deeper middle.
+fn color_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let dh = (a[0] - b[0]).abs();
+    let dh = dh.min(1.0 - dh) * 2.0;
+    let chroma = (a[1].min(b[1]) * 2.0).min(1.0).sqrt();
+    (dh * chroma * 1.6)
+        .hypot((a[1] - b[1]) * 1.5)
+        .hypot((a[2] - b[2]) * 0.5)
+}
+
 fn dist(a: [f32; 2], b: [f32; 2], w: usize, h: usize) -> f32 {
     ((a[0] - b[0]) * w as f32).hypot((a[1] - b[1]) * h as f32)
 }
@@ -600,6 +769,10 @@ fn linear(w: usize, h: usize, from: Point, to: Point) -> Vec<f32> {
 }
 
 pub fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    // A zero-width edge is a hard step; dividing would give NaN at x == e0.
+    if e1 == e0 {
+        return if x < e0 { 0.0 } else { 1.0 };
+    }
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -609,11 +782,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn smoothstep_with_a_zero_width_edge_is_a_step_not_nan() {
+        assert_eq!(smoothstep(0.5, 0.5, 0.5), 1.0);
+        assert_eq!(smoothstep(0.5, 0.5, 0.4), 0.0);
+        assert_eq!(smoothstep(0.0, 1.0, 0.5), 0.5);
+    }
+
     fn canvas(guide: &[f32], w: usize, h: usize) -> Canvas<'_> {
         Canvas {
             width: w,
             height: h,
             guide,
+            rgb: None,
             analysis: None,
         }
     }
@@ -633,6 +814,150 @@ mod tests {
             assert_eq!(serde_json::to_value(&m).unwrap(), v);
         }
         assert!(serde_json::from_value::<Mask>(json!({ "kind": "teeth" })).is_err());
+    }
+
+    #[test]
+    fn components_and_range_masks_parse_and_round_trip() {
+        for v in [
+            json!({ "kind": "luminance", "lo": 0.6, "hi": 1.0, "smooth": 0.25 }),
+            json!({ "kind": "color", "points": [{ "x": 0.2, "y": 0.1 }], "range": 0.5 }),
+            json!({ "kind": "sky", "components": [
+                { "op": "intersect", "kind": "luminance", "lo": 0.6, "hi": 1.0, "smooth": 0.25 },
+                { "op": "subtract", "kind": "radial", "x": 0.5, "y": 0.5, "rx": 0.1, "ry": 0.1, "feather": 0.5, "invert": true },
+            ] }),
+        ] {
+            let m: Mask = serde_json::from_value(v.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&m).unwrap(), v);
+        }
+        let m: Mask = serde_json::from_value(
+            json!({ "kind": "linear", "from": { "x": 0, "y": 0 }, "to": { "x": 0, "y": 1 },
+                "components": [{ "op": "add", "kind": "faces" }] }),
+        )
+        .unwrap();
+        assert!(m.needs_analysis(), "a faces component needs the analysis");
+        assert_eq!(m.all().len(), 2);
+    }
+
+    #[test]
+    fn components_add_subtract_and_intersect() {
+        let (w, h) = (100, 10);
+        let g = vec![0.5; w * h];
+        let c = canvas(&g, w, h);
+        // Left half (hard edge) and the middle band, as radial-free linear ramps would blur.
+        let left = || {
+            Mask::new(Shape::Brush {
+                dots: (0..10)
+                    .map(|i| Dot {
+                        x: 0.05 + i as f64 * 0.04,
+                        y: 0.5,
+                        r: 0.06,
+                    })
+                    .collect(),
+                erase: vec![],
+            })
+        };
+        let middle = Mask::new(Shape::Radial {
+            x: 0.5,
+            y: 0.5,
+            rx: 0.2,
+            ry: 5.0,
+            feather: 0.0,
+        });
+        let with = |op| Mask {
+            components: vec![Component {
+                op,
+                mask: middle.clone(),
+            }],
+            ..left()
+        };
+        let at = |m: &Mask, x: usize| c.plane(m).unwrap()[5 * w + x];
+        // x 10: only the left; x 40: both; x 65: only the middle; x 90: neither.
+        assert_eq!(
+            [10, 40, 65, 90].map(|x| at(&with(Op::Add), x).round()),
+            [1.0, 1.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            [10, 40, 65, 90].map(|x| at(&with(Op::Subtract), x).round()),
+            [1.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            [10, 40, 65, 90].map(|x| at(&with(Op::Intersect), x).round()),
+            [0.0, 1.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn a_luminance_range_takes_the_tones_inside_it() {
+        let (w, h) = (101, 1);
+        let g: Vec<f32> = (0..w).map(|x| x as f32 / 100.0).collect();
+        let c = canvas(&g, w, h);
+        let p = c
+            .plane(&Mask::new(Shape::Luminance {
+                lo: 0.6,
+                hi: 1.0,
+                smooth: 0.2,
+            }))
+            .unwrap();
+        assert_eq!(p[100], 1.0);
+        assert_eq!(p[70], 1.0);
+        assert!(
+            p[57] > 0.0 && p[57] < 1.0,
+            "a soft edge below lo: {}",
+            p[57]
+        );
+        assert_eq!(p[40], 0.0);
+        // lo and hi in either order mean the same range.
+        let q = c
+            .plane(&Mask::new(Shape::Luminance {
+                lo: 1.0,
+                hi: 0.6,
+                smooth: 0.2,
+            }))
+            .unwrap();
+        assert_eq!(p, q);
+    }
+
+    #[test]
+    fn a_color_range_takes_colours_like_the_picked_one() {
+        // Sky blues (light and deeper), an orange, a grey and a green, one per pixel.
+        let px: [[f32; 3]; 5] = [
+            [0.45, 0.65, 0.95],
+            [0.25, 0.45, 0.85],
+            [0.95, 0.55, 0.15],
+            [0.6, 0.6, 0.6],
+            [0.3, 0.7, 0.3],
+        ];
+        // Each colour a 20 px block, so the sample around a point stays inside one.
+        let (w, h) = (100, 20);
+        let rgb: Vec<f32> = (0..w * h).flat_map(|i| px[(i % w) / 20]).collect();
+        let g = vec![0.5; w * h];
+        let c = Canvas {
+            rgb: Some(&rgb),
+            ..canvas(&g, w, h)
+        };
+        let pick = |range| {
+            let p = c
+                .plane(&Mask::new(Shape::Color {
+                    points: vec![Point { x: 0.1, y: 0.5 }],
+                    range,
+                }))
+                .unwrap();
+            (0..5).map(|b| p[10 * w + b * 20 + 10]).collect::<Vec<_>>()
+        };
+        let p = pick(0.5);
+        assert!(p[0] > 0.99 && p[1] > 0.5, "both blues: {p:?}");
+        assert!(
+            p[2] == 0.0 && p[3] == 0.0 && p[4] == 0.0,
+            "not orange, grey or green: {p:?}"
+        );
+        // Refine narrows it to the picked colour.
+        let tight = pick(0.0);
+        assert!(tight[0] > 0.99 && tight[1] < p[1], "{tight:?}");
+        let none = canvas(&g, w, h).plane(&Mask::new(Shape::Color {
+            points: vec![Point { x: 0.1, y: 0.5 }],
+            range: 0.5,
+        }));
+        assert!(none.is_err(), "no render, no colours");
     }
 
     #[test]
@@ -662,6 +987,7 @@ mod tests {
         assert!(at(&rad, 50, 25) == 1.0 && at(&rad, 90, 25) == 0.0 && at(&rad, 50, 2) < 0.3);
 
         let brush = Mask {
+            components: Vec::new(),
             shape: Shape::Brush {
                 dots: vec![Dot {
                     x: 0.3,

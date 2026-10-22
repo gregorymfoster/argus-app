@@ -25,10 +25,10 @@ Look at them with the Read tool before doing anything else: `_actual.png`, `_dif
 just bless
 ```
 
-Without `just`: `ARGUS_BLESS=1 cargo test --profile fast -p argus-engine --test engine golden::`. Then `git status --short fixtures/golden` shows which references changed (each PNG should stay under ~1.5 MB).
+Without `just`: `ARGUS_BLESS=1 cargo test --profile fast --test engine golden::`. Then `git status --short fixtures/golden` shows which references changed (each PNG should stay under ~1.5 MB).
 
 ## 3. Verify and commit
 
 1. View every changed `fixtures/golden/*.png` with the Read tool. They must be sane photos (right orientation, colour, exposure, no artefacts).
-2. Run the plain test again (`cargo test --profile fast -p argus-engine --test engine golden::`); it must pass.
+2. Run the plain test again (`cargo test --profile fast --test engine golden::`); it must pass.
 3. Commit the PNGs together with the code change, and say why the look changed in the message (e.g. "Raise default exposure to 1.0 EV; goldens re-blessed, midtones ~+3 levels").
