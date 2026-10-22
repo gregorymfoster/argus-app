@@ -34,6 +34,7 @@
 //! | `import_result` | {}                                    | {running, report?, error?}    |
 //! | `render_detail` | as `render_photo`, long_edge up to full size | as `render_photo`: the zoomed view's sharp render |
 //! | `cancel_import` | {}                                    | {cancelled}: stops after the files in hand, keeping them |
+//! | `cancel_task` | {kind: "auto"\|"cull"\|"import"}       | {cancelled}: Auto stops between Photos (keeping those done, as one undoable batch); the AI cull stops at the next piece of the model's reply and changes nothing |
 //!
 //! `thumbnail` and `suggest_name` serve the Import dialog, for files not imported yet;
 //! `suggest_name` with a `shoot_id` names a Shoot already in the Library from its previews.
@@ -131,6 +132,12 @@ struct RateArgs {
     author: Author,
     label: Option<String>,
     batch_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelArgs {
+    kind: String,
 }
 
 #[derive(Deserialize)]
@@ -336,6 +343,13 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             })
         }
         "cancel_import" => Ok(json!({ "cancelled": crate::progress::cancel("import") })),
+        "cancel_task" => {
+            let a: CancelArgs = args(command, a)?;
+            if !["auto", "cull", "import"].contains(&a.kind.as_str()) {
+                return Err(Error(format!("{} can't be cancelled", a.kind)));
+            }
+            Ok(json!({ "cancelled": crate::progress::cancel(&a.kind) }))
+        }
         "render_detail" => Ok(parts_json(tools.render_detail(a)?)),
         "render_previews" => {
             let a: PreviewArgs = args(command, a)?;

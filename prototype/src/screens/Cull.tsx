@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Award, Check, ChevronDown, Columns2, Copy, Download, Flag, Folder, Grid2x2, Grid3x3, SlidersHorizontal, Sparkles, Square, Star, Trash2, Wand2, X } from 'lucide-react';
+import { Award, Check, ChevronDown, Columns2, Copy, Download, Flag, Folder, Grid2x2, Grid3x3, Layers, SlidersHorizontal, Sparkles, Square, Star, Trash2, Wand2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { acceptMany, useShootTakes } from '../data/suggestions';
 import { undoBatch } from '../data/liveAgent';
@@ -14,7 +14,7 @@ import { askRemove } from '../ui/Remove';
 import { PHOTOS, PHOTO_BY_ID, SHOOT, STACK_BY_ID, stackOf } from '../data/dummy';
 import type { Photo, Verdict } from '../domain/types';
 import { recipeOf, starsOf, useLibrary, verdictOf } from '../store/library';
-import { autoAction } from '../data/auto';
+import { autoAction, runAuto } from '../data/auto';
 import { usePref } from '../store/variants';
 import { go } from '../router';
 import { Agent } from '../agent/AgentPanel';
@@ -61,8 +61,15 @@ interface TileProps {
   selected: boolean;
   current: boolean;
   highlighted: boolean;
+  /** Frames in this Photo's Stack, when the tile stands for it (0 otherwise). */
   stackSize: number;
   expanded: boolean;
+  /** Where the tile sits in an expanded Stack: its frame number, and whether it starts or ends the run. */
+  stackPos?: number;
+  stackFirst?: boolean;
+  stackLast?: boolean;
+  /** The frame a collapsed Stack shows (its kept Pick, else its best frame). */
+  stackCover?: boolean;
   culling: boolean;
   onToggleStack: () => void;
   onClick: (e: React.MouseEvent) => void;
@@ -84,6 +91,10 @@ interface TileMenu {
   onAsk: () => void;
   onExport: () => void;
   onRemove: () => void;
+  /** Its Stack's size and whether it is expanded, for the Stack items. */
+  stack: { size: number; open: boolean; any: boolean };
+  onToggleStack: () => void;
+  onAllStacks: (open: boolean) => void;
   /** The Photo under the menu is in the selection, so selection items act on all of it. */
   selected: boolean;
 }
@@ -96,8 +107,9 @@ const sameTile = (a: TileProps, b: TileProps) =>
     typeof a[k] === 'function' ? typeof b[k] === 'function' : k === 'stars' ? a.stars.stars === b.stars.stars && a.stars.you === b.stars.you : Object.is(a[k], b[k]),
   );
 
-const Tile = memo(function Tile({ p, v, you, stars, best, hero, takes, ai, eyes, onStars, selected, current, highlighted, stackSize, expanded, culling, onToggleStack, onClick, onSet, menu, small }: TileProps) {
-  const cls = ['tile', hero && 'hero', selected && 'sel', current && 'cur', highlighted && 'hl', v === 'reject' && 'faded'].filter(Boolean).join(' ');
+const Tile = memo(function Tile({ p, v, you, stars, best, hero, takes, ai, eyes, onStars, selected, current, highlighted, stackSize, expanded, stackPos, stackFirst, stackLast, stackCover, culling, onToggleStack, onClick, onSet, menu, small }: TileProps) {
+  const stk = stackSize > 1 ? ['stk', expanded ? 'stk-open' : 'stk-shut', stackCover && 'stk-cover', stackFirst && 'stk-first', stackLast && 'stk-last'] : [];
+  const cls = ['tile', hero && 'hero', selected && 'sel', current && 'cur', highlighted && 'hl', v === 'reject' && 'faded', ...stk].filter(Boolean).join(' ');
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -105,28 +117,32 @@ const Tile = memo(function Tile({ p, v, you, stars, best, hero, takes, ai, eyes,
           <div className="ph">
             <PhotoView photo={p} size={small ? 'tile' : 'thumb'} edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
             <VerdictChip v={v} you={you} />
-            {stackSize > 1 && (
-              <Tip label={expanded ? 'Collapse Stack' : 'Expand Stack'} keys="S">
-                <button
-                  className="badge"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleStack();
-                  }}
-                >
-                  {expanded ? '−' : '×'}
-                  {stackSize}
-                </button>
-              </Tip>
-            )}
-            {best != null && hero === undefined && (
-              <Tip label={`Number ${best} of the Shoot's Best Photos`} keys="B">
-                <span className={`best-badge ${stackSize > 1 ? 'shift' : ''}`} aria-label={`Best Photos number ${best}`}>
-                  <Award size={10} strokeWidth={2.2} />
-                  {best}
-                </span>
-              </Tip>
-            )}
+            <div className="tile-tr">
+              {stackSize > 1 && (
+                <Tip label={expanded ? `Collapse Stack (frame ${stackPos} of ${stackSize}${stackCover ? ', the cover' : ''})` : `Expand Stack of ${stackSize}`} keys="S">
+                  <button
+                    className="badge stack-badge"
+                    data-testid="stack-badge"
+                    aria-label={expanded ? 'Collapse Stack' : `Expand Stack of ${stackSize}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleStack();
+                    }}
+                  >
+                    {(!expanded || stackCover) && <Layers size={10} strokeWidth={2.2} />}
+                    {expanded ? `${stackPos}/${stackSize}` : stackSize}
+                  </button>
+                </Tip>
+              )}
+              {best != null && hero === undefined && (
+                <Tip label={`Number ${best} of the Shoot's Best Photos`} keys="B">
+                  <span className="best-badge" aria-label={`Best Photos number ${best}`}>
+                    <Award size={10} strokeWidth={2.2} />
+                    {best}
+                  </span>
+                </Tip>
+              )}
+            </div>
             {hero !== undefined && best != null && <span className="rank">#{best}</span>}
             {!!takes && v !== 'reject' && (
               <Tip label={`${takes} Suggestion${takes > 1 ? 's' : ''} to review in Edit`} keys="A accepts the first">
@@ -200,6 +216,19 @@ function TileMenuItems({ p, stars, onStars, onSet, menu: menuOf }: Pick<TileProp
       <ContextMenuItem onSelect={menu.onCompare} disabled={menu.others === 0 && !p.stackId}>
         <Columns2 size={13} /> {menu.others === 0 && p.stackId ? 'Compare the Stack' : 'Compare with selection'} <MenuKeys keys={['C']} />
       </ContextMenuItem>
+      {menu.stack.any && (
+        <>
+          <ContextMenuItem onSelect={menu.onToggleStack} disabled={menu.stack.size < 2}>
+            <Layers size={13} /> {menu.stack.size < 2 ? 'Not in a Stack' : menu.stack.open ? `Collapse Stack of ${menu.stack.size}` : `Expand Stack of ${menu.stack.size}`} <MenuKeys keys={['S']} />
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => menu.onAllStacks(true)}>
+            <span style={{ width: 13 }} /> Expand all Stacks
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => menu.onAllStacks(false)}>
+            <span style={{ width: 13 }} /> Collapse all Stacks
+          </ContextMenuItem>
+        </>
+      )}
       <ContextMenuItem onSelect={menu.onAsk}>
         <Sparkles size={13} /> Ask Agent about this photo <MenuKeys keys={['⌘', 'L']} />
       </ContextMenuItem>
@@ -219,6 +248,20 @@ function TileMenuItems({ p, stars, onStars, onSet, menu: menuOf }: Pick<TileProp
       </ContextMenuItem>
     </>
   );
+}
+
+/** The runs of an expanded Stack's frames in one grid row: the band behind them spans these columns. */
+function stackRuns(row: Photo[], pos: Record<string, { first: boolean; last: boolean }>) {
+  const runs: { stackId: string; from: number; to: number; first: boolean; last: boolean }[] = [];
+  row.forEach((p, j) => {
+    if (!p.stackId || !pos[p.id]) return;
+    const r = runs[runs.length - 1];
+    if (r && r.stackId === p.stackId && r.to === j - 1) {
+      r.to = j;
+      r.last = pos[p.id].last;
+    } else runs.push({ stackId: p.stackId, from: j, to: j, first: pos[p.id].first, last: pos[p.id].last });
+  });
+  return runs;
 }
 
 export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) => void; onCull: () => void }) {
@@ -317,13 +360,32 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     setCur(0);
     setSel(new Set());
   };
-  const toggleStack = (id: string) =>
+  // Collapsing lands on the cover, as in Lightroom; expanding stays on the frame you were on.
+  const toggleStack = (id: string) => {
+    const open = expanded.has(id);
+    setFollow(open ? cover[id] : (visible[cur]?.id ?? cover[id]));
     setExpanded((x) => {
       const n = new Set(x);
-      if (n.has(id)) n.delete(id);
+      if (open) n.delete(id);
       else n.add(id);
       return n;
     });
+  };
+  const setAllStacks = (open: boolean) => {
+    setFollow(visible[cur]?.stackId && !open ? cover[visible[cur].stackId!] : (visible[cur]?.id ?? null));
+    setExpanded(open ? new Set(Object.keys(cover)) : new Set());
+  };
+  // Each expanded Stack's frames, numbered in the order they show, and where its run starts and ends.
+  const stackPos = useMemo(() => {
+    const out: Record<string, { n: number; first: boolean; last: boolean }> = {};
+    const seen: Record<string, number> = {};
+    visible.forEach((p, i) => {
+      if (!p.stackId || !expanded.has(p.stackId) || minStars || filter === 'best') return;
+      seen[p.stackId] = (seen[p.stackId] ?? 0) + 1;
+      out[p.id] = { n: seen[p.stackId], first: visible[i - 1]?.stackId !== p.stackId, last: visible[i + 1]?.stackId !== p.stackId };
+    });
+    return out;
+  }, [visible, expanded, minStars, filter]);
   const move = (d: number) => {
     setSel(new Set());
     setCur((s) => Math.max(0, Math.min(visible.length - 1, s + d)));
@@ -497,11 +559,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   useHotkeys('l', () => (inCollection() ? toast('Open a Shoot to set its Look', { id: 'argus' }) : counts.pick ? go({ name: 'look' }) : toast('Pick some Photos first', { id: 'argus', description: 'A Look is set on the Picks of a Shoot (P picks).' })), [counts.pick]);
   // Lightroom's Auto on the selection, or on the whole Shoot before culling starts.
   const autoIds = sel.size > 1 ? [...sel] : all.map((p) => p.id);
-  const autoAll = () => {
-    if (!autoIds.length) return;
-    dispatch(autoAction(autoIds, (id) => recipeOf(state, id)));
-    toast(`Auto on ${autoIds.length} Photo${autoIds.length > 1 ? 's' : ''}`, { description: 'Exposure, tone and white balance from each Photo. ⌘Z undoes it.' });
-  };
+  const autoAll = () => runAuto(autoIds, (id) => recipeOf(state, id), dispatch);
   useHotkeys('shift+a', autoAll, [autoIds, state]);
   useHotkeys('g', () => go({ name: 'cull' }));
 
@@ -512,7 +570,8 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
       others: others.length,
       onAuto: () => {
         const ids = sel.has(p.id) ? [...sel] : [p.id];
-        dispatch(autoAction(ids, (id) => recipeOf(state, id)));
+        if (ids.length > 1) runAuto(ids, (id) => recipeOf(state, id), dispatch);
+        else dispatch(autoAction(ids, (id) => recipeOf(state, id)));
       },
       onApplyToSelection: () => copyEdit(p.id, others),
       onPaste: () => pasteCopied(sel.has(p.id) && sel.size > 1 ? [...sel] : [p.id]),
@@ -527,6 +586,9 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
       onExport: () => onExport(sel.has(p.id) && sel.size > 1 ? [...sel] : [p.id]),
       selected: sel.has(p.id),
       onRemove: () => askRemove({ photos: sel.has(p.id) ? [...sel] : [p.id] }),
+      stack: { size: p.stackId ? STACK_BY_ID[p.stackId].photoIds.length : 0, open: !!p.stackId && expanded.has(p.stackId), any: stackCount > 0 },
+      onToggleStack: () => p.stackId && toggleStack(p.stackId),
+      onAllStacks: setAllStacks,
     };
   };
   // "Apply this edit": the whole edit onto the others, as one batch (⇧⌘S asks which groups).
@@ -699,8 +761,19 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
               <div
                 key={row.key}
                 className="grid-row"
-                style={{ position: 'absolute', top: 0, left: pad, right: pad, transform: `translateY(${row.start}px)`, gap, gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+                style={{ position: 'absolute', top: 0, left: pad, right: pad, transform: `translateY(${row.start}px)`, gap, gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, ['--g' as string]: `${gap}px` }}
               >
+                {stackRuns(visible.slice(row.index * cols, row.index * cols + cols), stackPos).map((r) => (
+                  <Tip key={`band-${r.stackId}`} label="Collapse Stack" keys="S">
+                    <button
+                      className="stack-band"
+                      data-testid="stack-band"
+                      aria-label="Collapse Stack"
+                      onClick={() => act.current.toggleStack(r.stackId)}
+                      style={{ left: r.from * (tileW + gap) - gap / 2, width: (r.to - r.from + 1) * (tileW + gap), top: -gap / 2, height: rowH }}
+                    />
+                  </Tip>
+                ))}
                 {visible.slice(row.index * cols, row.index * cols + cols).map((p, j) => {
                   const i = row.index * cols + j;
                   return (
@@ -718,8 +791,12 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
                 selected={sel.has(p.id)}
                 current={i === cur}
                 highlighted={state.highlight.includes(p.id)}
-                stackSize={p.stackId && cover[p.stackId] === p.id ? STACK_BY_ID[p.stackId].photoIds.length : 0}
-                expanded={!!p.stackId && expanded.has(p.stackId)}
+                stackSize={p.stackId && (cover[p.stackId] === p.id || stackPos[p.id]) ? STACK_BY_ID[p.stackId].photoIds.length : 0}
+                expanded={!!stackPos[p.id]}
+                stackPos={stackPos[p.id]?.n}
+                stackFirst={stackPos[p.id]?.first ?? true}
+                stackLast={stackPos[p.id]?.last ?? true}
+                stackCover={!!p.stackId && cover[p.stackId] === p.id}
                 culling={state.culling}
                 onToggleStack={() => act.current.toggleStack(p.stackId!)}
                 onClick={(e) => act.current.click(p, e)}

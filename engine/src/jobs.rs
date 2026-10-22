@@ -27,7 +27,9 @@ use std::time::Duration;
 ///   rejects skipped, Picks first (and Photos that already have Suggestions skipped unless `redo`)
 /// - `match_hero` {photo_id, photo_ids?, provider?}: the hero Photo's style becomes a Look and
 ///   every other Photo (or `photo_ids`) gets matched Suggestions under it
-/// - `cull_shoot` (alias `rate_shoot`) {shoot_id?, provider?}: the AI cull
+/// - `cull_shoot` (alias `rate_shoot`) {shoot_id?, provider?, check?}: the AI cull
+/// - `check_shoot` {shoot_id?}: the AI cull with the rules' Technical check (no model, seconds),
+///   so it is never held for an idle Mac; Import queues it
 /// - `render_previews` {shoot_id?}: Argus's own previews over the camera's, queued by `import_folder`
 /// - `analyze` {shoot_id?, photo_ids?}: the specialist models' Facts (ADR 0013), queued after Import
 /// - `rank_presets` {shoot_id, provider?}: the AI's suggested order of the Presets for a Shoot
@@ -42,6 +44,7 @@ pub const KINDS: &[&str] = &[
     "match_hero",
     "cull_shoot",
     "rate_shoot",
+    "check_shoot",
     "render_previews",
 ];
 
@@ -316,7 +319,15 @@ pub fn enqueue(
         ),
         _ => (
             shoot("AI cull"),
-            format!("cull_shoot:{}", id("shoot_id").unwrap_or(0)),
+            format!(
+                "{}:{}",
+                if kind == "check_shoot" {
+                    kind
+                } else {
+                    "cull_shoot"
+                },
+                id("shoot_id").unwrap_or(0)
+            ),
             PRIORITY_SHOOT,
         ),
     };
@@ -429,12 +440,13 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
         }
         "suggest_shoot" => suggest_shoot(tools, job),
         "match_hero" => match_hero(tools, job),
-        "cull_shoot" => {
+        "cull_shoot" | "check_shoot" => {
             #[derive(Deserialize)]
             struct A {
                 shoot_id: Option<ShootId>,
                 provider: Option<String>,
                 compute: Option<Compute>,
+                check: Option<crate::cull::Check>,
             }
             let a: A = args(job)?;
             let mut lib = Library::open(tools.library())?;
@@ -442,8 +454,13 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
                 Some(s) => s,
                 None => newest_shoot(&lib)?,
             };
-            let provider =
-                tools.provider(a.provider.as_deref(), Some(a.compute.unwrap_or(compute)))?;
+            let check = match job.kind.as_str() {
+                "check_shoot" => Some(crate::cull::Check::Rules),
+                _ => a.check,
+            };
+            let provider = crate::cull::cull_provider(check, a.provider.as_deref(), |name| {
+                tools.provider(name, Some(a.compute.unwrap_or(compute)))
+            })?;
             let progress = std::sync::Mutex::new(Library::open(tools.library())?);
             let id = job.id;
             // In the Shoot's Photos, read and answered, so the bar and its ETA move

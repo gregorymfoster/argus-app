@@ -252,7 +252,14 @@ impl Tools {
                 // (and reload into the new Shoot) while the Import still runs.
                 if let Some(shoot) = report.shoot_id {
                     let kinds = [
-                        ("cull_shoot", a.cull),
+                        // The rules' cull runs at once; a model's waits like other model work.
+                        (
+                            match cull::check(None) {
+                                cull::Check::Rules => "check_shoot",
+                                cull::Check::Model => "cull_shoot",
+                            },
+                            a.cull,
+                        ),
                         ("suggest_shoot", a.suggest.unwrap_or(a.cull)),
                     ];
                     let mut args = json!({ "shoot_id": shoot });
@@ -404,9 +411,13 @@ impl Tools {
                     Some(c) => c,
                     None => jobs::effective_compute(&jobs::config(&lib)?),
                 };
-                let provider = (self.providers)(a.provider.as_deref(), Some(compute))?;
+                let provider = cull::cull_provider(a.check, a.provider.as_deref(), |name| {
+                    (self.providers)(name, Some(compute))
+                })?;
                 // The app's cull bar reads this task (`progress`).
                 let task = crate::progress::Task::start("cull", "Reading the photos", 0);
+                // Cancel (`cancel_task`) reaches the model's streaming reply through this.
+                let _in = task.enter();
                 let _who = crate::model_lock::as_who(format!(
                     "the AI cull in {}",
                     crate::model_lock::who()
@@ -962,10 +973,13 @@ fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "cull_shoot",
-            description: "Have Argus's own Provider cull a whole Shoot in one pass: Verdicts with reasons, star Ratings, Stacks and the Shoot's Best Photos, keeping the person's own flags and stars. Local models can take many minutes. If you can see images yourself, you can instead cull with get_contact_sheet, set_verdict, set_rating and set_stacks.",
+            description: "Have Argus cull a whole Shoot in one pass: Verdicts with reasons, star Ratings, Stacks and the Shoot's Best Photos, keeping the person's own flags and stars. By default it needs no model and takes seconds; check \"model\" asks a model too, and local models can take many minutes. If you can see images yourself, you can instead cull with get_contact_sheet, set_verdict, set_rating and set_stacks.",
             input_schema: json!({ "type": "object", "properties": {
                 "shoot_id": { "type": "integer", "description": "Defaults to the newest Shoot" },
-                "provider": { "type": "string", "enum": ["ollama", "claude-code", "claude-api"] },
+                "provider": { "type": "string", "enum": ["ollama", "claude-code", "claude-api", "rules"],
+                    "description": "The model for check \"model\"; rules is the same as check \"rules\"" },
+                "check": { "type": "string", "enum": ["rules", "model"],
+                    "description": "Who looks for technically broken frames: rules (default, from sharpness, seconds) or the model as a second opinion (also shut eyes and subtle shake; local models take many minutes)" },
                 "compute": { "type": "string", "enum": ["gentle", "balanced", "full"],
                     "description": "How much of the Mac a local model may take; gentle unless the person said otherwise" } } }),
             read_only: false,
@@ -1521,9 +1535,14 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     let task =
         crate::progress::Task::start("auto", format!("Auto on {} Photos", jobs.len()), jobs.len());
     let pool = a.compute.unwrap_or_else(Compute::from_env).cpu_pool()?;
+    // Cancel (`cancel_task`) stops between Photos; the ones done are saved as usual.
+    let stop = task.stop_flag();
     let results: Vec<(PhotoId, Result<Recipe>)> = pool.install(|| {
         jobs.par_iter()
             .map(|(p, own, base, masks)| {
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    return (p.id, Err(Error(crate::progress::STOPPED.into())));
+                }
                 let auto = crate::auto::auto_adjust(
                     |s| {
                         // The Look's sliders sit under Auto's, as they do under the person's.
@@ -1543,18 +1562,20 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     let batch = batch_or(lib, batch, "Auto")?;
     let mut out = BTreeMap::new();
     let mut failed = BTreeMap::new();
+    let mut stopped = Vec::new();
     for (id, r) in results {
         match r {
             Ok(r) => {
                 let version = lib.write_recipe(id, &r.to_value(), Author::Ai, Some(batch))?;
                 out.insert(id, json!({ "version": version, "global": r.global }));
             }
+            Err(e) if e.0 == crate::progress::STOPPED => stopped.push(id),
             Err(e) => {
                 failed.insert(id, e.to_string());
             }
         }
     }
-    one(json!({ "batch_id": batch, "photos": out, "failed": failed }))
+    one(json!({ "batch_id": batch, "photos": out, "failed": failed, "stopped": stopped }))
 }
 
 #[derive(Deserialize)]
@@ -2122,6 +2143,7 @@ struct CullShoot {
     shoot_id: Option<ShootId>,
     provider: Option<String>,
     compute: Option<Compute>,
+    check: Option<cull::Check>,
 }
 
 #[derive(Deserialize)]

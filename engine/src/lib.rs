@@ -57,6 +57,7 @@ pub mod signals;
 pub mod style;
 pub mod suggest;
 pub mod taste;
+pub mod technical;
 pub mod tools;
 pub mod usage;
 pub mod variant;

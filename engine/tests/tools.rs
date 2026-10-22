@@ -201,6 +201,19 @@ impl Provider for Fake {
 }
 
 #[test]
+fn cull_shoot_checks_with_the_rules_by_default_and_asks_no_model() {
+    let (_tmp, tools) = library(3);
+    let tools = tools.with_providers(|name, _| panic!("asked the model {name:?}"));
+    let r = json1(&tools, "cull_shoot", json!({ "provider": "ollama" }));
+    assert_eq!(r["picks"].as_u64(), Some(0), "the rules never pick");
+    assert_eq!(
+        r["rated"].as_u64(),
+        Some(3),
+        "Taste still rates every Photo"
+    );
+}
+
+#[test]
 fn cull_shoot_defaults_to_the_newest_shoot_and_passes_provider_choice() {
     let (_tmp, tools) = library(3);
     let tools = tools.with_providers(|name, compute| {
@@ -211,7 +224,7 @@ fn cull_shoot_defaults_to_the_newest_shoot_and_passes_provider_choice() {
     let r = json1(
         &tools,
         "cull_shoot",
-        json!({ "provider": "ollama", "compute": "gentle" }),
+        json!({ "provider": "ollama", "compute": "gentle", "check": "model" }),
     );
     assert_eq!(
         (
@@ -466,7 +479,7 @@ fn mistakes_come_back_as_messages_a_model_can_act_on() {
         ),
         (
             "cull_shoot",
-            json!({ "provider": "gpt" }),
+            json!({ "provider": "gpt", "check": "model" }),
             "unknown provider",
         ),
     ] {
@@ -510,7 +523,8 @@ fn import_can_auto_tone_and_queue_the_cull() {
         .filter_map(|j| j["kind"].as_str())
         .collect();
     assert!(
-        kinds.contains(&"cull_shoot") && kinds.contains(&"suggest_shoot"),
+        // The cull's rules run at once (check_shoot); a model cull would be cull_shoot.
+        kinds.contains(&"check_shoot") && kinds.contains(&"suggest_shoot"),
         "{kinds:?}"
     );
 }

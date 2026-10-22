@@ -14,6 +14,7 @@ import { call, pickFolder } from '../data/backend';
 import { useLibrary, verdictOf } from '../store/library';
 import type { Photo } from '../domain/types';
 import { Kbd } from './kit';
+import { ProgressBar } from './Progress';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -145,6 +146,13 @@ const emit = () => listeners.forEach((l) => l());
 const subscribe = (l: () => void) => (listeners.add(l), () => listeners.delete(l));
 const useRun = () => useSyncExternalStore(subscribe, () => run);
 
+/** The running Export, for Background work in the sidebar: done, total and seconds left. */
+export function useExportProgress(): { done: number; total: number; eta_s: number | null } | null {
+  const r = useRun();
+  if (!r || r.finished) return null;
+  return { done: r.done, total: r.total, eta_s: r.done > 0 ? ((Date.now() - r.started) / r.done) * (r.total - r.done) / 1000 : null };
+}
+
 function ExportToast() {
   const r = useRun();
   const [, tick] = useState(0);
@@ -160,13 +168,12 @@ function ExportToast() {
   const ok = r.done - r.failed.length;
   return (
     <div className="export-toast" aria-live="polite">
-      <div className="bar">
-        <div style={{ width: `${(r.done / Math.max(1, r.total)) * 100}%`, background: r.finished && !r.failed.length ? 'var(--done)' : undefined }} />
-      </div>
-      <div className="faint mono" style={{ fontSize: 11.5 }} data-testid="export-status">
-        {!r.finished && `${r.done} of ${r.total} · ${left == null ? 'estimating…' : `about ${duration(left)} left`}${r.current ? ` · ${r.current}` : ''}`}
-        {r.finished && `${r.cancelled ? 'Stopped. ' : 'Done. '}${ok} ${ok === 1 ? 'file' : 'files'} in ${r.folder ?? 'the export folder'}`}
-      </div>
+      {!r.finished && <ProgressBar label={r.current ?? 'Starting'} done={r.done} total={r.total} eta={left} testId="export-status" />}
+      {r.finished && (
+        <div className="faint" style={{ fontSize: 11.5 }} data-testid="export-status">
+          {`${r.cancelled ? 'Stopped. ' : 'Done. '}${ok} ${ok === 1 ? 'file' : 'files'} in ${r.folder ?? 'the export folder'}`}
+        </div>
+      )}
       {r.failed.slice(0, 3).map((f) => (
         <div key={f.file} className="mono" style={{ fontSize: 11.5, color: 'var(--reject)' }}>
           {f.file}: {f.error}

@@ -209,11 +209,17 @@ enum Cmd {
         best: bool,
     },
     /// AI cull a whole Shoot (Shoot context): Verdicts with reasons, star Ratings, Stacks and
-    /// the Shoot's Best Photos. Person flags and stars are kept. Providers: ollama (default, local), claude-code (your Claude plan), claude-api.
+    /// the Shoot's Best Photos. Person flags and stars are kept. The Technical check runs from sharpness rules by default (seconds); --check model adds a model's opinion: ollama (default, local), claude-code (your Claude plan), claude-api.
     Cull {
-        /// ollama | claude-code | claude-api (default: $ARGUS_PROVIDER or ollama)
+        /// The model for --check model: ollama | claude-code | claude-api (default:
+        /// $ARGUS_PROVIDER or ollama); rules is the same as --check rules.
         #[arg(long)]
         provider: Option<String>,
+        /// Who looks for technically broken frames: rules (default, from sharpness, seconds)
+        /// or model (a second opinion that also catches shut eyes; Qwen takes ~40 min a card).
+        /// Default: $ARGUS_CULL_CHECK or rules.
+        #[arg(long)]
+        check: Option<argus_engine::cull::Check>,
         #[arg(long)]
         library: PathBuf,
         /// Shoot id; defaults to the newest Shoot.
@@ -570,6 +576,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             library,
             shoot,
             provider,
+            check,
             compute,
         } => {
             let mut lib = Library::open(&library)?;
@@ -581,7 +588,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     .map(|s| s.id)
                     .ok_or("the Library has no Shoots")?,
             };
-            let provider = argus_engine::cull::provider(provider.as_deref(), compute)?;
+            let provider = argus_engine::cull::cull_provider(check, provider.as_deref(), |name| {
+                argus_engine::cull::provider(name, compute)
+            })?;
             let t = Instant::now();
             let report = argus_engine::cull::cull_shoot_with(
                 &mut lib,

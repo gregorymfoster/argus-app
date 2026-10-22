@@ -17,11 +17,13 @@ export function Filmstrip({ order, pos, stackIds = [], open }: { order: string[]
   }, [pos]);
   return (
     <div className="filmstrip" ref={ref} aria-label="Filmstrip" data-testid="filmstrip">
-      {ids.map((id) => {
+      {ids.map((id, i) => {
         const s = PHOTO_BY_ID[id];
         if (!s) return null;
         const v = verdictOf(state, id);
-        const cls = [id === order[pos] ? 'on' : '', stackIds.includes(id) ? 'in-stack' : '', v === 'reject' ? 'rejected' : ''].join(' ');
+        // Every Stack's frames sit on one band, as in the grid; the open Photo's Stack is underlined.
+        const stk = s.stackId ? ['stk', PHOTO_BY_ID[ids[i - 1]]?.stackId !== s.stackId && 'stk-first', PHOTO_BY_ID[ids[i + 1]]?.stackId !== s.stackId && 'stk-last'] : [];
+        const cls = [id === order[pos] && 'on', stackIds.includes(id) && 'in-stack', v === 'reject' && 'rejected', ...stk].filter(Boolean).join(' ');
         return (
           <button key={id} className={cls} onClick={() => open(id)} aria-label={`${s.file}, ${s.reason}`}>
             <PhotoView photo={s} size="tile" edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />

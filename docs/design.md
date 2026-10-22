@@ -61,7 +61,7 @@ Standard Mac behavior always works. ⌘, opens Settings, ⌘W and ⌘Q close and
 
 ## Feedback and motion
 
-Never a bare spinner when progress is knowable (Greg, 2026-10-18). Card scans, imports, previews, culls, Agent edits, renders and exports show `ProgressBar` from `ui/Progress.tsx`: a thin terracotta bar with a count and an ETA (`eta()` formats it). A spinner is only acceptable for a wait that has no size and lasts under a couple of seconds. `design-lint` counts spinners.
+Never a bare spinner when progress is knowable (Greg, 2026-10-18). Card scans, imports, previews, culls, Auto, Agent edits, renders and exports show `ProgressBar` from `ui/Progress.tsx`, one compact row (Greg, 2026-10-21, after the cull bar wrapped): what it's doing on the left, one line and ellipsized; "3 of 266 · ~2 h 34 min left" on the right in the sans face with tabular figures (`eta()` formats it); a quiet Cancel after that wherever the work can stop (Import, Auto all, the AI cull: `cancel_task`), which turns the row into "Stopping"; and a 2px terracotta bar underneath, with a soft glint running over the filled part so a slow job still looks alive. `TaskProgress` is the same row for a running engine task (`progress` kind). In the Agent chat a step the engine counts is that row in place of the spinner step, and a step the person stopped ends with a quiet slashed circle, never the red failure cross. Work the person started outside the Queue (an AI cull from the chat, Auto all, Export) also shows in Background work at the foot of the sidebar, ahead of the Queue's own line. A spinner is only acceptable for a wait that has no size and lasts under a couple of seconds. `design-lint` counts spinners.
 
 Every AI action shows as a compact step with its timing, and offers a review or an undo of exactly what it changed. AI work for the open Photo jumps ahead of background batches, and the UI names the AI by `aiName()`, never a hardcoded model.
 
@@ -84,6 +84,8 @@ The Agent lives in a side panel on the right, always visible. Import is a focuse
 Flags follow Lightroom. Every tile shows a small flag chip in its corner (Pick in blue, Reject in red, nothing when Unflagged) and Rejects fade back. Hovering a tile reveals Pick and Reject buttons on that chip, and clicking one sets it (clicking the active one clears it). P, X and U do the same from the keyboard, and flagging jumps to the next Photo. Shift-click and ⌘-click select several Photos so one keypress flags them all. The AI's reason sits as a caption under each tile, after its stars. The AI's stars are dim with a small sparkle; the person's are solid. Keys 0 to 5 rate and move on like flags. Best Photos is a grid filter with a gold award badge carrying the rank.
 
 Grid thumbnails change size with a trackpad pinch, the size slider in the toolbar, or = and − as in Lightroom's Grid; the Photo under the pointer stays put while it zooms. ⌘+, ⌘− and ⌘0 zoom the whole app (View menu and ⌘K), like Cursor and browsers, for text density. Right-click works on Shoots (Rename, Suggest a name, Show in Finder, Export) and on Photos; double-click or Enter renames a Shoot in place and Esc cancels. The grid's Sort menu follows Lightroom's (Capture time, Stars, Flag, File name, each with a direction; ⇧S flips between Stars, most first, and Capture time); a Stack sorts by its best frame and stays together, and the Loupe and filmstrip follow the same order. The grid has "Auto all" (⇧A, or on a selection) so a whole Shoot can get Auto before culling.
+
+Stacks read as piles (Greg, 2026-10-21: make Stacks and expanding them clearer). A collapsed Stack shows its cover (the kept Pick, else the best frame) with two sheets peeking out above it and a count badge with a layers icon; clicking the badge or pressing S expands it. Expanded frames sit on one soft tinted band behind the tiles and number themselves (2/6), and the cover keeps the layers icon. S from any frame, the badge, or a click on the band collapses the Stack and lands on the cover, as in Lightroom. Right-click has Expand or Collapse Stack and Expand all or Collapse all Stacks. In the filmstrip each Stack's frames share a thin underline, and the open Photo's Stack is underlined in white.
 
 For Looks, chat comes first: Greg describes what he wants and the Agent builds it. Before and after shows as split tiles. AI edits apply directly, with one undo for the whole batch. In deep edit, each Mask is a card with its own sliders.
 
@@ -124,6 +126,9 @@ Use existing libraries and don't hand-roll what they already do: shadcn/ui on Ra
 | reject | #F0716B | Reject |
 | done | #7FD1A8 | completed steps |
 | shoot | #E0AC5A | current Shoot marker, Best Photos |
+| stack-sheet-1 / -2 | #4A4A47 / #343432 | the sheets above a collapsed Stack |
+| stack-band / -hover | white 9% / 14% | the band behind an expanded Stack |
+| stack-line | white 40% | a Stack's underline in the filmstrip |
 | row-h | 28px | sidebar and list rows |
 | icon | 14px | row icons (13px in headers) |
 | fast / ease-out | 120ms / cubic-bezier(0.16, 1, 0.3, 1) | transitions |

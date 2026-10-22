@@ -20,6 +20,10 @@ export interface ChatStep {
   done: boolean;
   /** Ended in an error: shown with a cross, not a tick. */
   failed?: boolean;
+  /** The person stopped it: neither a tick nor a failure's cross. */
+  stopped?: boolean;
+  /** While running, the engine task (`progress` kind) it is: shown as its progress row, not a spinner. */
+  task?: string;
 }
 
 export interface ChatMessage {

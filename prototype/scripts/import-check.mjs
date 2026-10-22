@@ -50,7 +50,7 @@ const check = (ok, msg) => (ok ? console.log(`ok   ${msg}`) : (failures.push(msg
 const modelLockDir = mkdtempSync(join(tmpdir(), 'argus-model-'));
 const foregroundDir = mkdtempSync(join(tmpdir(), 'argus-foreground-'));
 const serve = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
-  env: { ...process.env, ARGUS_VOLUMES: volumes, OLLAMA_HOST: `127.0.0.1:${mock.address().port}`, ARGUS_PROVIDER: 'ollama', ARGUS_COMPUTE: 'full', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
+  env: { ...process.env, ARGUS_VOLUMES: volumes, OLLAMA_HOST: `127.0.0.1:${mock.address().port}`, ARGUS_PROVIDER: 'ollama', ARGUS_CULL_CHECK: 'model', ARGUS_COMPUTE: 'full', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
 const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5198, strictPort: true }, logLevel: 'error' });

@@ -85,7 +85,7 @@ const port = 4444;
 // A virtual screen when there is no real one (the cloud container).
 let display = process.env.DISPLAY;
 const xvfb = display ? null : spawn('Xvfb', [(display = `:${90 + Math.floor(Math.random() * 9)}`), '-screen', '0', '1440x900x24'], { stdio: 'ignore' });
-const driver = spawn('tauri-driver', [], { stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, DISPLAY: display, ARGUS_LIBRARY: library, ARGUS_CONFIG: join(tmp, 'config/libraries.json'), ARGUS_VOLUMES: volumes, OLLAMA_HOST: '127.0.0.1:7879', ARGUS_PROVIDER: 'ollama', ARGUS_COMPUTE: 'full' } });
+const driver = spawn('tauri-driver', [], { stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, DISPLAY: display, ARGUS_LIBRARY: library, ARGUS_CONFIG: join(tmp, 'config/libraries.json'), ARGUS_VOLUMES: volumes, OLLAMA_HOST: '127.0.0.1:7879', ARGUS_PROVIDER: 'ollama', ARGUS_CULL_CHECK: 'model', ARGUS_COMPUTE: 'full' } });
 
 const wd = async (method, path, body) => {
   const r = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });

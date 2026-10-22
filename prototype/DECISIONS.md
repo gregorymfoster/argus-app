@@ -29,3 +29,7 @@ shadcn/ui on Radix for controls and dialogs (hand-written into `src/components/u
 ## Asking about the next open question
 
 Add a `Decision` to `DECISIONS` in `src/store/variants.tsx` and branch on `useVariant(id)` in the screen. The amber Variants panel appears by itself when the list isn't empty and hides when it is. Once Greg picks, write the winner here, delete the switch and the losing code.
+
+## Stacks (2026-10-21)
+
+Greg asked for Stacks, and expanding and collapsing them, to be clearer. Of three takes (pile and band, bracket, Lightroom Classic) he went with the pile and band: sheets peek out above a collapsed Stack's cover, the count badge carries a layers icon, expanded frames sit on one tinted band and number themselves (2/6), and S, the badge or the band collapse back to the cover. Details in `docs/design.md`.

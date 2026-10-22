@@ -168,6 +168,30 @@ pub fn cancel(kind: &str) -> bool {
     any
 }
 
+/// What work returns when the person stopped it ([`cancel`]); the UI tells it from a failure.
+pub const STOPPED: &str = "stopped";
+
+/// True once [`cancel`] asked the task this thread works for ([`Task::enter`]) to stop, so
+/// code deep in a request (a model reply streaming in) can give up between pieces.
+pub fn stopped_here() -> bool {
+    CURRENT.with(Cell::get).is_some_and(|id| {
+        TASKS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e.id == id && e.stop.load(Ordering::Relaxed))
+    })
+}
+
+/// [`stopped_here`] as an error to return, for `?`.
+pub fn check_stopped() -> crate::Result<()> {
+    if stopped_here() {
+        Err(crate::Error(STOPPED.into()))
+    } else {
+        Ok(())
+    }
+}
+
 /// Everything running now, oldest first.
 pub fn snapshot() -> Vec<Snapshot> {
     TASKS
@@ -210,6 +234,17 @@ mod tests {
         drop(t);
         assert!(snapshot().iter().all(|s| s.kind != "test"));
         assert!(!cancel("test"));
+    }
+
+    #[test]
+    fn cancel_reaches_work_on_the_task_s_thread() {
+        let t = Task::start("test-stop", "Culling", 0);
+        assert!(!stopped_here());
+        let _in = t.enter();
+        assert!(!stopped_here() && check_stopped().is_ok());
+        cancel("test-stop");
+        assert!(stopped_here());
+        assert_eq!(check_stopped().unwrap_err().0, STOPPED);
     }
 
     #[test]

@@ -123,7 +123,7 @@ The AI's ranked short list of a Shoot's strongest Photos, about one in ten and n
 _Avoid_: Highlights, favorites, top picks
 
 **Technical check**:
-The cull's first stage: the model looks at every Photo of the Shoot and says only whether a frame is technically broken (missed focus, shake, eyes closed, exposure beyond rescue). Local models call this well, so it is all they are asked (Greg, 2026-10-20).
+The cull's first stage: it says only whether a frame is technically broken (missed focus, shake, eyes closed, exposure beyond rescue), never which to keep (Greg, 2026-10-20). By default it is rules on sharpness against the Shoot and look-alike frames, with no model (`engine::technical`, Greg 2026-10-21); the local model can add its own rejects as a second opinion (`--check model`).
 _Avoid_: QC, quality check
 
 **Taste**:

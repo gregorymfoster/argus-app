@@ -159,3 +159,31 @@ fn the_ais_own_flags_teach_the_head_nothing() {
         "no faces and no flags of the person's: level taste"
     );
 }
+
+mod technical {
+    use argus_engine::technical::{broken, Sharpness};
+
+    #[test]
+    fn a_frame_far_softer_than_its_shoot_or_its_sharp_twin_is_broken() {
+        let s = |in_shoot, beside| Sharpness { in_shoot, beside };
+        assert!(
+            broken(s(0.05, 1.0)).is_some(),
+            "blurred against the whole Shoot"
+        );
+        assert!(
+            broken(s(0.3, 0.1)).is_some(),
+            "shaken beside a sharp frame of the moment"
+        );
+        assert_eq!(
+            broken(s(0.3, 0.5)),
+            None,
+            "a little softer than its sibling"
+        );
+        assert_eq!(
+            broken(s(0.8, 0.1)),
+            None,
+            "sharp for its Shoot, whatever its sibling"
+        );
+        assert_eq!(broken(Sharpness::default()), None);
+    }
+}

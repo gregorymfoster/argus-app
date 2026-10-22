@@ -369,6 +369,7 @@ fn sheet_photo(n: usize, at: &str) -> SheetPhoto {
         taste: 0.0,
         burst: None,
         tilt: None,
+        sharpness: Default::default(),
     }
 }
 
@@ -792,6 +793,35 @@ fn a_request_ollama_never_answers_fails_instead_of_waiting_all_night() {
     assert!(
         e.0.contains("stopped answering") && e.0.contains("never started"),
         "{e}"
+    );
+}
+
+#[test]
+fn cancel_stops_a_cull_mid_reply_within_a_moment() {
+    use argus_engine::cull::Stall;
+    use argus_engine::progress::{cancel, Task, STOPPED};
+    use std::time::{Duration, Instant};
+    // The model is reading a big sheet and won't say anything for a while.
+    let o = ollama_at(silent_ollama(STREAM_HEAD, Duration::from_secs(10)));
+    let agent = ureq::AgentBuilder::new().build();
+    let task = Task::start("cull-cancel-test", "Reading the photos", 0);
+    let _in = task.enter();
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(300));
+        cancel("cull-cancel-test");
+    });
+    let t = Instant::now();
+    let stall = Stall {
+        first: Duration::from_secs(60),
+        gap: Duration::from_secs(60),
+    };
+    let e = o
+        .stream_within(&agent, serde_json::json!({}), stall, &|_| {})
+        .unwrap_err();
+    assert_eq!(e.0, STOPPED);
+    assert!(
+        t.elapsed() < Duration::from_secs(3),
+        "stopped within a moment"
     );
 }
 

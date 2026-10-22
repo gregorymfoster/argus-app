@@ -147,6 +147,8 @@ pub struct SheetPhoto {
     /// How far its faces' heads lean, in degrees ([`crate::taste::tilt`]); None without faces.
     /// Orders the frames of a burst.
     pub tilt: Option<f32>,
+    /// How sharp it is next to its Shoot and its look-alikes ([`crate::technical`]).
+    pub sharpness: crate::technical::Sharpness,
 }
 
 impl SheetPhoto {
@@ -195,6 +197,7 @@ impl ContactSheet {
         })?;
         let facts = analyzers::facts_for(lib, &photos, CULL_FACTS)?;
         let alike = alike_previous(&facts);
+        let sharpness = crate::technical::measure(&photos, &facts);
         let taste = crate::taste::scores(lib, shoot, &facts)?;
         let frames: Vec<crate::bursts::Frame> = photos
             .iter()
@@ -254,6 +257,7 @@ impl ContactSheet {
                     taste: taste[i],
                     burst: burst_of.get(&p.id).copied(),
                     tilt: crate::taste::tilt(f),
+                    sharpness: sharpness[i],
                     facts: [
                         analyzers::caption(&rest),
                         alike[i].clone(),
@@ -316,6 +320,7 @@ impl ContactSheet {
                     taste: p.taste,
                     burst: p.burst,
                     tilt: p.tilt,
+                    sharpness: p.sharpness,
                 }
             })
             .collect();
@@ -604,6 +609,11 @@ pub fn cull_shoot_with(
 ) -> Result<CullReport> {
     let sheet = ContactSheet::build(lib, shoot)?;
     let result = cull_sheet(&sheet, provider, max, progress)?;
+    // A model's check adds to the rules', never drops one of theirs.
+    let result = match taste() {
+        Taste::Signals => crate::technical::add_rejects(&sheet, result),
+        Taste::Model => result,
+    };
     let result = crate::taste::rate(&sheet, result);
     apply(lib, &sheet, &result)
 }
@@ -715,6 +725,7 @@ fn cull_chunks(
     // (chunk best rank, stars, global n) for every candidate the chunks put forward.
     let mut candidates: Vec<(u32, u8, usize)> = Vec::new();
     for (ci, range) in chunks.iter().enumerate() {
+        crate::progress::check_stopped()?;
         let idx: Vec<usize> = range.clone().collect();
         let (sub, orig) = sheet.subset(
             &idx,
@@ -752,6 +763,7 @@ fn cull_chunks(
     // and the prompt's "one in ten" of those once left 3 Best Photos for 261 frames.
     let target = (sheet.photos.len() / 10).max(1);
     let mut best: Vec<usize> = Vec::new();
+    crate::progress::check_stopped()?;
     if candidates.len() > 1 {
         rep.update(|l| l.p.photos_total = l.base + candidates.len());
         let mut idx: Vec<usize> = candidates.iter().map(|c| c.2 - 1).collect();
@@ -812,6 +824,7 @@ fn cull_every_photo(
     if missing.is_empty() {
         return Ok(r);
     }
+    crate::progress::check_stopped()?;
     let context = format!(
         "{}Your earlier reply left these {} photos out; cull and rate them against the \
          same shoot.",
@@ -1095,6 +1108,54 @@ pub fn taste() -> Taste {
             Taste::Signals
         }),
         Err(_) => Taste::Signals,
+    }
+}
+
+/// Who does a cull's Technical check. `Rules` (the default since 2026-10-21, Greg) answers it
+/// from sharpness in seconds ([`crate::technical`]); `Model` asks the cull's Provider, a
+/// second opinion that also catches shut eyes and subtle shake, and keeps the rules' rejects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Check {
+    Rules,
+    Model,
+}
+
+impl std::str::FromStr for Check {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "rules" => Ok(Check::Rules),
+            "model" => Ok(Check::Model),
+            other => Err(Error(format!(
+                "unknown check {other:?}; use rules or model"
+            ))),
+        }
+    }
+}
+
+/// The Technical check a cull runs: `explicit`, else ARGUS_CULL_CHECK, else the model when the
+/// harness variant asks it for the whole cull ([`Taste::Model`]), else the rules.
+pub fn check(explicit: Option<Check>) -> Check {
+    explicit
+        .or_else(|| std::env::var("ARGUS_CULL_CHECK").ok()?.parse().ok())
+        .unwrap_or(match taste() {
+            Taste::Model => Check::Model,
+            Taste::Signals => Check::Rules,
+        })
+}
+
+/// The Provider a cull asks: the rules for [`Check::Rules`] (or `provider` "rules"), else the
+/// named model Provider ([`provider`]).
+pub fn cull_provider(
+    explicit: Option<Check>,
+    name: Option<&str>,
+    model: impl FnOnce(Option<&str>) -> Result<Box<dyn Provider>>,
+) -> Result<Box<dyn Provider>> {
+    if name == Some("rules") || check(explicit) == Check::Rules {
+        Ok(Box::new(crate::technical::Rules))
+    } else {
+        model(name)
     }
 }
 
@@ -1609,7 +1670,21 @@ impl Ollama {
             } else {
                 stall.gap
             };
-            let line = match lines.recv_timeout(wait) {
+            // Wait in short slices so Cancel (`cancel_task`) lands within a moment; leaving
+            // drops the reader, which closes the request and stops Ollama generating.
+            let since = Instant::now();
+            let got = loop {
+                crate::progress::check_stopped()?;
+                let left = wait.saturating_sub(since.elapsed());
+                if left.is_zero() {
+                    break Err(RecvTimeoutError::Timeout);
+                }
+                match lines.recv_timeout(left.min(Duration::from_millis(250))) {
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    other => break other,
+                }
+            };
+            let line = match got {
                 Ok(line) => line?,
                 Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {
@@ -1905,7 +1980,8 @@ pub fn parse_json_reply(text: &str) -> Result<CullResult> {
 }
 
 /// Pick a Provider by name: `ollama` (default, local), `claude-code` (your Claude plan via
-/// Claude Code), or `claude-api` (an Anthropic API key). ARGUS_PROVIDER sets the default.
+/// Claude Code), `claude-api` (an Anthropic API key), or `rules` (no model: the Technical
+/// check from the Facts alone, [`crate::technical::Rules`]). ARGUS_PROVIDER sets the default.
 pub fn provider(name: Option<&str>, compute: Option<Compute>) -> Result<Box<dyn Provider>> {
     let env = std::env::var("ARGUS_PROVIDER").ok();
     match name.or(env.as_deref()).unwrap_or("ollama") {
@@ -1918,8 +1994,9 @@ pub fn provider(name: Option<&str>, compute: Option<Compute>) -> Result<Box<dyn 
         }
         "claude-code" => Ok(Box::new(ClaudeCode::from_env())),
         "claude-api" | "claude" => Ok(Box::new(Claude::from_env()?)),
+        "rules" => Ok(Box::new(crate::technical::Rules)),
         other => Err(Error(format!(
-            "unknown provider {other:?}; use ollama, claude-code or claude-api"
+            "unknown provider {other:?}; use ollama, claude-code, claude-api or rules"
         ))),
     }
 }

@@ -2,14 +2,13 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { LIVE, aiError, PROVIDERS as ENGINE_PROVIDERS, chooseProvider, chosenProvider, providerDown, listLooks, liveCull, readCull, readRecipes } from '../data/live';
 import { askAgent, stepLabel, undoBatch, type Turn } from '../data/liveAgent';
 import { loadRecipe } from '../data/liveEdit';
-import { plain } from '../data/suggestions';
-import { ArrowUp, Check, ChevronDown, X } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, CircleSlash, X } from 'lucide-react';
 import { useLibrary, type Action, type ChatMessage } from '../store/library';
 import { LIVE_SUGGESTIONS, respond, SUGGESTIONS, type AgentPlan } from './agent';
 import type { Photo } from '../domain/types';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
 import { Button } from '@/components/ui/button';
-import { ProgressBar, useEngineTask } from '../ui/Progress';
+import { TaskProgress, wasStopped } from '../ui/Progress';
 
 const DEMO_PROVIDERS = [
   { id: 'ollama', label: 'Ollama · qwen3.8:27b', note: 'On this Mac · nothing leaves it' },
@@ -62,10 +61,12 @@ function Message({ m, ctx, onReview }: { m: ChatMessage; ctx: string; onReview?:
       {!!m.steps?.length && (
         <div className="steps">
           {m.steps.map((s, i) => {
+            // Live, a step the engine counts is its progress row: one line, no spinner above it.
+            if (LIVE && s.task && !s.done) return <TaskProgress key={i} kind={s.task} label={s.label} testId={`${s.task}-progress`} cancel />;
             const [label, time] = s.label.split(' ·');
             return (
               <div className="step" key={i}>
-                {s.failed ? <X size={12} strokeWidth={2.6} color="var(--reject)" /> : s.done ? <Check size={12} strokeWidth={2.6} color="var(--done)" /> : <span className="spin" />}
+                {s.stopped ? <CircleSlash size={12} strokeWidth={2.2} color="var(--text-3)" /> : s.failed ? <X size={12} strokeWidth={2.6} color="var(--reject)" /> : s.done ? <Check size={12} strokeWidth={2.6} color="var(--done)" /> : <span className="spin" />}
                 <span className="label">{label}</span>
                 <span className="time">{time ?? ''}</span>
               </div>
@@ -73,7 +74,6 @@ function Message({ m, ctx, onReview }: { m: ChatMessage; ctx: string; onReview?:
           })}
         </div>
       )}
-      {LIVE && m.steps?.some((s) => s.label === CULL_STEP && !s.done) && <CullBar />}
       {m.text && <p className="prose">{m.text}</p>}
       {!!m.actions?.length && (
         <div className="row">
@@ -89,15 +89,6 @@ function Message({ m, ctx, onReview }: { m: ChatMessage; ctx: string; onReview?:
 }
 
 const CULL_STEP = 'Looking at the whole Shoot';
-
-/** The running cull's bar: Photos the model has answered for so far, and an ETA. */
-function CullBar() {
-  const task = useEngineTask('cull', true);
-  if (!task) return <ProgressBar label="Reading the photos" testId="cull-progress" />;
-  // Queued behind another model user: say on whom, with no bar or ETA that pretends to move.
-  if (task.waiting) return <ProgressBar label={`Waiting: ${plain(task.waiting)}`} testId="cull-progress" />;
-  return <ProgressBar label={task.label} done={task.done} total={task.total || undefined} eta={task.eta_s} testId="cull-progress" />;
-}
 
 function Composer({ ctx, chips, placeholder, onSend, onProvider }: { ctx: string; chips: string[]; placeholder: string; onSend: (t: string) => void; onProvider?: () => void }) {
   const [text, setText] = useState('');
@@ -296,7 +287,7 @@ export function Agent({ ctx, chips, placeholder, selected, picks, onReview, head
 export async function liveCullChat(prompt: string, dispatch: React.Dispatch<Action>) {
   const at = Date.now();
   dispatch({ type: 'chat/push', ctx: 'cull', msg: { id: `you-${at}`, role: 'you', text: prompt } });
-  dispatch({ type: 'chat/push', ctx: 'cull', msg: { id: `agent-${at}`, role: 'agent', steps: [{ label: CULL_STEP, ms: 0, done: false }] } });
+  dispatch({ type: 'chat/push', ctx: 'cull', msg: { id: `agent-${at}`, role: 'agent', steps: [{ label: CULL_STEP, ms: 0, done: false, task: 'cull' }] } });
   const t0 = performance.now();
   try {
     const r = await liveCull();
@@ -312,7 +303,9 @@ export async function liveCullChat(prompt: string, dispatch: React.Dispatch<Acti
     });
     setTimeout(() => location.reload(), 2500);
   } catch (e) {
-    dispatch({ type: 'chat/patch', ctx: 'cull', msgId: `agent-${at}`, patch: { steps: [{ label: 'Cull failed', ms: 0, done: true, failed: true }], text: aiError(e) } });
+    // Stopped: the cull writes only once it has seen the whole Shoot, so nothing changed.
+    if (wasStopped(e)) dispatch({ type: 'chat/patch', ctx: 'cull', msgId: `agent-${at}`, patch: { steps: [{ label: 'Cull stopped', ms: 0, done: true, stopped: true }], text: 'Stopped. Nothing changed: the cull writes Verdicts, stars and Stacks only once it has seen the whole Shoot.' } });
+    else dispatch({ type: 'chat/patch', ctx: 'cull', msgId: `agent-${at}`, patch: { steps: [{ label: 'Cull failed', ms: 0, done: true, failed: true }], text: aiError(e) } });
   }
 }
 

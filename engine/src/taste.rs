@@ -239,10 +239,17 @@ pub fn tilt(facts: &Facts) -> Option<f32> {
 const DARKER: f32 = 0.65;
 const NEAR_S: i64 = 30;
 
+/// A frame under this share of the sharpness of a look-alike shot seconds from it is the same
+/// moment caught with shake or missed focus ([`crate::technical`]); it pays [`DARK_COST`] too, so
+/// it ranks below the sharp one even when the Technical check keeps it. Shaken twins on the
+/// bench sit at 0.06 to 0.40 of their originals.
+const SOFTER: f32 = 0.4;
+
 /// What a frame's dark exposure costs: enough to put it below any neighbour that tastes the same.
 const DARK_COST: f32 = 1.0;
 
-/// Each Photo's taste, less [`DARK_COST`] when it is much darker than its neighbours in time.
+/// Each Photo's taste, less [`DARK_COST`] when it is much darker than its neighbours in time,
+/// and again when it is much softer than a look-alike ([`SOFTER`]).
 fn tastes(sheet: &ContactSheet) -> HashMap<usize, f32> {
     let at: Vec<i64> = sheet
         .photos
@@ -262,7 +269,9 @@ fn tastes(sheet: &ContactSheet) -> HashMap<usize, f32> {
             let dark = near
                 .get(near.len() / 2)
                 .is_some_and(|&m| p.signals.brightness < DARKER * m);
-            (p.n, p.taste - if dark { DARK_COST } else { 0.0 })
+            let soft = p.sharpness.beside < SOFTER;
+            let cost = if dark { DARK_COST } else { 0.0 } + if soft { DARK_COST } else { 0.0 };
+            (p.n, p.taste - cost)
         })
         .collect()
 }

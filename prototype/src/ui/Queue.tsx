@@ -14,6 +14,8 @@ import { Button } from '@/components/ui/button';
 import { openSettings } from '../settings/Settings';
 import { useLibrary } from '../store/library';
 import { Kbd, Seg } from './kit';
+import { eta } from './Progress';
+import { useExportProgress } from './Export';
 
 /** A job as `list_jobs` returns it. */
 interface Job {
@@ -411,36 +413,54 @@ export function QueueChip() {
   );
 }
 
+/** Engine tasks outside the Queue that the sidebar shows, by `progress` kind, with their name. */
+const FOREGROUND: Record<string, string> = { cull: 'AI cull', auto: 'Auto', rank_presets: 'Presets' };
+
+/** The sidebar's line for work the person started and is waiting on: label, count, bar, time left. */
+function ForegroundRow({ q, label, done, total, eta_s }: { q: QueueStatus; label: string; done: number; total: number; eta_s: number | null }) {
+  const left = eta(eta_s);
+  return (
+    <QueuePopover q={q}>
+      <button className="queue-side" data-testid="queue-progress" title={label}>
+        <span className="qs-line">
+          <Sparkles size={12} className="qs-icon" />
+          <span className="qs-label">{label}</span>
+          <span className="grow" />
+          {total > 0 && (
+            <span className="qs-count">
+              {done}/{total}
+            </span>
+          )}
+        </span>
+        <span className={`job-bar ${total > 0 ? '' : 'indeterminate'}`}>
+          <span style={total > 0 ? { width: `${(100 * done) / total}%` } : undefined} />
+        </span>
+        <span className="qs-meta">
+          {left ? `${left}${left === 'a few seconds' ? '' : ' left'}` : 'working'} · {levelNow(q)}
+        </span>
+      </button>
+    </QueuePopover>
+  );
+}
+
 /** The queue at a glance at the foot of the sidebar: what runs, a bar, time left and the level. */
 export function QueueProgress() {
   const q = useQueueOrDemo();
   const { state } = useLibrary();
+  const exporting = useExportProgress();
   if (!q) return null;
   // An Import filling the open Shoot comes first: it's what the person is waiting on.
   if (state.importing && state.importTotal) {
-    const done = state.importDone ?? state.imported;
-    const left = about(state.importEta);
     const copying = (state.importLabel ?? 'Importing').startsWith('Importing');
-    return (
-      <QueuePopover q={q}>
-        <button className="queue-side" data-testid="queue-progress" title="Background work">
-          <span className="qs-line">
-            <Sparkles size={12} className="qs-icon" />
-            <span className="qs-label">{copying ? 'Import · copying' : state.importLabel}</span>
-            <span className="grow" />
-            <span className="mono faint">
-              {done}/{state.importTotal}
-            </span>
-          </span>
-          <span className="job-bar">
-            <span style={{ width: `${(100 * done) / state.importTotal}%` }} />
-          </span>
-          <span className="qs-meta">
-            {left ?? 'working'} · {levelNow(q)}
-          </span>
-        </button>
-      </QueuePopover>
-    );
+    return <ForegroundRow q={q} label={copying ? 'Import · copying' : (state.importLabel ?? 'Importing')} done={state.importDone ?? state.imported} total={state.importTotal} eta_s={state.importEta ?? null} />;
+  }
+  // Then work this window started outside the Queue (an AI cull from the chat, Auto all):
+  // the person is watching it, and the Queue itself may be idle (Greg, 2026-10-21).
+  if (exporting) return <ForegroundRow q={q} label="Export" done={exporting.done} total={exporting.total} eta_s={exporting.eta_s} />;
+  const fg = q.tasks?.find((t) => FOREGROUND[t.kind]);
+  if (fg) {
+    const label = fg.waiting ? `${FOREGROUND[fg.kind]} · waiting: ${plain(fg.waiting)}` : fg.kind === 'auto' ? fg.label : `${FOREGROUND[fg.kind]} · ${fg.label}`;
+    return <ForegroundRow q={q} label={label} done={fg.done} total={fg.total} eta_s={fg.waiting ? null : fg.eta_s} />;
   }
   const r = q.running;
   const idle = !r && q.queued === 0;

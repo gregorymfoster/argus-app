@@ -31,11 +31,11 @@ function status(running: JobLite | null, queued: JobLite[]): AiStatus {
   let shootQueued = false;
   if (running) {
     if (running.kind === 'suggest' && running.args.photo_id != null) workingIds.add(running.args.photo_id);
-    if ((running.kind === 'cull_shoot' || running.kind === 'suggest_shoot') && forShoot(running)) shootWorking = true;
+    if ((running.kind === 'cull_shoot' || running.kind === 'check_shoot' || running.kind === 'suggest_shoot') && forShoot(running)) shootWorking = true;
   }
   for (const j of queued) {
     if (j.kind === 'suggest' && j.args.photo_id != null) queuedIds.add(j.args.photo_id);
-    if ((j.kind === 'cull_shoot' || j.kind === 'suggest_shoot') && forShoot(j)) shootQueued = true;
+    if ((j.kind === 'cull_shoot' || j.kind === 'check_shoot' || j.kind === 'suggest_shoot') && forShoot(j)) shootQueued = true;
   }
   const of = (id: string, hasTakes: boolean): AiState => {
     // Suggestions waiting to be reviewed: done for now, even if more are queued.

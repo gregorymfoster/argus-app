@@ -471,6 +471,33 @@ await check('smoke-compare-keep-best', async () => {
   await ctx.close();
 });
 
+await check('smoke-stack-toggle', async () => {
+  const { p, ctx } = await page('#/cull');
+  const cover = p.locator('.tile.stk-shut').first();
+  const id = await cover.getAttribute('data-testid');
+  const size = Number((await cover.locator('[data-testid=stack-badge]').textContent()).trim());
+  // S expands the current Stack: its frames number themselves and sit on a band.
+  await cover.click();
+  await p.keyboard.press('s');
+  await p.waitForTimeout(200);
+  const labels = await p.locator('.tile.stk-open [data-testid=stack-badge]').allTextContents();
+  if (labels.length !== size || labels[0] !== `1/${size}`) throw new Error(`frame badges ${labels}`);
+  if (!(await p.locator('[data-testid=stack-band]').count())) throw new Error('no band behind the expanded Stack');
+  // S from another frame collapses and lands back on the cover.
+  await p.keyboard.press('ArrowRight');
+  await p.keyboard.press('s');
+  await p.waitForTimeout(200);
+  if (await p.locator('.tile.stk-open').count()) throw new Error('S did not collapse');
+  if ((await p.locator('.tile.cur').getAttribute('data-testid')) !== id) throw new Error('collapse did not land on the cover');
+  // The band collapses on click too.
+  await p.locator('.tile.stk-shut [data-testid=stack-badge]').first().click();
+  await p.waitForTimeout(200);
+  await p.locator('[data-testid=stack-band]').first().click({ position: { x: 2, y: 40 } });
+  await p.waitForTimeout(200);
+  if (await p.locator('.tile.stk-open').count()) throw new Error('clicking the band did not collapse');
+  await ctx.close();
+});
+
 await check('smoke-bursts-keep-and-next', async () => {
   const { p, ctx } = await page('#/cull');
   await p.keyboard.press('n');

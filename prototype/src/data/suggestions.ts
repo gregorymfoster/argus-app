@@ -9,6 +9,7 @@ import { refreshPolls, usePoll, whileShown } from './poll';
 import { LIVE, chosenProvider, liveShootId } from './live';
 import { PHOTOS, PHOTO_BY_ID } from './dummy';
 import type { Recipe, Suggestion } from '../domain/types';
+import type { EngineTask } from '../ui/Progress';
 
 interface EngineSuggestion {
   id: number;
@@ -47,6 +48,8 @@ export interface QueueStatus {
   thermal_paused?: boolean;
   /** Another Argus process has the model ("`argus cull` is using the model"). */
   model_busy?: string | null;
+  /** What this process runs outside the Queue (an Import, an AI cull from the chat, Auto all). */
+  tasks?: EngineTask[];
 }
 
 /** An engine message for the screen: no Markdown backticks. */

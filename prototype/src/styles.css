@@ -46,6 +46,12 @@
   --panel: #161615;
   --raised: #1f1f1e;
   --raised-2: #262625;
+  /* Stacks: the sheets peeking above a collapsed Stack, the band under an expanded one, its bracket lines. */
+  --stack-sheet-1: #4a4a47;
+  --stack-sheet-2: #343432;
+  --stack-band: rgb(255 255 255 / 0.09);
+  --stack-band-hover: rgb(255 255 255 / 0.14);
+  --stack-line: rgb(255 255 255 / 0.4);
   /* The ground right around a photo (Loupe, Edit, grid cells) is a strictly neutral grey, as in Lightroom,
      so no warmth from the chrome skews color judgment. */
   --canvas: #151515;
@@ -214,7 +220,6 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .stars.live button:hover svg, .stars.live button:has(~ button:hover) svg { color: var(--text) !important; }
 .tile figcaption .stars { margin-right: 6px; }
 .best-badge { position: absolute; top: 8px; right: 8px; z-index: 2; display: inline-flex; align-items: center; gap: 2px; font-family: var(--mono); font-size: 10.5px; padding: 2px 5px; border-radius: 6px; background: rgba(13, 13, 14, 0.72); color: var(--shoot); backdrop-filter: blur(6px); }
-.best-badge.shift { right: 34px; }
 /* In the grid the corner marks are icons, like Lightroom's flags: the photo is the content. */
 .tile .chip, .tile .badge, .tile .best-badge, .tile .takes-badge { height: 18px; padding: 0 5px; border-radius: 4px; font-size: 10.5px; top: 5px; }
 .tile .chip { left: 5px; gap: 3px; }
@@ -222,6 +227,22 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .tile .chip .label { display: none; }
 .tile .badge, .tile .best-badge { right: 5px; display: inline-flex; align-items: center; }
 .tile .takes-badge { top: auto; left: 5px; bottom: 5px; }
+.tile .tile-tr { position: absolute; top: 5px; right: 5px; z-index: 2; display: flex; gap: 3px; }
+.tile .tile-tr .badge, .tile .tile-tr .best-badge { position: static; }
+/* Stacks (Greg, 2026-10-21: make them and expanding them clearer). The count badge carries a layers icon and
+   expands or collapses; expanded frames number themselves 2/6 and the cover keeps the icon. */
+.tile .stack-badge { gap: 3px; cursor: pointer; transition: color var(--fast), box-shadow var(--fast); }
+.tile .stack-badge:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--border-hover); }
+.tile.stk-open:not(.stk-cover) .stack-badge { color: var(--text-2); }
+/* A collapsed Stack is a pile, with sheets peeking out above its cover. */
+.tile.stk-shut { --sheets: 3px -3px 0 -1px var(--stack-sheet-1), 6px -6px 0 -2px var(--stack-sheet-2); box-shadow: var(--sheets); }
+.grid-v.dense .tile.stk-shut { --sheets: 2px -2px 0 -1px var(--stack-sheet-1), 3px -3px 0 -1px var(--stack-sheet-2); }
+.tile.stk-shut.sel { box-shadow: 0 0 0 1px var(--text), var(--sheets); }
+.tile.stk-shut.hl { box-shadow: 0 0 0 2px var(--shoot), var(--sheets); }
+/* An expanded Stack's frames sit on one tinted band behind the tiles (one per grid row); clicking it collapses. */
+.stack-band { position: absolute; z-index: 0; padding: 0; border: none; border-radius: 6px; background: var(--stack-band); cursor: pointer; transition: background var(--fast); }
+.stack-band:hover { background: var(--stack-band-hover); }
+.grid-row > .tile { z-index: 1; }
 .best-view { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; padding: 16px; align-content: start; }
 .best-view .tile.hero { grid-column: span 2; grid-row: span 2; display: flex; flex-direction: column; }
 .best-view .tile.hero .ph { flex: 1; aspect-ratio: auto; min-height: 0; }
@@ -322,7 +343,11 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .filmstrip button { flex: none; width: 66px; aspect-ratio: 3/2; padding: 0; border-radius: 3px; overflow: hidden; border: none; position: relative; opacity: 0.6; background: var(--photo-well); cursor: default; transition: opacity var(--fast); }
 .filmstrip button:hover { opacity: 0.9; }
 .filmstrip button.rejected { opacity: 0.25; }
-.filmstrip button.in-stack { box-shadow: inset 0 -2px 0 var(--shoot); }
+.filmstrip button.stk { overflow: visible; }
+.filmstrip button.stk::after { content: ''; position: absolute; left: -2px; right: -2px; bottom: -4px; height: 2px; background: var(--stack-line); }
+.filmstrip button.stk.stk-first::after { left: 0; }
+.filmstrip button.stk.stk-last::after { right: 0; }
+.filmstrip button.in-stack::after { background: var(--text); }
 .filmstrip .dot { position: absolute; right: 3px; top: 3px; width: 5px; height: 5px; border-radius: 50%; }
 .filmstrip .dot.pick { background: var(--pick); }
 .filmstrip button.on { opacity: 1; outline: 1.5px solid var(--text); outline-offset: -1.5px; }
@@ -382,13 +407,19 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .field:focus { border-color: rgb(217 119 87 / 0.6); box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.2), 0 0 0 3px rgb(217 119 87 / 0.12); }
 .field::placeholder { color: var(--text-3); }
 /* Progress (ui/Progress.tsx): a thin bar that eases forward, or a slow sheen when the amount is unknown. */
-.progress { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
-.progress-head { display: flex; justify-content: space-between; gap: 12px; color: var(--text-2); }
-.progress-track { height: 4px; border-radius: 2px; background: var(--border-strong); overflow: hidden; position: relative; }
-.progress-track > div { height: 100%; border-radius: 2px; background: var(--accent); transition: width 400ms var(--ease-out); }
+.progress { display: flex; flex-direction: column; gap: 5px; font-size: 12px; min-width: 0; }
+.progress-head { display: flex; align-items: baseline; gap: 10px; color: var(--text-2); min-width: 0; line-height: 16px; }
+.progress-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress-meta { flex: none; white-space: nowrap; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.progress-cancel { flex: none; font-size: 12px; color: var(--text-3); background: none; border: 0; padding: 0; cursor: pointer; transition: color var(--fast); }
+.progress-cancel:hover { color: var(--text); }
+.progress-track { height: 2px; border-radius: 999px; background: var(--press); overflow: hidden; position: relative; }
+.progress-track > div { position: relative; height: 100%; min-width: 4px; border-radius: 999px; background: var(--accent); overflow: hidden; transition: width 400ms var(--ease-out); }
+.progress-track:not(.indeterminate) > div::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--on-accent) 40%, transparent), transparent); transform: translateX(-100%); animation: progress-glint 2.2s var(--ease-out) infinite; }
 .progress-track.indeterminate > div { position: absolute; inset: 0 auto 0 0; width: 30%; animation: sheen 1.4s var(--ease-out) infinite; background: linear-gradient(90deg, transparent, var(--accent), transparent); }
 @keyframes sheen { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
-@media (prefers-reduced-motion: reduce) { .progress-track.indeterminate > div { animation: none; width: 100%; opacity: 0.4; } }
+@keyframes progress-glint { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .progress-track.indeterminate > div { animation: none; width: 100%; opacity: 0.4; } .progress-track > div::after { display: none; } }
 .bar { height: 6px; border-radius: 3px; background: var(--border-strong); overflow: hidden; }
 .bar > div { height: 100%; background: var(--accent); transition: width 0.1s linear; }
 .import-strip { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12px; flex: none; }
@@ -527,8 +558,11 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .qs-icon { color: var(--accent); flex: none; }
 .qs-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qs-meta { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.job-bar { display: block; height: 3px; border-radius: 2px; background: rgb(255 255 255 / 0.08); overflow: hidden; }
-.job-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width 400ms var(--ease-out); }
+.qs-count { flex: none; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.job-bar { display: block; position: relative; height: 2px; border-radius: 999px; background: var(--press); overflow: hidden; }
+.job-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width 400ms var(--ease-out); }
+.job-bar.indeterminate > span { position: absolute; inset: 0 auto 0 0; width: 30%; animation: sheen 1.4s var(--ease-out) infinite; background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+@media (prefers-reduced-motion: reduce) { .job-bar.indeterminate > span { animation: none; width: 100%; opacity: 0.4; } }
 /* The Resource meter under Background work (ui/Meter.tsx). */
 .meter-line { display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 2px; padding: 3px 9px; background: none; border: 0; border-radius: 6px; cursor: pointer; font-size: 11px; color: var(--text-2); text-align: left; transition: background var(--fast); }
 .meter-line:hover { background: var(--hover); }

@@ -31,7 +31,7 @@ if (!source) {
   process.exit(2);
 }
 // --only flags,zoom runs just those steps (each one navigates for itself), for a fast loop.
-const STEPS = ['grid', 'flags', 'zoom', 'cull', 'export', 'agent', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views'];
+const STEPS = ['grid', 'flags', 'zoom', 'cancel', 'cull', 'auto', 'export', 'agent', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views'];
 const onlyArg = process.argv.indexOf('--only');
 const only = onlyArg > 0 ? process.argv[onlyArg + 1]?.split(',').filter(Boolean) ?? [] : (process.env.LIVE_ONLY?.split(',').filter(Boolean) ?? []);
 const unknown = only.filter((s) => !STEPS.includes(s));
@@ -122,7 +122,7 @@ const foregroundDir = mkdtempSync(join(tmpdir(), 'argus-foreground-'));
 const bridge = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
   stdio: ['ignore', 'inherit', 'inherit'],
   // Full: never throttle (pause) a real Ollama on this machine during a smoke test.
-  env: { ...process.env, ARGUS_PROVIDER: 'ollama', OLLAMA_HOST: '127.0.0.1:7879', ARGUS_COMPUTE: 'full', ARGUS_REFINE_ROUNDS: '1', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
+  env: { ...process.env, ARGUS_PROVIDER: 'ollama', ARGUS_CULL_CHECK: 'model', OLLAMA_HOST: '127.0.0.1:7879', ARGUS_COMPUTE: 'full', ARGUS_REFINE_ROUNDS: '1', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
 });
 const api = (p, init) => fetch(`http://127.0.0.1:7878${p}`, init).then((r) => r.json());
 for (let i = 0; ; i++) {
@@ -254,6 +254,23 @@ try {
     await zoomMenu('reset');
   }
 
+  if (run('cancel')) {
+    await gotoGrid();
+    // Cancel in the cull's progress row stops it mid-reply, and the cull changes nothing.
+    const before = JSON.stringify((await api(`/api/photos?shoot_id=${shoot.id}`)).map((x) => [x.verdict, x.verdict_by, x.stars, x.stack]));
+    await p.getByPlaceholder(/Cull, fix or explain/).fill('cull this shoot');
+    await p.getByRole('button', { name: 'Send' }).click();
+    await p.getByTestId('cull-progress').getByText(/[1-9]\d* of \d+/).waitFor({ timeout: 10000 });
+    await p.locator('.panel.agent').screenshot({ path: `${out}live-cull-cancel.png` }).catch(() => {});
+    await p.getByTestId('cull-progress-cancel').click();
+    await p.getByText('Cull stopped').waitFor({ timeout: 5000 });
+    await p.locator('.panel.agent').screenshot({ path: `${out}live-cull-stopped.png` }).catch(() => {});
+    const after = JSON.stringify((await api(`/api/photos?shoot_id=${shoot.id}`)).map((x) => [x.verdict, x.verdict_by, x.stars, x.stack]));
+    check(after === before, 'Cancel stopped the AI cull within a moment and changed nothing');
+    const tasks = (await api('/api/progress')).tasks ?? [];
+    check(!tasks.some((t) => t.kind === 'cull'), 'the cull task is gone once stopped');
+  }
+
   if (run('cull')) {
     await gotoGrid();
     // AI cull from the Agent panel, against the mock endpoint. Clear person flags first,
@@ -271,6 +288,8 @@ try {
     await bar.getByText(/[1-9]\d* of \d+/).waitFor({ timeout: 10000 });
     await p.screenshot({ path: `${out}live-cull-progress.png` });
     check(/Culling/.test(await bar.innerText()), 'the cull bar says what the model is doing');
+    check(/AI cull/.test(await p.getByTestId('queue-progress').innerText()), 'Background work in the sidebar shows the running cull');
+    await p.locator('.sidebar-foot').screenshot({ path: `${out}live-cull-sidebar.png` }).catch(() => {});
     await p.getByText('Mock cull.').waitFor({ timeout: 15000 });
     await p.screenshot({ path: `${out}live-culled.png` });
     const culled = await api(`/api/photos?shoot_id=${shoot.id}`);
@@ -300,6 +319,40 @@ try {
       await p.keyboard.press('Escape');
       await p.waitForSelector('.tile');
     }
+  }
+
+  if (run('auto')) {
+    await gotoGrid();
+    // Auto all: a progress row in the chat while the engine measures each Photo, the same
+    // in Background work, then the result with Undo (Greg, 2026-10-21).
+    const before = await Promise.all(photos.map((x) => recipeOf(x.id)));
+    await p.getByTestId('auto-all').click();
+    const row = p.getByTestId('auto-progress');
+    await row.waitFor({ timeout: 10000 });
+    check(/Auto on \d+ Photos?/.test(await row.innerText()), 'Auto all shows a progress row in the chat');
+    await row.getByText(/\d+ of \d+/).waitFor({ timeout: 10000 }).catch(() => {});
+    await p.locator('.panel.agent').screenshot({ path: `${out}live-auto-progress.png` }).catch(() => {});
+    // A fast machine can finish 3 Photos before the sidebar is read: poll, and only let
+    // that pass when Auto was already done.
+    let side = '';
+    let finished = false;
+    for (let i = 0; i < 50; i++) {
+      side = await p.getByTestId('queue-progress').innerText();
+      if (/Auto/.test(side)) break;
+      finished = await p.getByText(/Auto applied to \d+ Photos?/).first().isVisible();
+      if (finished) break;
+      await p.waitForTimeout(100);
+    }
+    await p.locator('.sidebar-foot').screenshot({ path: `${out}live-auto-sidebar.png` }).catch(() => {});
+    check(/Auto/.test(side) || finished, `Background work shows Auto while it runs (got "${side.replace(/\n/g, ' | ')}"${finished ? ', Auto already done' : ''})`);
+    await p.getByText(/Auto applied to \d+ Photos?/).first().waitFor({ timeout: 120000 });
+    await p.locator('.panel.agent').screenshot({ path: `${out}live-auto-done.png` }).catch(() => {});
+    const after = await Promise.all(photos.map((x) => recipeOf(x.id)));
+    check(after.every((g, i) => JSON.stringify(g) !== JSON.stringify(before[i])), 'Auto all changed every Photo in the Library');
+    await p.locator('.panel.agent').getByRole('button', { name: 'Undo' }).last().click();
+    await p.waitForTimeout(1500);
+    const undone = await Promise.all(photos.map((x) => recipeOf(x.id)));
+    check(undone.every((g, i) => JSON.stringify(g) === JSON.stringify(before[i])), 'Undo in the chat put every Recipe back');
   }
 
   if (run('export')) {
@@ -338,7 +391,9 @@ try {
     await p.getByRole('tab', { name: /History/ }).click();
     await p.getByText('Agent: warmer, less contrast').waitFor({ timeout: 5000 });
     const versions = await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
-    check(versions.length === 1 && versions[0].author === 'ai', `History shows the Agent's Version and nothing else (${versions.map((v) => v.label).join(', ')})`);
+    // The auto step above leaves its own batch and its Undo in History; leave those out.
+    const own = versions.filter((v) => !/Auto on \d+ Photos?/.test(v.label));
+    check(own.length === 1 && own[0].author === 'ai', `History shows the Agent's Version and nothing else (${versions.map((v) => v.label).join(', ')})`);
     await p.screenshot({ path: `${out}live-agent-edit.png` });
     await p.locator('.agent').getByRole('button', { name: 'Undo', exact: true }).click();
     await p.waitForTimeout(1000);

@@ -10,7 +10,7 @@ import { zoom } from './ui/zoom';
 import { initialCull } from './agent/agent';
 import { liveCullChat, useAgentRunner } from './agent/AgentPanel';
 import { recipeOf, useLibrary } from './store/library';
-import { autoAction } from './data/auto';
+import { runAuto } from './data/auto';
 import { usePref, type Screen } from './store/variants';
 import { go, useRoute } from './router';
 import { refreshEditStamps } from './data/editedThumbs';
@@ -128,12 +128,12 @@ export function App() {
   useHotkeys('mod+shift+z', () => dispatch({ type: 'redo' }), { preventDefault: true });
 
   // Lightroom's Auto on every Photo of the open Shoot, as one undoable batch.
-  const autoShoot = () => {
-    const ids = PHOTOS.slice(0, state.imported).map((p) => p.id);
-    if (!ids.length) return;
-    dispatch(autoAction(ids, (id) => recipeOf(state, id)));
-    toast(`Auto on ${ids.length} Photo${ids.length > 1 ? 's' : ''}`, { id: 'argus', description: 'Exposure, tone and white balance from each Photo. ⌘Z undoes it.' });
-  };
+  const autoShoot = () =>
+    runAuto(
+      PHOTOS.slice(0, state.imported).map((p) => p.id),
+      (id) => recipeOf(state, id),
+      dispatch,
+    );
   // The AI cull of the whole open Shoot: Verdicts, stars, Stacks and Best Photos.
   const cullShoot = () => {
     if (inCollection()) return void toast('Open a Shoot to cull it', { id: 'argus', description: 'The AI cull compares the Photos of one Shoot.' });
@@ -159,12 +159,7 @@ export function App() {
       {
         label: 'Auto every Photo in the Shoot',
         hint: '⇧A',
-        run: () => {
-          const ids = PHOTOS.slice(0, state.imported).map((p) => p.id);
-          if (!ids.length) return;
-          dispatch(autoAction(ids, (id) => recipeOf(state, id)));
-          toast(`Auto on ${ids.length} Photo${ids.length > 1 ? 's' : ''}`, { id: 'argus', description: 'Exposure, tone and white balance from each Photo. ⌘Z undoes it.' });
-        },
+        run: autoShoot,
       },
       ...(SHOOT.id !== 'none' && !inCollection() ? [{ label: `Remove ${SHOOT.name} from Library…`, run: () => askRemove({ shoot: { id: SHOOT.id, name: SHOOT.name, count: state.imported } }) }] : []),
     ], [state, dispatch]);
