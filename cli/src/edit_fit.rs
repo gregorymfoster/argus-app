@@ -18,6 +18,12 @@
 //!   (or Auto), by the same descent on the whole frame's dE plus the faces' and the sky's;
 //! - `face_scores`, `sky_scores` (with `"scene": true`): the same dE over only the blocks in
 //!   face boxes or the sky, where a Photo has enough of them;
+//! - `sensitivity` (with `"sensitivity": true`): how the render moves with each Basic slider
+//!   at the fit (or Auto): the 10 x 10 matrix JᵀJ / blocks, J the change of every 8 x 8 Lab
+//!   block per unit of each slider (FIT order), by central differences. Near the fit the
+//!   squared render error of a slider guess p is about (p - fit)ᵀ M (p - fit), so a model
+//!   can be trained on rendered error instead of slider distance;
+//! - with `save_plain`, the unedited render at Auto's measuring size as `<dir>/<id>.jpg`;
 //! - `scores`: dE76 to the edit for each named Recipe in the job (flat `{"exposure": 0.3}`
 //!   settings, as `argus edit` takes them), rendered to `save_dir` when given.
 //!
@@ -51,10 +57,23 @@ pub struct Job {
     /// floats, unit length) as `embedding`, for learned scene types.
     #[serde(default)]
     embed: bool,
+    /// Also `sensitivity`: the slider-to-render matrix at the fit (see the module docs).
+    #[serde(default)]
+    sensitivity: bool,
+    /// Save the unedited render at Auto's measuring size here as `<id>.jpg` (for embedding
+    /// models that run outside the engine).
+    save_plain: Option<PathBuf>,
     /// Named Recipes per case id: `{"id": {"auto+head": {"exposure": 0.2}}}`. The name
     /// "auto" in a Recipe's settings is not special; Auto's own values come back in `auto`.
+    /// A setting that isn't a number goes through `Recipe::set_value` (`lensCorrections`,
+    /// point curves).
     #[serde(default)]
-    recipes: BTreeMap<String, BTreeMap<String, BTreeMap<String, f64>>>,
+    recipes: BTreeMap<String, BTreeMap<String, BTreeMap<String, Value>>>,
+    /// Settings every render starts from (Auto, the fit, the scores' Recipes go on top), as
+    /// `recipes` takes them: e.g. `{"clarity": 20}` to ask how close the best Basic sliders
+    /// get with some Clarity.
+    #[serde(default)]
+    base: BTreeMap<String, Value>,
     save_dir: Option<PathBuf>,
     /// Long edge of the saved renders (default: the edit's size, as scored).
     save_edge: Option<usize>,
@@ -144,6 +163,23 @@ fn distance(img: &RgbImage, t: &Target) -> [f64; 4] {
 
 /// [`distance`] over the blocks `weight` (one per block, 0..1) picks out, such as the faces.
 fn weighted_distance(img: &RgbImage, t: &Target, weight: Option<&[f32]>) -> [f64; 4] {
+    let b = aligned_blocks(img, t);
+    let (mut de, mut off, mut n) = (0f64, [0f64; 3], 0f64);
+    for (i, (x, y)) in b.iter().zip(&t.lab).enumerate() {
+        let w = weight.map_or(1.0, |w| w[i] as f64);
+        let d = [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+        de += w * ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) as f64).sqrt();
+        for c in 0..3 {
+            off[c] += w * d[c] as f64;
+        }
+        n += w;
+    }
+    let n = n.max(1e-9);
+    [de / n, off[0] / n, off[1] / n, off[2] / n]
+}
+
+/// `img` cropped to the target's aspect, resized to its size, as Lab block means.
+fn aligned_blocks(img: &RgbImage, t: &Target) -> Vec<[f32; 3]> {
     let mut im = to_image(img);
     let (ta, ia) = (
         t.w as f64 / t.h as f64,
@@ -161,19 +197,7 @@ fn weighted_distance(img: &RgbImage, t: &Target, weight: Option<&[f32]>) -> [f64
         t.h as u32,
         image::imageops::FilterType::Lanczos3,
     );
-    let b = blocks(&im);
-    let (mut de, mut off, mut n) = (0f64, [0f64; 3], 0f64);
-    for (i, (x, y)) in b.iter().zip(&t.lab).enumerate() {
-        let w = weight.map_or(1.0, |w| w[i] as f64);
-        let d = [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
-        de += w * ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) as f64).sqrt();
-        for c in 0..3 {
-            off[c] += w * d[c] as f64;
-        }
-        n += w;
-    }
-    let n = n.max(1e-9);
-    [de / n, off[0] / n, off[1] / n, off[2] / n]
+    blocks(&im)
 }
 
 /// Per-block weights for the faces and the sky of an Analysis, on the target's block grid
@@ -215,6 +239,15 @@ fn region_weights(a: &argus_engine::masks::Analysis, t: &Target) -> [Option<Vec<
     ]
 }
 
+/// The Adjust an `adjust_json` object describes.
+fn fit_adjust(v: &Value) -> Adjust {
+    let mut g = Adjust::default();
+    for (k, ..) in FIT {
+        *slot(&mut g, k) = v[*k].as_f64().unwrap_or(0.0);
+    }
+    g
+}
+
 fn adjust_json(a: &Adjust) -> Value {
     Value::Object(
         FIT.iter()
@@ -240,7 +273,14 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
     let edge = target.w.max(target.h);
     let d = Demosaiced::new(&raw, edge).ok_or_else(|| e(&"RAW smaller than the edit"))?;
     let small = Demosaiced::new(&raw, argus_engine::auto::MEASURE_EDGE).unwrap();
-    let base = Recipe::default();
+    let mut base = Recipe::default();
+    for (k, v) in &job.base {
+        match v.as_f64() {
+            Some(x) => argus_engine::suggest::apply_setting(&mut base, k, x, false),
+            None => base.set_value(k, v, false),
+        }
+        .map_err(|x| e(&x))?;
+    }
     let render = |d: &Demosaiced, a: &Adjust| {
         let r = Recipe {
             global: base.global.plus(a),
@@ -290,6 +330,11 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
             .map(|x| (x * 1e5).round() / 1e5)
             .collect::<Vec<_>>());
     }
+    if let Some(dir) = &job.save_plain {
+        to_image(&none_small)
+            .save(dir.join(format!("{}.jpg", c.id)))
+            .map_err(|x| e(&x))?;
+    }
     if let Some(a) = &analysis {
         out["scene"] = Value::Object(Map::from_iter(
             argus_engine::edit_head::scene_features(&none_small, a)
@@ -329,15 +374,44 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
         out["fit"] = adjust_json(&x);
         out["fit_dE"] = json!(rnd(score(&x)));
     }
+    if job.sensitivity {
+        let at = match out.get("fit") {
+            Some(_) => fit_adjust(&out["fit"]),
+            None => auto.clone(),
+        };
+        let cols: Vec<Vec<f32>> = FIT
+            .iter()
+            .map(|(k, step, lo, hi)| {
+                let h = step * 0.25;
+                let side = |sign: f64| {
+                    let mut y = at.clone();
+                    let v = (get(&at, k) + sign * h).clamp(*lo, *hi);
+                    *slot(&mut y, k) = v;
+                    (aligned_blocks(&render(&d, &y), &target), v)
+                };
+                let ((bp, vp), (bm, vm)) = (side(1.0), side(-1.0));
+                let dv = (vp - vm).max(1e-9) as f32;
+                bp.iter()
+                    .zip(&bm)
+                    .flat_map(|(p, m)| (0..3).map(move |c| (p[c] - m[c]) / dv))
+                    .collect()
+            })
+            .collect();
+        let n = (cols[0].len() / 3).max(1) as f64;
+        let m: Vec<Vec<f64>> = cols
+            .iter()
+            .map(|a| {
+                cols.iter()
+                    .map(|b| a.iter().zip(b).map(|(x, y)| (x * y) as f64).sum::<f64>() / n)
+                    .map(|v| (v * 1e6).round() / 1e6)
+                    .collect()
+            })
+            .collect();
+        out["sensitivity"] = json!(m);
+    }
     if let (true, Some(a)) = (job.fit_local, &analysis) {
         let global = match out.get("fit") {
-            Some(f) => {
-                let mut g = Adjust::default();
-                for (k, ..) in FIT {
-                    *slot(&mut g, k) = f[*k].as_f64().unwrap_or(0.0);
-                }
-                g
-            }
+            Some(f) => fit_adjust(f),
             None => auto.clone(),
         };
         let c = a.coverage();
@@ -411,9 +485,15 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
         for (name, settings) in rs {
             let mut r = Recipe::default();
             for (k, v) in settings {
-                argus_engine::suggest::apply_setting(&mut r, k, *v, false).map_err(|x| e(&x))?;
+                match v.as_f64() {
+                    Some(x) => argus_engine::suggest::apply_setting(&mut r, k, x, false),
+                    None => r.set_value(k, v, false),
+                }
+                .map_err(|x| e(&x))?;
             }
-            let img = d.finish(&Look::DEFAULT, &r, analysis.as_ref());
+            let mut img = d.finish(&Look::DEFAULT, &r, analysis.as_ref());
+            // Post-crop Vignette and Grain, as render_photo adds them.
+            argus_engine::effects::post_crop(&mut img, &r.render_adjust());
             scores.insert(name.clone(), json!(rnd(distance(&img, &target))));
             if let Some([faces, sky]) = &regions {
                 if let Some(w) = faces {
@@ -428,7 +508,11 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
             let wanted = job.save.as_ref().is_none_or(|s| s.contains(name));
             if let (Some(dir), true) = (&job.save_dir, wanted) {
                 let img = match &big {
-                    Some(b) => b.finish(&Look::DEFAULT, &r, analysis.as_ref()),
+                    Some(b) => {
+                        let mut big = b.finish(&Look::DEFAULT, &r, analysis.as_ref());
+                        argus_engine::effects::post_crop(&mut big, &r.render_adjust());
+                        big
+                    }
                     None => img,
                 };
                 let path = dir.join(format!("{}_{name}.jpg", c.id));

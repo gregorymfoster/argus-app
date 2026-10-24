@@ -4,7 +4,7 @@
 
 import type { Photo, Verdict } from './types';
 
-export type SortKey = 'capture' | 'stars' | 'flag' | 'file';
+export type SortKey = 'capture' | 'stars' | 'flag' | 'file' | 'keepers';
 export interface Sort {
   key: SortKey;
   desc: boolean;
@@ -15,6 +15,8 @@ export const SORTS: { key: SortKey; label: string; short: string; desc: boolean;
   { key: 'stars', label: 'Stars', short: 'Stars', desc: true, dirs: ['Fewest first', 'Most first'] },
   { key: 'flag', label: 'Flag', short: 'Flag', desc: true, dirs: ['Rejects first', 'Picks first'] },
   { key: 'file', label: 'File name', short: 'Name', desc: false, dirs: ['A to Z', 'Z to A'] },
+  // Ours, not Lightroom's: the frames ahead re-order as you flag (data/keepers.ts).
+  { key: 'keepers', label: 'Keepers first', short: 'Keepers', desc: false, dirs: ['Likeliest first', 'Likeliest last'] },
 ];
 
 const DEFAULT_SORT: Sort = { key: 'capture', desc: false };
@@ -34,13 +36,23 @@ const FLAG_RANK: Record<Verdict, number> = { reject: 0, unflagged: 1, pick: 2 };
 export interface SortFacts {
   stars: (id: string) => number;
   verdict: (id: string) => Verdict | null;
+  /** Keepers first: each Photo's place in the held order (lower first). */
+  keeper?: (id: string) => number;
 }
 
 /** `photos` in `sort` order. `stacks` keeps each Stack together behind its best frame. */
 export function sortPhotos(photos: Photo[], sort: Sort, facts: SortFacts, stacks = true): Photo[] {
   if (sort.key === 'capture' && !sort.desc) return [...photos].sort((a, b) => a.index - b.index);
   const value = (p: Photo): number | string =>
-    sort.key === 'stars' ? facts.stars(p.id) : sort.key === 'flag' ? FLAG_RANK[facts.verdict(p.id) ?? 'unflagged'] : sort.key === 'file' ? p.file.toLowerCase() : p.index;
+    sort.key === 'stars'
+      ? facts.stars(p.id)
+      : sort.key === 'flag'
+        ? FLAG_RANK[facts.verdict(p.id) ?? 'unflagged']
+        : sort.key === 'file'
+          ? p.file.toLowerCase()
+          : sort.key === 'keepers'
+            ? (facts.keeper?.(p.id) ?? p.index)
+            : p.index;
   // Each Stack sorts by the frame it shows collapsed: its best Pick, else its best frame.
   const leadRank = (p: Photo) => (facts.verdict(p.id) === 'pick' ? -100 : 0) + (p.stackRank ?? 0);
   const lead = new Map<string, Photo>();

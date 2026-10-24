@@ -59,11 +59,25 @@ impl Chat for Fake {
 }
 
 fn library(n: u8, garbage: bool) -> (tempfile::TempDir, Tools, Vec<i64>, Seen) {
+    library_of(
+        |src| {
+            for i in 0..n {
+                write_jpeg(&src.join(format!("p{i:02}.jpg")), i * 2 + 3);
+            }
+        },
+        garbage,
+    )
+}
+
+/// A Library of one Shoot imported from the files `fill` writes into its card folder.
+fn library_of(
+    fill: impl FnOnce(&Path),
+    garbage: bool,
+) -> (tempfile::TempDir, Tools, Vec<i64>, Seen) {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("2026-10-12_tahoe");
-    for i in 0..n {
-        write_jpeg(&src.join(format!("p{i:02}.jpg")), i * 2 + 3);
-    }
+    std::fs::create_dir_all(&src).unwrap();
+    fill(&src);
     let seen: Seen = Arc::default();
     let s = seen.clone();
     let tools = Tools::new(tmp.path().join("Argus.library")).with_chats(move |_, _, _| {
@@ -387,6 +401,167 @@ fn apply_to_the_rest_makes_a_look_from_the_hero_and_matched_suggestions_for_the_
         .collect();
     assert_eq!(refs.len(), 2);
     assert_eq!(refs[0]["recipe"]["look"], format!("{look_id}-2"));
+}
+
+#[test]
+fn apply_to_the_rest_on_raws_leads_with_the_shoot_match() {
+    let raws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw");
+    let mut found: Vec<_> = std::fs::read_dir(&raws)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "ARW"))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if found.len() < 2 {
+        eprintln!("jobs: fewer than two fixtures/raw/*.ARW, skipping");
+        return;
+    }
+    let (_t, tools, ids, seen) = library_of(
+        |src| {
+            for f in &found[..2] {
+                std::fs::copy(f, src.join(f.file_name().unwrap())).unwrap();
+            }
+        },
+        false,
+    );
+    let (hero, other) = (ids[0], ids[1]);
+    tools
+        .call(
+            "edit_recipe",
+            json!({ "photo_ids": [hero], "set": { "temp": 40, "contrast": 30 } }),
+        )
+        .unwrap();
+    tools
+        .call("match_to_photo", json!({ "photo_id": hero }))
+        .unwrap();
+    jobs::drain(&tools, Compute::Full).unwrap();
+
+    let list = json1(&tools, "list_suggestions", json!({ "photo_id": other }));
+    let matched: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["reference_id"] == hero)
+        .collect();
+    assert_eq!(matched.len(), 2, "the Shoot match and one model take");
+    assert_eq!(matched[0]["title"], "Shoot match");
+    assert_eq!(matched[1]["title"], "Closest match");
+    let g = &matched[0]["recipe"]["global"];
+    assert!(
+        matched[0]["recipe"]["look"].is_string(),
+        "under the hero's Look"
+    );
+    // Under the Look (temp +40) the Shoot match sets this Photo's own Basic sliders: some
+    // move, as the model reads its own scene (a plain copy would leave them all at 0).
+    assert!(
+        g.as_object().is_some_and(|o| !o.is_empty()),
+        "own sliders: {g}"
+    );
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(system, _)| system.contains("reference Photo"))
+        .count();
+    assert_eq!(asked, 1, "one model request for the remaining take");
+}
+
+#[test]
+fn a_hand_edit_pre_edits_the_picks_with_a_shoot_match_until_the_person_answers() {
+    let raws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw");
+    let mut found: Vec<_> = std::fs::read_dir(&raws)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "ARW"))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if found.len() < 3 {
+        eprintln!("jobs: fewer than three fixtures/raw/*.ARW, skipping");
+        return;
+    }
+    let (_t, tools, ids, seen) = library_of(
+        |src| {
+            for f in &found[..3] {
+                std::fs::copy(f, src.join(f.file_name().unwrap())).unwrap();
+            }
+        },
+        false,
+    );
+    let (hero, pick, unflagged) = (ids[0], ids[1], ids[2]);
+    tools
+        .call(
+            "set_verdict",
+            json!({ "photo_ids": [pick], "verdict": "pick" }),
+        )
+        .unwrap();
+    let edit = |temp: i64| {
+        argus_engine::commands::dispatch(
+            &tools,
+            "edit",
+            json!({ "photo_id": hero, "recipe": { "global": { "temp": temp, "contrast": 30, "saturation": 12 } } }),
+        )
+        .unwrap();
+        jobs::drain(&tools, Compute::Full).unwrap();
+    };
+    let matches = |id: i64| -> Vec<Value> {
+        json1(
+            &tools,
+            "list_suggestions",
+            json!({ "photo_id": id, "all": true }),
+        )
+        .as_array()
+        .unwrap()
+        .clone()
+    };
+    edit(40);
+    let m = matches(pick);
+    assert_eq!(m.len(), 1, "one Shoot match for the Pick: {m:?}");
+    assert_eq!(
+        (
+            m[0]["title"].as_str(),
+            m[0]["status"].as_str(),
+            m[0]["reference_id"].as_i64()
+        ),
+        (Some("Shoot match"), Some("open"), Some(hero))
+    );
+    assert_eq!(
+        m[0]["recipe"]["global"]["saturation"], 12.0,
+        "the hero's other sliders come along, as Sync brings them"
+    );
+    assert!(matches(unflagged).is_empty(), "not a Pick or likely keeper");
+    let recipe = json1(&tools, "read_recipe", json!({ "photo_id": pick }));
+    assert!(
+        recipe.get("version").is_none_or(Value::is_null),
+        "nothing changes until the person accepts: {recipe}"
+    );
+    assert!(seen.lock().unwrap().is_empty(), "no model asked");
+
+    // Another hand edit makes it stale; the next run works it out again.
+    edit(-20);
+    let again = matches(pick);
+    assert_eq!(again.len(), 1);
+    assert_ne!(
+        again[0]["recipe"], m[0]["recipe"],
+        "worked out again from the new edit"
+    );
+
+    // Accepted, it is the person's answer: later edits leave it alone.
+    tools
+        .call(
+            "accept_suggestion",
+            json!({ "suggestion_id": again[0]["id"] }),
+        )
+        .unwrap();
+    edit(10);
+    let after = matches(pick);
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert_eq!(after[0]["status"], "accepted");
 }
 
 #[test]

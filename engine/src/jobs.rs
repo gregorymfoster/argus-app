@@ -41,12 +41,16 @@ use std::time::Duration;
 ///   ([`crate::meaning::download`], progress in MB), then an `analyze` of the whole Library
 /// - `denoise` {photo_id}: AI Denoise's base for one RAW ([`crate::denoise`]), queued when a
 ///   Recipe with a Denoise Amount is saved
+/// - `pre_edit_shoot` {shoot_id}: edit as you cull, a Shoot match Suggestion for each Pick and
+///   likely keeper from the Shoot's hand edits ([`crate::pre_edit`], no model), queued when the
+///   person saves an edit of a RAW and when the AI's stars refresh
 pub const KINDS: &[&str] = &[
     "learn_edits",
     "rank_presets",
     "tag_photos",
     "analyze",
     "denoise",
+    "pre_edit_shoot",
     "download_model",
     "suggest",
     "suggest_shoot",
@@ -337,6 +341,11 @@ pub fn enqueue(
                 PRIORITY_OTHER,
             )
         }
+        "pre_edit_shoot" => (
+            shoot("Shoot match"),
+            format!("pre_edit_shoot:{}", id("shoot_id").unwrap_or(0)),
+            PRIORITY_MATCH,
+        ),
         "download_model" => (
             "Downloading search by meaning".to_string(),
             "download_model".to_string(),
@@ -470,6 +479,20 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
         }
         "suggest_shoot" => suggest_shoot(tools, job),
         "match_hero" => match_hero(tools, job),
+        "pre_edit_shoot" => {
+            #[derive(Deserialize)]
+            struct A {
+                shoot_id: ShootId,
+            }
+            let a: A = args(job)?;
+            let mut lib = Library::open(tools.library())?;
+            let progress = Library::open(tools.library())?;
+            let id = job.id;
+            let report = crate::pre_edit::run(&mut lib, a.shoot_id, Some(id), &|done, total| {
+                let _ = progress.job_progress(id, done as i64, total as i64);
+            })?;
+            serde_json::to_value(report).map_err(|e| Error(format!("pre-edit: {e}")))
+        }
         "cull_shoot" | "check_shoot" => {
             #[derive(Deserialize)]
             struct A {

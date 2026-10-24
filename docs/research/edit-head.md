@@ -111,3 +111,34 @@ Greg asked for a "god tier" edit model: sort the photo into kinds first (learned
 **What 2,704 of Greg's XMPs say** (first pairs batch, `bench/crs.py` maps crs to Recipe units). His signature is nearly constant: Highlights -63 (sd 17), Shadows +47 (sd 15), Vibrance +14, a magenta Tint +12, sharpening at the default 40, Adobe Standard on 93%. Beyond Basic he uses HSL on 60% of photos, a vignette on 53% (about -2 to -9), luminance noise reduction on 32% (up to 18), Clarity 24%, Texture 16%, colour grading 10% (midtones) and 7% (shadows), Dehaze 5%, crop only 3%, masks 1%. The point curve on 89% is Lightroom's default Medium Contrast, not an edit. Discrete edit styles explain little: k-means on his sliders explains 22% of their variance at 3 styles and 40% at 8, and capture year alone 15% (2023 has its own look: brighter Whites, Blacks lifted, more Clarity and vignette). So his edits are one style plus continuous per-photo tweaks, and the model should be a continuous predictor from the image (gated or not), weighting recent years, rather than a classifier into named kinds.
 
 **Next.** Pairs need their RAWs to train on (510 2017 RAWs on the drive now; 2022-2026 wait on Greg's Lightroom export). Tone and colour train on Argus-space targets fitted to his finished JPEG (`edit-fit`), since Lightroom's and Argus's renders differ; vignette, noise, sharpening, grain and crop train on the crs values directly.
+
+## 2026-10-23 · Thirty times the data, same edit
+
+Trained on Greg's RAW and edit pairs (about 3,000 to 3,500 pairs a fold, after leaving out the test fold and every pair from a held-out bench day) and rendered on the 100 cloud bench RAWs, held out by bench day in five folds (`bench/whole_edit_render.py`). Mean dE to his finished JPEG: Auto 11.79, ridge-scene 10.02, plus image embedding 10.01, plus capture date 9.96, best sliders 5.16. The shipped head scores 9.56, but it was trained on these very Photos, so that number is in-sample. The scene head trained on 150 bench Photos and held out by day scored 9.93 to 10.09, so 30 times the data buys nothing in pixels.
+
+The slider-space screen (`bench/whole_edit.py`, 3,964 pairs) agreed: embedding 0.916 z-MSE and today's recipe 0.924. Capture date adds a little (0.911, white balance and vibrance), a small numpy MLP on the same inputs is worse (0.946, with saturation far off), and the learned scene types fell behind once data grew. A global slider offset predicted from the image seems to plateau around dE 10, while the best global sliders reach 5. The other half is per-photo intent that these inputs don't carry. Next: Greg's blind repeat edit (how close he comes to himself), local and Mask moves, and a stronger embedding on the Mac.
+
+## 2026-10-23 · Greg's experiments: Masks, rendered error, a bigger image model
+
+**Masks (3).** Only 293 of 6,737 XMPs (4%) hold any Mask, and 244 of those carry the same four-part people preset: Facial Skin (Texture -20, Clarity -10), Iris and Pupil (+0.09 EV, Saturation +40, Clarity +10), Eye Sclera and Teeth (+0.04 EV, Saturation -60). It's a per-shoot choice and a recent habit (every photo of 2026-10-10, 82% of 2026-07-01, nothing before 2023). The Photo alone can't predict it: 1.6% of photos with faces got it, flat across face sizes. Other Masks (Subject, brushes, gradients, sky) are on under 1%. So Argus should offer his preset as a Retouch and sync it across a Shoot, not learn Masks per photo.
+
+**Rendered error (4).** `argus edit-fit` now reports `sensitivity`, the 10 x 10 matrix JᵀJ of how far the render's Lab blocks move per unit of each Basic slider at the fit. `whole_edit.gls_ridge` trains on (p - fit)ᵀ M (p - fit) instead of slider distance, so a slider that barely changes a Photo stops pulling the model there. First check, trained on the bench's own other days (80 Photos a fold): ridge-emb-year 10.04 → 9.85 dE, ridge-scene 10.08 → 10.02. On the Mac's larger bench (139 Photos, 111 a fold) it went the other way: ridge-emb-year 10.52 → 10.67, ridge-scene 10.54 → 10.70. So on bench-sized data it's noise, not a gain. The real test is the pairs (about 3,000 a fold), which need re-running for their sensitivity (the RAWs are on the external drive).
+
+**SigLIP 2 (5).** `bench/embed_siglip.py` embeds the unedited renders that `edit-fit` `save_plain` writes, on the Mac (Hugging Face is blocked in the cloud). `whole_edit_render.py --siglip` adds ridge-siglip-year. On the Mac's 139-Photo bench, trained on its other days: ridge-siglip-year 10.51 against ridge-emb-year (MobileNet) 10.52 and the in-sample head 10.28. A tie at bench size, and on rendered error 10.59. The pairs run decides both.
+
+**On all the pairs (2026-10-24).** The Mac re-ran every pair for `sensitivity` and the plain render overnight, then SigLIP 2: 6,864 pairs, 4,991 usable for training (fitted, fit dE 12 or less, not the test fold, not a bench day). Rendered on the 99 cloud bench RAWs, bench days held out five ways:
+
+| method | dE | worst vs Auto |
+|---|---|---|
+| Auto | 11.78 | |
+| shipped head (in-sample) | 9.57 | +3.3 |
+| ridge-scene | 10.22 | +12.8 |
+| ridge-emb (MobileNet) | 10.16 | +10.4 |
+| ridge-emb-year | 10.23 | +11.5 |
+| ridge-siglip-year | 10.02 | +9.0 |
+| ridge-scene-rendered | 10.66 | +17.2 |
+| ridge-emb-year-rendered | 10.36 | +11.0 |
+| ridge-siglip-year-rendered | 10.12 | +8.1 |
+| best sliders | 5.18 | |
+
+Training on rendered error makes things worse at scale, so it's dropped. SigLIP 2 is the best image input so far (0.15 to 0.2 under MobileNet, with smaller worst cases), but it doesn't beat the bench-trained head (9.93 to 10.09 held out), and shipping it would add a ~400 MB model to the app. None of experiments 3, 4 or 5 moves the edit past the ~10 dE plateau. The open lever is Shoot context (the "Auto-edit model research" thread, `bench/shoot_style.py`).

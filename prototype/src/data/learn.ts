@@ -1,12 +1,14 @@
 // Learn as you cull: once the person has flagged a few Picks and Rejects, the AI's stars on the
 // rest of the Shoot refresh from them (engine `rerate_shoot`, the Taste head on the Photos'
 // embeddings), so likely keepers rise while they cull. Only the AI's stars change; flags,
-// Stacks and the person's own stars stay, and it is not an Undo step.
+// Stacks and the person's own stars stay, and it is not an Undo step. Each refresh also hands
+// back the Keepers first order (data/keepers.ts), the likeliest keeper first.
 
 import { useEffect, useRef, useState } from 'react';
 import { LIVE, liveShootId, readCull, type CullState } from './live';
 import { call } from './backend';
 import { PHOTOS } from './dummy';
+import { keepersOrder } from './keepers';
 import type { Action, State } from '../store/library';
 
 /** Fewest Picks and fewest Rejects before the AI reads anything into them (engine `taste::MIN_FLAGS`). */
@@ -38,8 +40,9 @@ export function useLearnAsYouCull(state: State, dispatch: (a: Action) => void, o
   useEffect(() => {
     if (!on || !culled) return;
     const t = setTimeout(() => {
-      void (LIVE ? rerateLive() : rerateDemo(latest.current)).then(({ learning, changed, states }) => {
+      void (LIVE ? rerateLive() : rerateDemo(latest.current)).then(({ learning, changed, states, order }) => {
         if (states) dispatch(states);
+        if (order) keepersOrder(order, (id) => latest.current.overrides[id] != null);
         setL({ picks, rejects, learning, changed, at: Date.now() });
       });
     }, REST_MS);
@@ -48,18 +51,18 @@ export function useLearnAsYouCull(state: State, dispatch: (a: Action) => void, o
   return { ...l, picks, rejects };
 }
 
-type Rerated = { learning: boolean; changed: number; states?: Action };
+type Rerated = { learning: boolean; changed: number; states?: Action; order?: string[] };
 
 async function rerateLive(): Promise<Rerated> {
-  const r = await call<{ learning: boolean; changed: number }>('rerate_shoot', { shoot_id: liveShootId() });
-  if (!r.changed) return r;
-  return { ...r, states: { type: 'cull/states', states: await readCull(PHOTOS.map((p) => p.id)) } };
+  const r = await call<{ learning: boolean; changed: number; order?: number[] }>('rerate_shoot', { shoot_id: liveShootId() });
+  const order = r.order?.map(String);
+  if (!r.changed) return { ...r, order };
+  return { ...r, order, states: { type: 'cull/states', states: await readCull(PHOTOS.map((p) => p.id)) } };
 }
 
 /** The demo's stand-in for the Taste head: each Photo's few signals, from Rejects towards Picks. */
 async function rerateDemo(s: State): Promise<Rerated> {
   const { picks, rejects } = mine(s);
-  if (picks < MIN_FLAGS || rejects < MIN_FLAGS) return { learning: false, changed: 0 };
   const feat = (id: string) => {
     const p = PHOTOS.find((x) => x.id === id)!;
     const [open, of] = p.signals.eyesOpen;
@@ -67,16 +70,19 @@ async function rerateDemo(s: State): Promise<Rerated> {
   };
   const mean = (ids: string[]) => ids.map(feat).reduce((a, b) => a.map((x, i) => x + b[i] / ids.length), [0, 0, 0, 0]);
   const by = (v: string) => Object.entries(s.overrides).filter(([, x]) => x === v).map(([id]) => id);
+  const learning = picks >= MIN_FLAGS && rejects >= MIN_FLAGS;
   const [p, r] = [mean(by('pick')), mean(by('reject'))];
-  const dir = p.map((x, i) => x - r[i]);
+  // Before there is enough to learn from, the faces' stand-in alone: expression and open eyes.
+  const dir = learning ? p.map((x, i) => x - r[i]) : [0, 0.5, 0, 1];
   const ids = Object.keys(s.aiStars).filter((id) => (s.overrides[id] ?? s.aiVerdicts[id]) !== 'reject');
   const score = (id: string) => feat(id).reduce((a, x, i) => a + x * dir[i], 0);
   const ranked = [...ids].sort((a, b) => score(b) - score(a));
+  if (!learning) return { learning: false, changed: 0, order: ranked };
   const stars = Object.fromEntries(ranked.map((id, i) => {
     const q = i / Math.max(1, ranked.length);
     return [id, q < 0.1 ? 5 : q < 0.35 ? 4 : q < 0.7 ? 3 : 2];
   }));
   const changed = ids.filter((id) => stars[id] !== s.aiStars[id]);
   const states: CullState[] = changed.map((id) => ({ id: Number(id), verdict: s.aiVerdicts[id] ?? 'unflagged', verdict_by: 'ai', stars: stars[id], stars_by: 'ai' }));
-  return { learning: true, changed: changed.length, states: changed.length ? { type: 'cull/states', states } : undefined };
+  return { learning: true, changed: changed.length, states: changed.length ? { type: 'cull/states', states } : undefined, order: ranked };
 }

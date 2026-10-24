@@ -251,6 +251,7 @@ enum Cmd {
     /// Work through the background queue (Suggestions, "apply to the rest", culls) by the
     /// app's rules: on battery, while the Mac runs hot or before overnight, held jobs wait.
     /// With --once, stop when nothing more may run now, else keep watching until stopped.
+    /// --drain stops when the queue is empty.
     Work {
         #[arg(long)]
         library: PathBuf,
@@ -589,7 +590,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("the Library has no Shoots")?,
             };
             let provider = argus_engine::cull::cull_provider(check, provider.as_deref(), |name| {
-                argus_engine::cull::provider(name, compute)
+                argus_engine::providers::provider(name, compute)
             })?;
             let t = Instant::now();
             let report = argus_engine::cull::cull_shoot_with(
@@ -659,7 +660,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 };
                 match jobs::run_next_holding(&tools, compute.unwrap_or(c), min, held)? {
                     Some(job) => println!("{}", serde_json::to_string(&job)?),
-                    None if once => {
+                    // --drain runs everything now, so an empty pick means the queue is done.
+                    None if once || drain => {
                         let left = lib.queue_summary()?.queued;
                         if left > 0 {
                             eprintln!(

@@ -215,74 +215,123 @@ fn radius(k: usize) -> f32 {
     (k as f32 / LAYERS as f32).powf(1.5)
 }
 
-/// Blur `cam` (upright linear RGB, `w` x `h`, interleaved) in place by [`Plan`].
-pub fn apply(cam: &mut [f32], w: usize, h: usize, plan: &Plan) {
+/// `cam` (upright linear RGB, `w` x `h`, interleaved) blurred by [`Plan`].
+///
+/// Every blurred layer is built, blurred and stacked at a working size `f` times smaller
+/// than the image (its smallest blur still spans a pixel or two there), so a 60 MP photo
+/// costs about what a 4 MP one would: only the sharp layer and the last blend run at full
+/// size. The far layers stack under the sharp one and the near layers over it.
+pub fn apply(cam: &[f32], w: usize, h: usize, plan: &Plan) -> Vec<f32> {
     let lb = plan.blur;
     let max_r = MAX_RADIUS * (lb.amount as f32 / 100.0) * w.max(h) as f32;
-    if max_r < 0.5 || plan.defocus.len() != w * h {
-        return;
+    if max_r < 0.5 || plan.defocus.len() != w * h || cam.len() != w * h * 3 {
+        return cam.to_vec();
     }
     // Boost: highlights out of focus get brighter, so their discs bloom like real ones.
     let boost = lb.boost as f32 / 100.0 * 3.0;
-    let src: Vec<[f32; 3]> = cam
-        .par_chunks(3)
-        .zip(plan.defocus)
-        .map(|(p, s)| {
-            let lum = 0.3 * p[0] + 0.55 * p[1] + 0.15 * p[2];
-            let g = 1.0 + boost * smoothstep(0.4, 1.0, lum) * (s.abs() * 4.0).min(1.0);
-            [p[0] * g, p[1] * g, p[2] * g]
-        })
-        .collect();
+    let d = plan.defocus;
+    let f = ((radius(1) * max_r / 1.5).floor() as usize).max(1);
+    let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
 
-    // Far layers first, then the focal range, then the near ones.
-    let order = (1..=LAYERS)
-        .rev()
-        .map(|k| (k, -1.0f32))
-        .chain(std::iter::once((0, 0.0)))
-        .chain((1..=LAYERS).map(|k| (k, 1.0f32)));
-    let mut acc = vec![[0f32; 4]; w * h];
-    for (k, side) in order {
-        let t = radius(k);
-        let member: Vec<f32> = plan
-            .defocus
-            .par_iter()
-            .map(|&s| {
-                if k > 0 && s * side <= 0.0 {
-                    return 0.0;
+    let src = cam;
+    // How far out of focus each side goes, so layers nothing reaches are skipped unread.
+    let (far_max, near_max) = d
+        .par_iter()
+        .fold(|| (0f32, 0f32), |(f, n), &s| (f.max(-s), n.max(s)))
+        .reduce(|| (0.0, 0.0), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+    // Layer `k` on one `side` (-1 far, 1 near) as premultiplied RGBA at the working size,
+    // or None when no pixel belongs to it.
+    let layer = |k: usize, side: f32| -> Option<Vec<[f32; 4]>> {
+        if radius(k - 1) >= if side < 0.0 { far_max } else { near_max } {
+            return None;
+        }
+        let out: Vec<[f32; 4]> = (0..sw * sh)
+            .into_par_iter()
+            .map(|i| {
+                let (x0, y0) = ((i % sw) * f, (i / sw) * f);
+                let (x1, y1) = ((x0 + f).min(w), (y0 + f).min(h));
+                let mut o = [0f32; 4];
+                for y in y0..y1 {
+                    for j in y * w + x0..y * w + x1 {
+                        let s = d[j];
+                        if s * side <= 0.0 {
+                            continue;
+                        }
+                        let m = weight(s.abs(), k);
+                        if m > 0.0 {
+                            let p = boosted(&src[j * 3..j * 3 + 3], s, boost);
+                            o = [o[0] + p[0] * m, o[1] + p[1] * m, o[2] + p[2] * m, o[3] + m];
+                        }
+                    }
                 }
-                weight(s.abs(), k)
+                let n = ((x1 - x0) * (y1 - y0)) as f32;
+                o.map(|v| v / n)
             })
             .collect();
-        if member.par_iter().all(|m| *m < 1e-3) {
-            continue;
+        out.par_iter().any(|p| p[3] > 1e-3).then_some(out)
+    };
+    let stack = |ks: &mut dyn Iterator<Item = usize>, side: f32| {
+        let mut acc = vec![[0f32; 4]; sw * sh];
+        for k in ks {
+            let Some(l) = layer(k, side) else { continue };
+            let l = bokeh_blur(&l, sw, sh, radius(k) * max_r / f as f32, lb.bokeh);
+            acc.par_iter_mut().zip(&l).for_each(|(a, l)| over(a, l));
         }
-        let layer: Vec<[f32; 4]> = src
-            .par_iter()
-            .zip(&member)
-            .map(|(p, &m)| [p[0] * m, p[1] * m, p[2] * m, m])
-            .collect();
-        let layer = if k == 0 {
-            layer
-        } else {
-            bokeh_blur(&layer, w, h, t * max_r, lb.bokeh)
-        };
-        acc.par_iter_mut().zip(&layer).for_each(|(a, l)| {
-            let keep = 1.0 - l[3].clamp(0.0, 1.0);
-            for c in 0..4 {
-                a[c] = l[c] + a[c] * keep;
-            }
-        });
-    }
-    cam.par_chunks_mut(3)
-        .zip(&acc)
-        .zip(&src)
-        .for_each(|((o, a), s)| {
+        acc
+    };
+    let far = stack(&mut (1..=LAYERS).rev(), -1.0);
+    let near = stack(&mut (1..=LAYERS), 1.0);
+
+    let inv = 1.0 / f as f32;
+    let mut out = vec![0f32; w * h * 3];
+    out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+        let sy = ((y as f32 + 0.5) * inv - 0.5).clamp(0.0, sh as f32 - 1.0);
+        for (x, o) in row.chunks_mut(3).enumerate() {
+            let j = y * w + x;
+            let s = d[j];
+            let sx = ((x as f32 + 0.5) * inv - 0.5).clamp(0.0, sw as f32 - 1.0);
+            let p = boosted(&src[j * 3..j * 3 + 3], s, boost);
+            let m = weight(s.abs(), 0);
+            let mut a = bilinear(&far, sw, sh, sx, sy);
+            over(&mut a, &[p[0] * m, p[1] * m, p[2] * m, m]);
+            over(&mut a, &bilinear(&near, sw, sh, sx, sy));
             if a[3] > 1e-4 {
                 o.copy_from_slice(&[a[0] / a[3], a[1] / a[3], a[2] / a[3]]);
             } else {
-                o.copy_from_slice(s);
+                o.copy_from_slice(&p);
             }
-        });
+        }
+    });
+    out
+}
+
+/// Put premultiplied `top` over `acc`.
+fn over(acc: &mut [f32; 4], top: &[f32; 4]) {
+    let keep = 1.0 - top[3].clamp(0.0, 1.0);
+    for c in 0..4 {
+        acc[c] = top[c] + acc[c] * keep;
+    }
+}
+
+/// `img` (`sw` x `sh`) sampled between pixels at (`x`, `y`), both within it.
+fn bilinear(img: &[[f32; 4]], sw: usize, sh: usize, x: f32, y: f32) -> [f32; 4] {
+    let (x0, y0) = (x as usize, y as usize);
+    let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
+    let (tx, ty) = (x - x0 as f32, y - y0 as f32);
+    let mut o = [0f32; 4];
+    for c in 0..4 {
+        let a = img[y0 * sw + x0][c] * (1.0 - tx) + img[y0 * sw + x1][c] * tx;
+        let b = img[y1 * sw + x0][c] * (1.0 - tx) + img[y1 * sw + x1][c] * tx;
+        o[c] = a * (1.0 - ty) + b * ty;
+    }
+    o
+}
+
+/// A pixel with Boost applied: brighter the further out of focus a highlight is.
+fn boosted(p: &[f32], s: f32, boost: f32) -> [f32; 3] {
+    let lum = 0.3 * p[0] + 0.55 * p[1] + 0.15 * p[2];
+    let g = 1.0 + boost * smoothstep(0.4, 1.0, lum) * (s.abs() * 4.0).min(1.0);
+    [p[0] * g, p[1] * g, p[2] * g]
 }
 
 /// How much of a pixel `t` out of focus (0..1) belongs to layer `k`: linear between the
@@ -401,19 +450,9 @@ fn upsample(img: &[[f32; 4]], sw: usize, sh: usize, w: usize, h: usize) -> Vec<[
     (0..w * h)
         .into_par_iter()
         .map(|i| {
-            let x = ((i % w) as f32 + 0.5) * fx - 0.5;
-            let y = ((i / w) as f32 + 0.5) * fy - 0.5;
-            let (x, y) = (x.clamp(0.0, sw as f32 - 1.0), y.clamp(0.0, sh as f32 - 1.0));
-            let (x0, y0) = (x.floor() as usize, y.floor() as usize);
-            let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
-            let (tx, ty) = (x - x0 as f32, y - y0 as f32);
-            let mut o = [0f32; 4];
-            for c in 0..4 {
-                let a = img[y0 * sw + x0][c] * (1.0 - tx) + img[y0 * sw + x1][c] * tx;
-                let b = img[y1 * sw + x0][c] * (1.0 - tx) + img[y1 * sw + x1][c] * tx;
-                o[c] = a * (1.0 - ty) + b * ty;
-            }
-            o
+            let x = (((i % w) as f32 + 0.5) * fx - 0.5).clamp(0.0, sw as f32 - 1.0);
+            let y = (((i / w) as f32 + 0.5) * fy - 0.5).clamp(0.0, sh as f32 - 1.0);
+            bilinear(img, sw, sh, x, y)
         })
         .collect()
 }
@@ -506,7 +545,7 @@ mod tests {
     fn the_focal_range_stays_sharp_and_the_background_blurs() {
         // A checkerboard: the left half is in focus (near), the right half far behind it.
         let (w, h) = (96, 64);
-        let mut cam: Vec<f32> = (0..w * h)
+        let cam: Vec<f32> = (0..w * h)
             .flat_map(|i| {
                 let v = if ((i % w) / 2 + (i / w) / 2) % 2 == 0 {
                     0.8
@@ -524,8 +563,8 @@ mod tests {
             ..Default::default()
         };
         let s = defocus(&depth, [0.8, 1.0], None, None);
-        apply(
-            &mut cam,
+        let cam = apply(
+            &cam,
             w,
             h,
             &Plan {
@@ -560,7 +599,7 @@ mod tests {
         // A bright square in focus over a dark, far, flat background.
         let (w, h) = (80, 80);
         let inside = |x: usize, y: usize| (30..50).contains(&x) && (30..50).contains(&y);
-        let mut cam: Vec<f32> = (0..w * h)
+        let cam: Vec<f32> = (0..w * h)
             .flat_map(|i| {
                 let v = if inside(i % w, i / w) { 1.0 } else { 0.05 };
                 [v, v, v]
@@ -573,8 +612,8 @@ mod tests {
             ..Default::default()
         };
         let s = defocus(&depth, [0.8, 1.0], None, None);
-        apply(
-            &mut cam,
+        let cam = apply(
+            &cam,
             w,
             h,
             &Plan {

@@ -353,6 +353,8 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .filmstrip button.stk.stk-first::after { left: 0; }
 .filmstrip button.stk.stk-last::after { right: 0; }
 .filmstrip button.in-stack::after { background: var(--text); }
+.filmstrip button.moved-up { box-shadow: 0 0 0 1px var(--accent); }
+.filmstrip .up-next { flex: none; display: inline-flex; align-items: center; gap: 4px; align-self: stretch; padding: 0 6px; margin: 0 2px; border-left: 1px solid var(--accent); color: var(--accent); font-size: 10.5px; white-space: nowrap; }
 .filmstrip .dot { position: absolute; right: 3px; top: 3px; width: 5px; height: 5px; border-radius: 50%; }
 .filmstrip .dot.pick { background: var(--pick); }
 .filmstrip button.on { opacity: 1; outline: 1.5px solid var(--text); outline-offset: -1.5px; }
@@ -871,6 +873,8 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .imp-disk > span { display: block; height: 100%; background: var(--accent); }
 .imp-foot button kbd, .imp-row button kbd { margin-left: 4px; height: 16px; min-width: 16px; line-height: 14px; font-size: 10px; padding: 0 3px; }
 .menu-label { padding: 6px 10px 3px; font-size: 11px; color: var(--text-3); }
+.menu-note { padding: 4px 10px 6px; max-width: 240px; font-size: 11px; line-height: 1.4; color: var(--text-3); }
+.accent-text { color: var(--accent); }
 .menu-empty { padding: 3px 10px 6px; font-size: 12px; color: var(--text-3); }
 .menu-sep { height: 1px; margin: 4px -4px; background: var(--border); }
 .imp-recent { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

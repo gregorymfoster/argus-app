@@ -12,8 +12,8 @@
 //! Claude Code on the person's plan and a test stub are interchangeable.
 
 use crate::compute::{Compute, OllamaProcesses, Throttle};
-use crate::cull::{Claude, ClaudeCode, Ollama};
 use crate::library::{Author, BatchId, Library, PhotoFilter, PhotoId, ShootId};
+use crate::providers::{Claude, ClaudeCode, Ollama};
 use crate::tools::{Part, ToolSpec, Tools};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -624,7 +624,7 @@ fn context(tools: &Tools, ask: &Ask) -> Result<Vec<Msg>> {
     }])
 }
 
-/// The Agent's model by Provider name, as for [`crate::cull::provider`].
+/// The Agent's model by Provider name, as for [`crate::providers::provider`].
 pub fn chat(name: Option<&str>, compute: Option<Compute>) -> Result<Box<dyn Chat>> {
     chat_with_format(name, compute, step_schema())
 }

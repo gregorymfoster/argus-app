@@ -96,17 +96,22 @@ pub const MIN_FLAGS: usize = 5;
 
 /// One Photo the person flagged themselves: its embedding less its Shoot's mean (a keeper is
 /// one that stands out from the rest of its card, not a kind of card), and whether they picked it.
+/// With `edit`, the "flag" is read from their edits instead: on a Shoot where they edited some
+/// frames, an edited frame counts as kept and an unedited one they didn't pick as dropped.
 #[derive(Debug, Clone)]
 pub struct Flag {
     pub shoot: ShootId,
     pub vector: Vec<f32>,
     pub pick: bool,
+    pub edit: bool,
 }
 
 /// What the person's own flags say about taste: the direction in the image embedding from what
-/// they reject to what they pick. Their flags on other Shoots and on the Shoot being culled each
-/// give one direction of unit length, summed, so years of history don't drown out the frames
-/// they just flagged on this card. Retraining is an average, so it costs nothing to redo every
+/// they reject to what they pick. Their flags on other Shoots, their edits on other Shoots and
+/// their flags on the Shoot being culled each give one direction of unit length, summed, so years
+/// of history don't drown out the frames they just flagged on this card. Edits as keeps lifted
+/// AUC on the clean 2026-10-10 card from 0.66 to 0.70 (docs/research/cull-taste-experiments.md);
+/// embeddings come from the unedited preview, so the head can't learn the edited look itself. Retraining is an average, so it costs nothing to redo every
 /// cull. A nearest-centroid head ranked as well as a logistic one on the bench and needs no
 /// tuning (docs/research/taste-head.md).
 #[derive(Debug, Clone)]
@@ -119,8 +124,9 @@ impl Head {
     /// [`MIN_FLAGS`] Picks and Rejects.
     pub fn learn(flags: &[Flag], shoot: ShootId) -> Option<Head> {
         let parts = [
-            direction(flags.iter().filter(|f| f.shoot != shoot)),
-            direction(flags.iter().filter(|f| f.shoot == shoot)),
+            direction(flags.iter().filter(|f| !f.edit && f.shoot != shoot)),
+            direction(flags.iter().filter(|f| f.edit && f.shoot != shoot)),
+            direction(flags.iter().filter(|f| !f.edit && f.shoot == shoot)),
         ];
         let mut parts = parts.into_iter().flatten();
         let mut sum = parts.next()?;
@@ -165,15 +171,20 @@ fn centred(v: &[f32], mean: &[f32]) -> Vec<f32> {
 }
 
 /// Every Pick and Reject the person made themselves (never the AI's), on Photos whose embedding
-/// is already stored, each centred on its Shoot's mean embedding.
+/// is already stored, each centred on its Shoot's mean embedding; plus, on Shoots where they
+/// edited some frames, every frame as an edit flag (see [`Flag`]).
 pub fn flags(lib: &Library) -> Result<Vec<Flag>> {
     let photos = lib.list_photos(&PhotoFilter::default())?;
+    let edited = lib.edited_by(Author::Person)?;
     let flagged = |p: &crate::library::Photo| {
         p.verdict_by == Some(Author::Person) && p.verdict != Verdict::Unflagged
     };
+    let picked = |p: &crate::library::Photo| {
+        p.verdict_by == Some(Author::Person) && p.verdict == Verdict::Pick
+    };
     let shoots: std::collections::HashSet<ShootId> = photos
         .iter()
-        .filter(|p| flagged(p))
+        .filter(|p| flagged(p) || edited.contains(&p.id))
         .map(|p| p.shoot_id)
         .collect();
     let mut by_shoot: HashMap<ShootId, Vec<(&crate::library::Photo, Vec<f32>)>> = HashMap::new();
@@ -200,8 +211,23 @@ pub fn flags(lib: &Library) -> Result<Vec<Flag>> {
                     shoot,
                     vector: centred(v, &m),
                     pick: p.verdict == Verdict::Pick,
+                    edit: false,
                 }),
         );
+        if frames.iter().any(|(p, _)| edited.contains(&p.id)) {
+            // a Pick not edited yet is no drop
+            out.extend(
+                frames
+                    .iter()
+                    .filter(|(p, _)| edited.contains(&p.id) || !picked(p))
+                    .map(|(p, v)| Flag {
+                        shoot,
+                        vector: centred(v, &m),
+                        pick: edited.contains(&p.id),
+                        edit: true,
+                    }),
+            );
+        }
     }
     Ok(out)
 }
@@ -274,6 +300,22 @@ fn tastes(sheet: &ContactSheet) -> HashMap<usize, f32> {
             (p.n, p.taste - cost)
         })
         .collect()
+}
+
+/// Keepers first: the sheet numbers of `sheet`'s frames, the likeliest keeper first, ranked as
+/// [`rate`] ranks them for stars (taste, then the sharper frame, then capture order). Read with
+/// the person's flags so far, it is the order "Keepers first" reviews the rest of a Shoot in.
+pub fn keepers_first(sheet: &ContactSheet) -> Vec<usize> {
+    let tasted = tastes(sheet);
+    let taste = |n: usize| tasted.get(&n).copied().unwrap_or(NO_FACES);
+    let mut photos: Vec<_> = sheet.photos.iter().collect();
+    photos.sort_by(|a, b| {
+        taste(b.n)
+            .total_cmp(&taste(a.n))
+            .then(b.sharpness_pct.cmp(&a.sharpness_pct))
+            .then(a.n.cmp(&b.n))
+    });
+    photos.into_iter().map(|p| p.n).collect()
 }
 
 /// Stars for a frame the technical stage kept, from where its taste falls in the Shoot (`q`: the

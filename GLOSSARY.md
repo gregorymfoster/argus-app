@@ -147,8 +147,16 @@ A frame the Technical check keeps but isn't sure of: soft, streaky as if shaken,
 _Avoid_: Borderline, uncertain
 
 **Taste head**:
-What the person's own Picks and Rejects teach Taste: the direction in the image embedding from the frames they reject to the frames they pick, learned afresh at every cull from their flags on other Shoots and on the Shoot itself. It speaks once there are five Picks and five Rejects; the AI's own flags never count (`engine::taste::Head`). As the person flags, `rerate_shoot` refreshes the AI's stars from it (learn as you cull).
+What the person's own Picks and Rejects teach Taste: the direction in the image embedding from the frames they reject to the frames they pick, learned afresh at every cull from their flags on other Shoots and on the Shoot itself, and from their edits on other Shoots (an edited frame counts as kept, an unedited one they didn't pick as dropped). It speaks once there are five Picks and five Rejects; the AI's own flags never count (`engine::taste::Head`). As the person flags, `rerate_shoot` refreshes the AI's stars from it (learn as you cull).
 _Avoid_: Taste model, aesthetic model, classifier
+
+**Taste judge**:
+A model of which of two versions of the same photo the person prefers, learned from their blind picks between edits (bench only so far: `bench/taste_judge.py`). It picks among candidate edits without seeing the person's own edit. Not the Taste head, which ranks frames for the cull.
+_Avoid_: Greg judge, reward model, critic
+
+**Keepers first**:
+A review order: the unflagged frames ahead of the person re-order as they flag, the likeliest keeper first by Taste (the Taste head learning from those flags), while what they have passed and the frame they are on stay put and Stacks stay together. A Sort choice beside Lightroom's (`rerate_shoot` returns the `order`).
+_Avoid_: Smart sort, AI order
 
 **Signals**:
 Cheap measurements of each Photo (sharpness within its Shoot, brightness, clipping) that the AI reads beside the image. Hints for its judgment, never a Verdict on their own.
@@ -206,6 +214,10 @@ _Avoid_: Iteration, self-critique, refine step
 **Hero Photo**:
 The Photo the person edited by hand and wants the rest of the Shoot to match ("apply to the rest"). Its style becomes a Look, and every other Photo gets matched Suggestions under it.
 _Avoid_: Reference image, master, source
+
+**Shoot match**:
+The first matched Suggestion of "apply to the rest" on a RAW, worked out without a model call: the style of the Hero Photo and the Shoot's other hand-edited Photos (the most alike counting most), moved for this Photo's own light and scene the way the person's edits move from frame to frame inside a Shoot (`engine::shoot_match`, fitted by `bench/shoot_style.py export`). It sits under the hero's Look as the Photo's own Basic sliders; the model's matched take follows it. Once the person has edited a RAW of a Shoot by hand, every Pick and likely keeper they haven't edited gets one on its own in the background (a pre-edit, edit as you cull: `engine::pre_edit`), with the hero's other settings brought along as Sync brings them.
+_Avoid_: Smart sync, auto sync, style transfer
 
 **Queue**:
 The AI work waiting to run in the background (Suggestions, "apply to the rest", culls), kept in the Library so it survives a quit, and worked at the Compute level. Each item in it is a job of one kind (`jobs::KINDS`, the `jobs` table, `enqueue_job`).

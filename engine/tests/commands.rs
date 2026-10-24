@@ -637,7 +637,7 @@ fn a_bad_api_key_is_refused_before_it_reaches_the_keychain() {
         let e = dispatch(&tools, "set_api_key", json!({ "key": key })).unwrap_err();
         assert!(e.to_string().contains("sk-ant-"), "{key}: {e}");
     }
-    assert!(argus_engine::cull::check_api_key(" sk-ant-api03-abcdefghij_KLMN-op \n").is_ok());
+    assert!(argus_engine::providers::check_api_key(" sk-ant-api03-abcdefghij_KLMN-op \n").is_ok());
 }
 
 #[test]

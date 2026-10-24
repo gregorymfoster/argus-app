@@ -126,7 +126,9 @@ async fn run(app: &AppHandle) -> tauri_plugin_updater::Result<()> {
     Ok(())
 }
 
-/// The first check soon after launch, then one every few hours.
+/// A check on every fresh launch, a few seconds in so it never slows startup (Greg,
+/// 2026-10-23), then one every few hours. It runs off the UI thread; the UI toasts once
+/// when it finds a release.
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tauri::async_runtime::spawn_blocking(|| std::thread::sleep(Duration::from_secs(5)))

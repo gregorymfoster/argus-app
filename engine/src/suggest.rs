@@ -37,7 +37,7 @@ pub struct SuggestArgs {
     pub provider: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct Proposals {
     suggestions: Vec<Proposal>,
 }
@@ -162,6 +162,73 @@ pub fn rounds(_compute: Compute) -> usize {
         .unwrap_or(0)
 }
 
+/// The title of the matched take worked out by [`crate::shoot_match`].
+pub const SHOOT_MATCH: &str = "Shoot match";
+
+/// The Shoot match for a matched Suggestion: `base` (the Photo under the hero's Look,
+/// its own sliders cleared) with the Basic sliders the Shoot's hand edits call for, as its
+/// own sliders on top of the Look. None for a non-RAW or when nothing could be measured.
+fn shoot_match_take(
+    tools: &Tools,
+    a: &SuggestArgs,
+    base: &Recipe,
+) -> Result<Option<(Recipe, String)>> {
+    let Some(hero) = a.reference_id else {
+        return Ok(None);
+    };
+    let lib = Library::open(tools.library())?;
+    let photo = crate::tools::find_photo(&lib, a.photo_id)?;
+    let anchors = crate::shoot_match::anchors_of(&lib, photo.shoot_id, hero, photo.id)?;
+    let Some((want, n)) = crate::shoot_match::sliders(&lib, &photo, &anchors)? else {
+        return Ok(None);
+    };
+    Ok(Some((
+        shoot_match_recipe(&lib, &photo, base, &want)?,
+        shoot_match_why(n),
+    )))
+}
+
+/// `base` with `want`'s Basic sliders as they should render: its own sliders are what's left
+/// once its Look has had its say, so a Look underneath isn't counted twice. Its other sliders
+/// (colour mixer, effects and the rest) stay as `base` has them.
+pub fn shoot_match_recipe(
+    lib: &Library,
+    photo: &crate::library::Photo,
+    base: &Recipe,
+    want: &Adjust,
+) -> Result<Recipe> {
+    let look = crate::tools::with_look(
+        lib,
+        photo,
+        &Recipe {
+            global: Adjust::default(),
+            ..base.clone()
+        },
+    )?
+    .global;
+    let mut r = base.clone();
+    let g = &mut r.global;
+    g.exposure = want.exposure - look.exposure;
+    g.contrast = want.contrast - look.contrast;
+    g.highlights = want.highlights - look.highlights;
+    g.shadows = want.shadows - look.shadows;
+    g.whites = want.whites - look.whites;
+    g.blacks = want.blacks - look.blacks;
+    g.temp = want.temp - look.temp;
+    g.tint = want.tint - look.tint;
+    g.vibrance = want.vibrance - look.vibrance;
+    Ok(r)
+}
+
+/// The Shoot match's reason, from how many hand-edited Photos it read.
+pub fn shoot_match_why(n: usize) -> String {
+    if n == 1 {
+        "The style of the Photo you edited, moved for this Photo's own light and scene the way your edits move inside a Shoot.".to_string()
+    } else {
+        format!("The style of the {n} Photos you edited in this Shoot (the most alike count most), moved for this Photo's own light and scene.")
+    }
+}
+
 /// One take as the loop carries it: the model's words, its sliders and how it renders.
 struct Take {
     /// Where the take starts; its `set` goes on top.
@@ -229,6 +296,21 @@ pub fn suggest_photo(
         base.look = a.look_id.clone();
         base.correction = Default::default();
     }
+    // "Apply to the rest" leads with the Shoot match (no model call), and the model's
+    // matched takes follow it. An odd file costs the Shoot match, not the Suggestions.
+    let shoot_take = if matched && v.shoot_match.unwrap_or(true) {
+        shoot_match_take(tools, a, &base).unwrap_or_else(|e| {
+            eprintln!("argus suggest: Photo {}: no Shoot match: {e}", a.photo_id);
+            None
+        })
+    } else {
+        None
+    };
+    let count = if shoot_take.is_some() {
+        count.saturating_sub(1).max(1)
+    } else {
+        count
+    };
 
     // What the model sees before it edits: the reference (when matching), the Photo, and
     // for a fresh edit the deterministic Auto anchor.
@@ -360,7 +442,7 @@ pub fn suggest_photo(
         + settings;
 
     steps.at(1)?;
-    let proposals = ask(
+    let asked = ask(
         chat,
         &system,
         Msg {
@@ -368,7 +450,19 @@ pub fn suggest_photo(
             text,
             images,
         },
-    )?;
+    );
+    // With a Shoot match in hand, a failing model costs only its own takes.
+    let proposals = match (asked, &shoot_take) {
+        (Ok(p), _) => p,
+        (Err(e), Some(_)) => {
+            eprintln!(
+                "argus suggest: Photo {}: model takes failed, keeping the Shoot match: {e}",
+                a.photo_id
+            );
+            Proposals::default()
+        }
+        (Err(e), None) => return Err(e),
+    };
     steps.at(2)?;
     let mut takes = Vec::new();
     for (i, mut p) in proposals.suggestions.into_iter().take(count).enumerate() {
@@ -382,7 +476,7 @@ pub fn suggest_photo(
         let own = style.for_take(&p.title).clone();
         takes.push(take(tools, a.photo_id, &starts[i], p, &own, scene)?);
     }
-    if takes.is_empty() {
+    if takes.is_empty() && shoot_take.is_none() {
         return Err(Error("the model proposed no Suggestions".into()));
     }
     trace(a.photo_id, 0, &takes);
@@ -479,8 +573,17 @@ pub fn suggest_photo(
 
     steps.at(3 + rounds)?;
     let mut list = Vec::new();
-    for (i, t) in takes.into_iter().enumerate() {
-        let preview = save_preview(tools, a.photo_id, &t.recipe, job, i)?;
+    if let Some((recipe, why)) = shoot_take {
+        let preview = save_preview(tools, a.photo_id, &recipe, job, list.len())?;
+        list.push((
+            SHOOT_MATCH.to_string(),
+            why,
+            recipe.to_value(),
+            Some(preview),
+        ));
+    }
+    for t in takes {
+        let preview = save_preview(tools, a.photo_id, &t.recipe, job, list.len())?;
         list.push((t.title, t.why, t.recipe.to_value(), Some(preview)));
     }
     // Cancelled while the takes rendered: nothing lands.

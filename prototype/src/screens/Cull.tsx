@@ -17,6 +17,8 @@ import { recipeOf, starsOf, useLibrary, verdictOf } from '../store/library';
 import { autoAction, runAuto } from '../data/auto';
 import { usePref } from '../store/variants';
 import { MIN_FLAGS, useLearnAsYouCull, type Learning } from '../data/learn';
+import { keeperRank, keepersAt, keepersReset, useKeepers } from '../data/keepers';
+import { acceptPreEdits, usePreEdits, type PreEdits } from '../data/preEdit';
 import { sortToString } from '../domain/sort';
 import { go } from '../router';
 import { Agent } from '../agent/AgentPanel';
@@ -25,7 +27,7 @@ import { eta } from '../ui/Progress';
 import { FlagButtons, VerdictChip } from '../ui/Flags';
 import { STAR_KEYS, Stars } from '../ui/Stars';
 import { ViewSwitch } from '../ui/ViewBar';
-import { SortMenu, toggleStars, useSort } from '../ui/Sort';
+import { SortMenu, toggleKeepers, toggleStars, useSort } from '../ui/Sort';
 import { sortPhotos } from '../domain/sort';
 import { aiName } from '../data/live';
 import { ESC_OUTSIDE_DIALOGS, Kbd, MenuKeys, Seg, Tip, VERDICT_KEYS } from '../ui/kit';
@@ -285,6 +287,10 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const [sort, setSort] = useSort();
   // Learn as you cull: the AI's stars refresh from the person's flags (data/learn.ts).
   const learn = useLearnAsYouCull(state, dispatch, true);
+  // Keepers first: the frames ahead of the cursor re-order as the person flags (data/keepers.ts).
+  const keepers = useKeepers();
+  // Edit as you cull: Shoot matches for the Picks and likely keepers, once a RAW is hand-edited.
+  const pre = usePreEdits(state);
   // Sorted by Stars, the grid holds the order it had when the sort was chosen while the AI's
   // stars refresh, so nothing moves under the person (Greg, 2026-10-22); choosing it again re-sorts.
   const held = useRef<Record<string, number> | null>(null);
@@ -323,7 +329,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const visible = useMemo(() => {
     if (sort.key === 'stars' && !held.current) held.current = Object.fromEntries(all.map((p) => [p.id, starsOf(state, p.id).stars]));
     const stars = (id: string) => (sort.key === 'stars' && starsOf(state, id).you === false ? held.current?.[id] ?? starsOf(state, id).stars : starsOf(state, id).stars);
-    const facts = { stars, verdict: (id: string) => verdictOf(state, id) };
+    const facts = { stars, verdict: (id: string) => verdictOf(state, id), keeper: keeperRank };
     if (filter === 'best') {
       const best = bestPhotos.filter((p) => starsOf(state, p.id).stars >= minStars && aiOk(p));
       // Best Photos stay in rank order unless another sort is chosen.
@@ -337,7 +343,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     });
     // The star filter shows every frame of a Stack, so they sort one by one then.
     return sortPhotos(shown, sort, facts, !minStars);
-  }, [all, bestPhotos, cover, expanded, filter, minStars, state, aiFilter, takes, aiStatus, sort]);
+  }, [all, bestPhotos, cover, expanded, filter, minStars, state, aiFilter, takes, aiStatus, sort, keepers.version]);
   const counts = useMemo(() => {
     const c = { all: all.length, pick: 0, reject: 0, unflagged: 0, best: bestPhotos.length };
     all.forEach((p) => {
@@ -348,6 +354,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const atLeast = useMemo(() => [0, 1, 2, 3, 4, 5].map((n) => all.filter((p) => starsOf(state, p.id).stars >= n).length), [all, state]);
 
   const current = visible[Math.min(cur, visible.length - 1)];
+  useEffect(() => keepersAt(current?.id ?? null, visible.map((p) => p.id)), [current, visible]);
   // Lightroom: flags apply to every selected photo, or the current one.
   const targets = sel.size ? [...sel] : current ? [current.id] : [];
 
@@ -376,6 +383,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     else dispatch({ type: 'batch', label: `${ids.length} to ${n} stars`, actions: ids.map((id) => ({ type: 'stars/set', id, stars: n, by: 'you' })) });
   };
   const changeSort = (s: typeof sort) => {
+    if (s.key === 'keepers') keepersReset();
     setSort(s);
     setCur(0);
     setSel(new Set());
@@ -558,6 +566,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   useHotkeys('d', () => current && go({ name: 'edit', id: current.id }), [current]);
   useHotkeys('s', () => current?.stackId && toggleStack(current.stackId), [current]);
   useHotkeys('shift+s', () => changeSort(toggleStars(sort)), [sort]);
+  useHotkeys('shift+k', () => changeSort(toggleKeepers(sort)), [sort]);
   // N (Lightroom's Survey key) culls the Shoot's bursts one Stack at a time, from the current Photo's.
   const openBursts = () => (stackCount ? go({ name: 'bursts', id: current?.stackId }) : dispatch({ type: 'toast', text: 'No Stacks yet: bursts stack once Import has looked at the Photos, or after an AI cull' }));
   useHotkeys('n', openBursts, [current, stackCount]);
@@ -762,6 +771,16 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             }}
           />
         )}
+        {pre.ready.length > 0 && (
+          <PreEditLine
+            pre={pre}
+            onAccept={() => acceptPreEdits(pre.ready, dispatch)}
+            onShow={() => {
+              setAiFilter('ready');
+              setCur(0);
+            }}
+          />
+        )}
         {filter === 'best' && (
           <BestPhotos
             photos={visible}
@@ -872,7 +891,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             </span>
           ) : null}
           <span className="grow" />
-          {culled && <LearnHint l={learn} />}
+          {culled && <LearnHint l={learn} moved={sort.key === 'keepers' ? keepers.moved : 0} />}
           <span className="foot-keys">
             <span><Kbd quiet>P</Kbd> Pick</span>
             <span><Kbd quiet>X</Kbd> Reject</span>
@@ -997,9 +1016,40 @@ function NextStep({ shootId, rejects, fourUp, best, onPick, onReview }: { shootI
   );
 }
 
-function LearnHint({ l }: { l: Learning }) {
+/** Edit as you cull: the Shoot matches waiting on Picks and likely keepers, in one line under the
+ * header, with Accept all (one Undo) and Show them (the Suggestions filter). ✕ hides it until
+ * more arrive. */
+function PreEditLine({ pre, onAccept, onShow }: { pre: PreEdits; onAccept: () => void; onShow: () => void }) {
+  const [hidden, setHidden] = useState(0);
+  const n = pre.ready.length;
+  if (hidden >= n) return null;
+  return (
+    <div className="ai-bar next-step" data-testid="pre-edits">
+      <Sparkles size={12} className="accent-text" />
+      <span className="trunc">
+        <b>
+          Shoot match ready for {n} Photo{n === 1 ? '' : 's'},
+        </b>{' '}
+        from the {pre.heroes === 1 ? 'Photo' : `${pre.heroes} Photos`} you edited. <span className="faint">Nothing changes until you accept.</span>
+      </span>
+      <span className="grow" />
+      <Button variant="ghost" size="sm" onClick={onAccept} data-testid="pre-edits-accept">
+        Accept all {n}
+      </Button>
+      <Button variant="ghost" size="sm" onClick={onShow} data-testid="pre-edits-show">
+        Show them
+      </Button>
+      <button className="next-close" onClick={() => setHidden(n)} aria-label="Hide until more are ready" title="Hide until more are ready">
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+function LearnHint({ l, moved = 0 }: { l: Learning; moved?: number }) {
+  const fresh = Date.now() - l.at < 8000;
   const text = l.learning
-    ? `Learning from ${l.picks} Picks, ${l.rejects} Rejects${l.changed && Date.now() - l.at < 8000 ? ` · ${l.changed} re-rated` : ''}`
+    ? `Learning from ${l.picks} Picks, ${l.rejects} Rejects${l.changed && fresh ? ` · ${l.changed} re-rated` : ''}${moved && fresh ? ` · ${moved} ahead moved up` : ''}`
     : `Learns after ${MIN_FLAGS} Picks, ${MIN_FLAGS} Rejects · ${Math.min(l.picks, MIN_FLAGS)}, ${Math.min(l.rejects, MIN_FLAGS)}`;
   return (
     <Tip label="As you flag, the AI's stars on the rest of this Shoot refresh from your Picks and Rejects. Your own flags and stars never change.">

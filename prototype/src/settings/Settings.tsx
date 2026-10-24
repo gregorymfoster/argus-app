@@ -264,6 +264,7 @@ const KEYS: [string, [string, string][]][] = [
     ['=  −', 'Bigger, smaller thumbnails'],
     ['J', 'Cycle what the tiles show'],
     ['⇧S', 'Sort by Stars, or back to capture time'],
+    ['⇧K', 'Keepers first: the frames ahead re-order as you flag'],
     ['⇧A', 'Auto (the selection, or every Photo)'],
     ['A', 'Accept the first Suggestion'],
     ['L', 'Set a Look for the Picks'],
@@ -271,6 +272,7 @@ const KEYS: [string, [string, string][]][] = [
     ['⌫', 'Remove from Library'],
     ['Z  F  \\', 'Loupe: 100%, faces, before'],
     ['K  ⇧↵', 'Loupe: add a Keyword, keep every AI suggestion'],
+    ['\\  A', 'Loupe: show the Shoot match waiting, accept it'],
   ]],
   ['Compare and Stacks', [
     ['← →', 'Next candidate, or frame'],

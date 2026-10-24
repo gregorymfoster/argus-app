@@ -72,7 +72,7 @@ claude mcp add argus -- /path/to/argus/target/release/argus mcp --library /Users
 | `list_stacks` / `set_stacks` | Read or replace a Shoot's Stacks, best frame first |
 | `stack_bursts` | Join a Shoot's bursts (alike frames seconds apart, from the embedding Fact) into its Stacks |
 | `cull_shoot` | Run Argus's own Provider over a Shoot (Ollama by default, Gentle compute): Verdicts, stars, Stacks and Best Photos in one pass |
-| `rerate_shoot` | Learn as you cull: refresh a culled Shoot's AI stars from the person's Picks and Rejects so far (not an undo step) |
+| `rerate_shoot` | Learn as you cull: refresh a culled Shoot's AI stars from the person's Picks and Rejects so far (not an undo step), and return the Keepers first `order` (every Photo but the Rejects, likeliest keeper first) |
 | `read_recipe` / `write_recipe` | Read a Photo's Recipe, or save one as a new Version on many Photos in one batch |
 | `edit_recipe` | Change a few settings (exposure, temp, tint, contrast, highlights, shadows, whites, blacks, vibrance, saturation, `hsl.<colour>.<hue\|sat\|lum>`, and the retouch amounts `skin`, `eyes`, `teeth` and `correction.face`) on many Photos as one batch, absolute or relative |
 | `auto_edit` | Lightroom's Auto on `photo_ids` or every Photo of `shoot_id`, as one batch: exposure, tone, white balance and vibrance measured from small renders of each Photo (well under a second each, no model); the rest of the Recipe is kept |
@@ -98,7 +98,8 @@ claude mcp add argus -- /path/to/argus/target/release/argus mcp --library /Users
 | `export_photos` | Write edited JPEGs to a folder, never overwriting |
 | `crop.*` settings | `edit_recipe` also straightens (`crop.angle`, degrees) and crops (`crop.x/y/w/h`, fractions of the straightened frame, never empty corners) |
 | `suggest_edits` | Queue Suggestions (2-3 whole edits each) for one Photo, a list, or a Shoot (rejects skipped, Picks first) |
-| `match_to_photo` | "Apply this look to the rest": the Hero Photo's style becomes a Look, the others get 2 matched Suggestions under it |
+| `match_to_photo` | "Apply this look to the rest": the Hero Photo's style becomes a Look, the others get 2 matched Suggestions under it (on a RAW the first is the Shoot match, worked out from the Shoot's hand edits without a model call) |
+| `pre_edit_shoot` | Edit as you cull: a Shoot match Suggestion for each Pick and likely keeper (4★ and up) the person hasn't edited, from the Shoot's hand edits, in the background with no model call. Runs by itself after each hand edit of a RAW and as the stars refresh |
 | `list_suggestions` / `get_suggestion` | Open Suggestions for a Photo or Shoot (title, why, whole Recipe), or one with its preview JPEG |
 | `accept_suggestion` / `dismiss_suggestion` | The person's call: accepting saves a new Version; `suggestion_ids` accepts one take on each of several Photos in one batch |
 | `enqueue_job` / `list_jobs` / `cancel_job` / `reorder_jobs` | The Queue directly: kinds `suggest`, `suggest_shoot`, `match_hero`, `cull_shoot` (alias `rate_shoot`), `check_shoot`, `tag_photos`, `analyze`, `rank_presets`, `learn_edits`, `denoise`, `render_previews` (`jobs::KINDS`); asking twice returns the queued job; `reorder_jobs` sets the waiting order (the open Photo's work stays first) |
@@ -122,7 +123,7 @@ Background AI work (`engine/src/jobs.rs`, ADR 0016) lives in the Library's `jobs
 
 ## Adding a tool
 
-Add it to `specs()` and `Tools::call` in `engine/src/tools.rs`, calling a Library or engine function rather than putting logic there, and add a case to `engine/tests/tools.rs`. The MCP server picks it up with no change. `cli/tests/mcp.rs` checks the stdio round trip with a real MCP client.
+Add its spec and its match arm to the area file in `engine/src/tools/` it belongs to (or a new area listed in `AREAS` in `tools/mod.rs`), calling a Library or engine function rather than putting logic there, and add a case to `engine/tests/tools.rs`. The MCP server picks it up with no change. `cli/tests/mcp.rs` checks the stdio round trip with a real MCP client.
 
 ## Not yet
 

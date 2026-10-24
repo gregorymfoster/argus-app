@@ -74,8 +74,8 @@
 //! is relative to the Library root (`previews/ab/cdef.jpg`), so each transport can serve
 //! it its own way.
 
-use crate::cull::{ClaudeCode, Ollama};
 use crate::library::{Author, Library, PhotoFilter, PhotoId, ShootId, Verdict};
+use crate::providers::{ClaudeCode, Ollama};
 use crate::tools::{Part, Tools};
 use crate::{Error, Result};
 use base64::Engine as _;
@@ -483,7 +483,7 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
                         "note": "Your Claude plan, through the claude CLI" }),
             ];
             // Only offered once a key is set up: Greg uses no API keys (ADR 0006).
-            if crate::cull::Claude::from_env().is_ok() {
+            if crate::providers::Claude::from_env().is_ok() {
                 providers.push(
                     json!({ "id": "claude-api", "label": "Claude API", "model": null,
                                        "note": "Your Anthropic API key" }),
@@ -508,7 +508,7 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             let a: A = args(command, a)?;
             let lib = Library::open(tools.library())?;
             lib.set_setting(crate::tools::OLLAMA_MODEL_KEY, &json!(a.model))?;
-            crate::cull::choose_ollama_model(Some(a.model));
+            crate::providers::choose_ollama_model(Some(a.model));
             Ok(json!({ "model": Ollama::from_env().model }))
         }
         "set_api_key" => {
@@ -517,7 +517,7 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
                 key: String,
             }
             let a: A = args(command, a)?;
-            crate::cull::store_api_key(&a.key)?;
+            crate::providers::store_api_key(&a.key)?;
             Ok(json!({ "ok": true }))
         }
         "agent" => {

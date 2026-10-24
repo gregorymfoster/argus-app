@@ -511,6 +511,18 @@ impl Library {
         rows.collect::<std::result::Result<_, _>>().map_err(db_err)
     }
 
+    /// Every Photo with a Recipe Version by `author`, undone or not.
+    pub fn edited_by(&self, author: Author) -> Result<std::collections::HashSet<PhotoId>> {
+        let mut q = self
+            .db
+            .prepare("SELECT DISTINCT photo_id FROM recipe_versions WHERE author = ?1")
+            .map_err(db_err)?;
+        let rows = q
+            .query_map([author.as_str()], |r| r.get(0))
+            .map_err(db_err)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db_err)
+    }
+
     /// The current Recipe Version, or None if the Photo has never been edited.
     pub fn read_recipe(&self, photo: PhotoId) -> Result<Option<RecipeVersion>> {
         self.db
@@ -570,6 +582,9 @@ impl Library {
                 .map_err(db_err)?;
             lib.log_recipe(photo, next, recipe, author.as_str(), batch);
             crate::denoise::queue_if_needed(lib, photo, recipe, author)?;
+            if author == Author::Person {
+                crate::pre_edit::queue_after_edit(lib, photo)?;
+            }
             Ok(next)
         })
     }

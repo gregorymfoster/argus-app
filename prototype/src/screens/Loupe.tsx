@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { askRemove } from '../ui/Remove';
-import { Award, Flag, X } from 'lucide-react';
+import { Award, Flag, Sparkles, X } from 'lucide-react';
 import { PHOTOS, PHOTO_BY_ID, SHOOT, stackOf } from '../data/dummy';
 import type { Photo, Verdict } from '../domain/types';
 import { starsOf, useLibrary, verdictOf } from '../store/library';
@@ -15,7 +15,12 @@ import { useSuggestionImage, useSuggestions } from '../data/suggestions';
 import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
 import { Histogram } from '../ui/Histogram';
-import { useSort } from '../ui/Sort';
+import { toggleKeepers, useSort } from '../ui/Sort';
+import { useLearnAsYouCull } from '../data/learn';
+import { acceptPreEdits, usePreEdits } from '../data/preEdit';
+import { keeperRank, keepersAt, keepersReset, movedUp, useKeepers } from '../data/keepers';
+import { Button } from '@/components/ui/button';
+import { Tip } from '../ui/kit';
 import { sortPhotos } from '../domain/sort';
 import { Agent } from '../agent/AgentPanel';
 import { eyeFlagsOf, useEyeFlags, usePhotoFacts, type FaceFacts } from '../data/facts';
@@ -50,9 +55,26 @@ export function LoupeScreen({ id }: { id: string }) {
   const [tab, setTab] = useState<'info' | 'agent'>('info');
   const p = PHOTO_BY_ID[id] ?? PHOTOS[0];
   // The grid's sort order, Stacks kept together.
-  const [sort] = useSort();
-  const order = sortPhotos(PHOTOS.slice(0, state.imported), sort, { stars: (x) => starsOf(state, x).stars, verdict: (x) => verdictOf(state, x) }).map((x) => x.id);
+  const [sort, setSort] = useSort();
+  // Learn as you cull here too, so Keepers first re-orders the frames ahead while reviewing.
+  useLearnAsYouCull(state, dispatch, true);
+  const keepers = useKeepers();
+  const order = sortPhotos(PHOTOS.slice(0, state.imported), sort, { stars: (x) => starsOf(state, x).stars, verdict: (x) => verdictOf(state, x), keeper: keeperRank }).map((x) => x.id);
+  useEffect(() => keepersAt(p.id, order));
+  void keepers.version;
+  const keepersOn = sort.key === 'keepers';
+  const flipKeepers = () => {
+    const next = toggleKeepers(sort);
+    if (next.key === 'keepers') keepersReset();
+    setSort(next);
+  };
   const pos = order.indexOf(p.id);
+  // Edit as you cull: this frame's Shoot match, if one is waiting. \ previews it, A accepts.
+  const pre = usePreEdits(state);
+  const match = pre.byPhoto[p.id] ?? null;
+  const [showMatch, setShowMatch] = useState(false);
+  useEffect(() => setShowMatch(false), [p.id]);
+  const matchUrl = useSuggestionImage(showMatch ? match : null, 1536);
   const nextKey = order.slice(pos + 1, pos + 4).join(',');
   useEffect(() => focusPhoto(p.id, nextKey ? nextKey.split(',') : []), [p.id, nextKey]);
   // Lightroom's zoom: pinch, Z, click, Space-drag, ⌘+ / ⌘−; it stays on for the next photo.
@@ -124,8 +146,11 @@ export function LoupeScreen({ id }: { id: string }) {
   useHotkeys(['p', 'x', 'u'], (e) => set(VERDICT_KEYS[e.key.toLowerCase()]), [p.id, pos]);
   useHotkeys(STAR_KEYS, (e) => rate(Number(e.key)), [p.id, pos]);
   useHotkeys('f', () => setFaces((f) => !f));
-  useHotkeys('backslash', () => setBefore((b) => !b));
+  // On a frame with a Shoot match waiting, \ swaps between it and the frame as it is.
+  useHotkeys('backslash', () => (match ? setShowMatch((b) => !b) : setBefore((b) => !b)), [match]);
+  useHotkeys('a', () => match && acceptPreEdits([match], dispatch), [match]);
   useHotkeys('d', () => go({ name: 'edit', id: p.id }), [p.id]);
+  useHotkeys('shift+k', flipKeepers, [sort]);
   useSettingsKeys(p.id, []);
   useHotkeys('c', compare, [stackIds.join(',')]);
 
@@ -139,6 +164,11 @@ export function LoupeScreen({ id }: { id: string }) {
         </span>
         <span className="mono faint view-meta trunc">{p.exif}</span>
         <span className="grow" />
+        <Tip label={keepersOn ? 'Keepers first: the frames ahead re-order as you flag. Back to capture time' : 'Keepers first: review the likeliest keepers next'} keys="⇧K">
+          <Button variant="ghost" size="sm" className={keepersOn ? 'on' : ''} onClick={flipKeepers} data-testid="keepers-first" aria-pressed={keepersOn}>
+            <Sparkles size={12} className={keepersOn ? 'accent-text' : undefined} /> Keepers first
+          </Button>
+        </Tip>
         <ViewSwitch view="loupe" id={p.id} compareIds={stackIds} />
         <QueueMeter />
       </header>
@@ -146,9 +176,10 @@ export function LoupeScreen({ id }: { id: string }) {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div className="stage" data-testid="loupe" {...zp.stageProps}>
             <div className="stage-fit">
-              <PhotoView photo={p} size="full" recipe={state.recipes[p.id]} look={state.look} original={before} rendered={detail.url} edits>
+              <PhotoView photo={p} size="full" recipe={showMatch && match ? match.recipe : state.recipes[p.id]} look={state.look} original={before && !showMatch} rendered={showMatch ? (matchUrl ?? undefined) : detail.url} edits>
                 <Faces p={p} all={faces} found={LIVE ? (facts?.faces ?? []) : undefined} />
-                {before && <span className="look-label">Before</span>}
+                {before && !showMatch && <span className="look-label">Before</span>}
+                {showMatch && <span className="look-label">Shoot match</span>}
               </PhotoView>
             </div>
             <ZoomReadout z={zp.z} loading={detail.loading} />
@@ -166,7 +197,21 @@ export function LoupeScreen({ id }: { id: string }) {
             )}
             <EyeBadges flags={eyes} inline />
             <span className="grow" />
-            <Hints items={[['Z', zoomed ? 'Fit' : '100%'], ['← →', 'Move'], ['\\', before ? 'After' : 'Before'], ...(stackIds.length ? ([['C', 'Compare']] as [string, string][]) : [])]} />
+            {match && (
+              <Tip label={match.why}>
+                <span className="v-chip accent" data-testid="loupe-match">
+                  <Sparkles size={11} /> Shoot match ready
+                </span>
+              </Tip>
+            )}
+            <Hints
+              items={[
+                ['Z', zoomed ? 'Fit' : '100%'],
+                ['← →', 'Move'],
+                ...(match ? ([['\\', showMatch ? 'As it is' : 'Shoot match'], ['A', 'Accept']] as [string, string][]) : ([['\\', before ? 'After' : 'Before']] as [string, string][])),
+                ...(stackIds.length ? ([['C', 'Compare']] as [string, string][]) : []),
+              ]}
+            />
           </div>
         </div>
         <aside className="side info-side" aria-label="Info">
@@ -237,7 +282,7 @@ export function LoupeScreen({ id }: { id: string }) {
           )}
         </aside>
       </div>
-      <Filmstrip order={order} pos={pos} stackIds={stackIds} open={(id) => go({ name: 'loupe', id })} />
+      <Filmstrip order={order} pos={pos} stackIds={stackIds} upNext={keepersOn} moved={keepersOn ? movedUp() : undefined} open={(id) => go({ name: 'loupe', id })} />
     </div>
   );
 }

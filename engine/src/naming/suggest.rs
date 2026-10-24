@@ -4,7 +4,7 @@
 //! few thumbnails. It is one short request, so it isn't throttled like a cull; when there
 //! is no local model, or it fails, the suggestion falls back to the Shoot's date.
 
-use crate::cull::Ollama;
+use crate::providers::Ollama;
 use crate::{Error, Result};
 use base64::Engine as _;
 use serde::Serialize;

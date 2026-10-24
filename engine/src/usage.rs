@@ -19,8 +19,8 @@ pub fn provider_model(provider: Option<&str>) -> (String, String) {
     let env = std::env::var("ARGUS_PROVIDER").ok();
     let name = provider.or(env.as_deref()).unwrap_or("ollama").to_string();
     let model = match name.as_str() {
-        "ollama" => crate::cull::Ollama::from_env().model,
-        "claude-code" => crate::cull::ClaudeCode::from_env().model,
+        "ollama" => crate::providers::Ollama::from_env().model,
+        "claude-code" => crate::providers::ClaudeCode::from_env().model,
         _ => std::env::var("ARGUS_CLAUDE_MODEL").unwrap_or_else(|_| "default".into()),
     };
     (name, model)

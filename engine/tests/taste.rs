@@ -20,11 +20,13 @@ fn flags(shoot: i64, pick: usize, reject: usize, n: usize) -> Vec<Flag> {
                     shoot,
                     vector: axis(pick, 1.0),
                     pick: true,
+                    edit: false,
                 },
                 Flag {
                     shoot,
                     vector: axis(reject, 1.0),
                     pick: false,
+                    edit: false,
                 },
             ]
         })
@@ -50,6 +52,20 @@ fn flags_on_the_card_being_culled_count_as_much_as_all_the_history() {
     let (history, card) = (head.score(&axis(0, 1.0)), head.score(&axis(2, 1.0)));
     assert!((history - card).abs() < 1e-5, "{history} vs {card}");
     assert!(head.score(&axis(3, 1.0)) < 0.0);
+}
+
+#[test]
+fn edits_on_other_shoots_teach_a_direction_of_their_own() {
+    // Flags on other Shoots say axis 0; which frames the person edited there says axis 2.
+    let mut all = flags(1, 0, 1, 50);
+    let mut edits = flags(1, 2, 3, MIN_FLAGS);
+    edits.iter_mut().for_each(|f| f.edit = true);
+    all.extend(edits.clone());
+    let head = Head::learn(&all, 7).unwrap();
+    let (flagged, edited) = (head.score(&axis(0, 1.0)), head.score(&axis(2, 1.0)));
+    assert!((flagged - edited).abs() < 1e-5, "{flagged} vs {edited}");
+    // Edits on the card being culled are left out: the card's own flags speak for it.
+    assert!(Head::learn(&edits, 1).is_none());
 }
 
 #[test]
@@ -146,6 +162,44 @@ fn a_cull_ranks_frames_like_the_ones_the_person_picked_on_other_shoots_higher() 
     assert!(worst_warm > best_cool, "warm {warm:?} vs cool {cool:?}");
 }
 
+fn edit_shoot(lib: &mut Library, shoot: i64, author: Author) {
+    let photos = lib
+        .list_photos(&PhotoFilter {
+            shoot: Some(shoot),
+            verdict: None,
+        })
+        .unwrap();
+    analyzers::facts_for(lib, &photos, &["embedding"]).unwrap();
+    for p in photos.iter().filter(|p| p.file_name.starts_with('w')) {
+        lib.write_recipe(p.id, &serde_json::json!({ "exposure": 0.3 }), author, None)
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_cull_ranks_frames_like_the_ones_the_person_edited_on_other_shoots_higher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut lib = Library::open(&tmp.path().join("lib")).unwrap();
+    let before = shoot(&mut lib, tmp.path(), "2026-10-01_Beach", 6, 6, 0);
+    edit_shoot(&mut lib, before, Author::Person);
+    let card = shoot(&mut lib, tmp.path(), "2026-10-08_Park", 3, 3, 10);
+    let (warm, cool) = tastes(&lib, card);
+    let worst_warm = warm.iter().copied().fold(f32::INFINITY, f32::min);
+    let best_cool = cool.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    assert!(worst_warm > best_cool, "warm {warm:?} vs cool {cool:?}");
+}
+
+#[test]
+fn the_ais_own_edits_teach_the_head_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut lib = Library::open(&tmp.path().join("lib")).unwrap();
+    let before = shoot(&mut lib, tmp.path(), "2026-10-01_Beach", 6, 6, 0);
+    edit_shoot(&mut lib, before, Author::Ai);
+    let card = shoot(&mut lib, tmp.path(), "2026-10-08_Park", 3, 3, 10);
+    let (warm, cool) = tastes(&lib, card);
+    assert!(warm.iter().chain(&cool).all(|&t| t == 0.0));
+}
+
 #[test]
 fn the_ais_own_flags_teach_the_head_nothing() {
     let tmp = tempfile::tempdir().unwrap();
@@ -214,6 +268,15 @@ fn rerating_as_the_person_flags_lifts_the_frames_like_their_picks() {
         (2, Some(Author::Person)),
         "the person's stars stay"
     );
+    // Keepers first: the order puts the unflagged frames like their Picks ahead of the rest,
+    // and leaves out what they rejected.
+    let at = |id| r.order.iter().position(|&o| o == id);
+    for p in cool.iter().take(5) {
+        assert_eq!(at(p.id), None, "a Reject has no place in the order");
+    }
+    let (w, c) = (at(warm[5].id).unwrap(), at(cool[5].id).unwrap());
+    assert!(w < c, "warm at {w}, cool at {c}: {:?}", r.order);
+    assert_eq!(r.order.len(), 14 - 5, "every frame but the Rejects");
 }
 
 mod technical {

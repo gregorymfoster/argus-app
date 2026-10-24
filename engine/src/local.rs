@@ -215,23 +215,44 @@ fn lens_blur(
     use crate::lens_blur as lb;
     use crate::masks::models::{self, SEG_SIZE};
     let blur = &recipe.lens_blur;
-    // The image as it will look, for the edge guide and for the models when they must run.
-    let fin = Finish::new(matrix, look, &recipe.render_adjust());
-    let enc: Vec<f32> = cam
+    // An edge guide for snapping depth and the subject to the photo. Luma with a rough
+    // display gamma is all a guide needs, in one cheap pass: the finished image would cost a
+    // whole render of the full-size frame.
+    let guide: Vec<f32> = cam
         .par_chunks(3)
-        .flat_map_iter(|p| fin.px([p[0], p[1], p[2]]))
+        .map(|p| {
+            (LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2])
+                .max(0.0)
+                .sqrt()
+                .min(1.0)
+        })
         .collect();
-    let guide: Vec<f32> = enc
-        .par_chunks(3)
-        .map(|p| (LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2]).clamp(0.0, 1.0))
-        .collect();
+    // The image as it will look, small, for the models when there's no Analysis.
     let small = std::sync::OnceLock::new();
     let small = || {
         small.get_or_init(|| {
+            let fin = Finish::new(matrix, look, &recipe.render_adjust());
+            let f = (w.max(h) / (2 * crate::analyzers::SMALL_EDGE)).max(1);
+            let (sw, sh) = (w / f, h / f);
+            let data = (0..sw * sh)
+                .into_par_iter()
+                .flat_map_iter(|i| {
+                    let (x0, y0) = ((i % sw) * f, (i / sw) * f);
+                    let mut a = [0f32; 3];
+                    for y in y0..y0 + f {
+                        for x in x0..x0 + f {
+                            let j = (y * w + x) * 3;
+                            a = [a[0] + cam[j], a[1] + cam[j + 1], a[2] + cam[j + 2]];
+                        }
+                    }
+                    let n = (f * f) as f32;
+                    fin.px([a[0] / n, a[1] / n, a[2] / n]).map(to8)
+                })
+                .collect();
             let img = RgbImage {
-                width: w,
-                height: h,
-                data: enc.iter().map(|&v| to8(v)).collect(),
+                width: sw,
+                height: sh,
+                data,
             };
             crate::masks::shrink(&img, crate::analyzers::SMALL_EDGE)
         })
@@ -294,9 +315,8 @@ fn lens_blur(
     let push = brush(&blur.blur_brush);
     let full = lb::depth_at_size(&depth, &guide, w, h);
     let defocus = lb::defocus(&full, range, keep.as_deref(), push.as_deref());
-    let mut out = cam.to_vec();
-    lb::apply(
-        &mut out,
+    let out = lb::apply(
+        cam,
         w,
         h,
         &lb::Plan {

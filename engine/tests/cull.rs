@@ -2,10 +2,11 @@
 
 use argus_engine::compute::Compute;
 use argus_engine::cull::{
-    apply, count_photo_keys, cull_shoot, cull_shoot_with, parse_json_reply, parse_response,
-    split_chunks, Claude, ContactSheet, CullPhoto, CullResult, Ollama, Provider, SheetPhoto,
+    apply, cull_shoot, cull_shoot_with, split_chunks, ContactSheet, CullPhoto, CullResult,
+    Provider, SheetPhoto,
 };
 use argus_engine::library::{Author, ImportOptions, Library, PhotoFilter, Verdict};
+use argus_engine::providers::{count_photo_keys, parse_json_reply, parse_response, Claude, Ollama};
 use argus_engine::signals::Signals;
 use std::cell::RefCell;
 use std::path::Path;
@@ -778,7 +779,7 @@ const STREAM_HEAD: &str =
 
 #[test]
 fn a_request_ollama_never_answers_fails_instead_of_waiting_all_night() {
-    use argus_engine::cull::Stall;
+    use argus_engine::providers::Stall;
     use std::time::{Duration, Instant};
     let o = ollama_at(silent_ollama(STREAM_HEAD, Duration::from_secs(5)));
     let agent = ureq::AgentBuilder::new().build();
@@ -799,8 +800,8 @@ fn a_request_ollama_never_answers_fails_instead_of_waiting_all_night() {
 
 #[test]
 fn cancel_stops_a_cull_mid_reply_within_a_moment() {
-    use argus_engine::cull::Stall;
     use argus_engine::progress::{cancel, Task, STOPPED};
+    use argus_engine::providers::Stall;
     use std::time::{Duration, Instant};
     // The model is reading a big sheet and won't say anything for a while.
     let o = ollama_at(silent_ollama(STREAM_HEAD, Duration::from_secs(10)));
@@ -828,7 +829,7 @@ fn cancel_stops_a_cull_mid_reply_within_a_moment() {
 
 #[test]
 fn a_reply_that_breaks_off_is_an_error_not_a_bad_parse() {
-    use argus_engine::cull::Stall;
+    use argus_engine::providers::Stall;
     use std::time::Duration;
     // One piece of the stream, then the connection closes (a model runner that died).
     let piece = r#"{"message":{"content":"{\"summary\":"},"done":false}"#;
@@ -1081,7 +1082,7 @@ fn by_default_the_model_is_asked_only_for_technical_failures() {
 
 #[test]
 fn bigger_sheets_get_longer_to_start_answering() {
-    use argus_engine::cull::Stall;
+    use argus_engine::providers::Stall;
     let sheet = |edge: u32| {
         let mut jpeg = vec![];
         image::RgbImage::new(edge, edge * 2 / 3)

@@ -46,6 +46,9 @@ pub struct Variant {
     pub think: Option<bool>,
     /// Overrides Auto's dials (crate::auto::Params); fields left out keep the built-in value.
     pub auto: Option<crate::auto::Params>,
+    /// "Apply to the rest" leads with the Shoot match, the matched take worked out from the
+    /// Shoot's hand edits without a model call (crate::shoot_match; default true).
+    pub shoot_match: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

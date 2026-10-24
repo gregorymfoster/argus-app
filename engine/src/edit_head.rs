@@ -99,8 +99,23 @@ impl Head {
         }
     }
 
+    /// The average Photo's facts, as the head was fitted.
+    #[cfg(test)]
+    pub(crate) fn mean_facts(&self) -> Vec<(String, f64)> {
+        self.features
+            .iter()
+            .cloned()
+            .zip(self.mean.iter().copied())
+            .collect()
+    }
+
+    /// The offset of the average Photo.
+    pub(crate) fn intercept(&self) -> &[f64] {
+        &self.intercept
+    }
+
     /// The z-scored features of a Photo's facts (0 for a scene fact it lacks).
-    fn z(&self, facts: &[(String, f64)]) -> Vec<f64> {
+    pub(crate) fn z(&self, facts: &[(String, f64)]) -> Vec<f64> {
         self.features
             .iter()
             .enumerate()
@@ -111,7 +126,7 @@ impl Head {
             .collect()
     }
 
-    fn predict(&self, facts: &[(String, f64)]) -> Vec<f64> {
+    pub(crate) fn predict(&self, facts: &[(String, f64)]) -> Vec<f64> {
         let mut out = self.intercept.clone();
         for (z, w) in self.z(facts).iter().zip(&self.weights) {
             for (o, w) in out.iter_mut().zip(w) {
@@ -247,7 +262,7 @@ fn fact_of(facts: &[(String, f64)], name: &str) -> Option<f64> {
     }
 }
 
-fn sliders(a: &Adjust) -> [f64; 9] {
+pub(crate) fn sliders(a: &Adjust) -> [f64; 9] {
     [
         a.exposure,
         a.contrast,

@@ -1,7 +1,8 @@
-// "Restart to update", like Cursor and Claude (Greg, 2026-10-18): the release installs in
-// the background, then a small button in the sidebar footer restarts into it, and a toast
-// says so once on screens without the sidebar. Check for Updates… (menu, ⌘K, Settings)
-// reports what it found. See src/data/updates.ts.
+// "Restart to update", like Cursor and Claude (Greg, 2026-10-18): every fresh launch checks
+// for a release (Greg, 2026-10-23), a quiet toast says once that one is downloading, then a
+// small button in the sidebar footer restarts into it, and a toast says so once on screens
+// without the sidebar. Check for Updates… (menu, ⌘K, Settings) reports what it found. See
+// src/data/updates.ts.
 
 import { useEffect, useRef } from 'react';
 import { ArrowUpCircle } from 'lucide-react';
@@ -46,10 +47,12 @@ export function UpdateButton() {
   );
 }
 
-/** Toasts: once when a release is ready, and the outcome of a Check for Updates… by hand. */
+/** Toasts: once when the background check finds a release, once when it's ready, and the
+ * outcome of a Check for Updates… by hand. */
 export function useUpdateToasts(asked: { current: boolean }) {
   const s = useUpdate();
   const shown = useRef<string | null>(null);
+  const found = useRef<string | null>(null);
   useEffect(() => onMenuCheck(() => (asked.current = true)), [asked]);
   useEffect(() => {
     if (!s) return;
@@ -60,7 +63,14 @@ export function useUpdateToasts(asked: { current: boolean }) {
       toast(`Argus ${s.version} is ready`, { id: 'update', description: 'Restart to update. Your work is saved.', action: restart, duration: 10000 });
       return;
     }
-    if (!asked.current) return;
+    if (!asked.current) {
+      // The launch check (and the one every 6 hours) found a release: say so once, quietly.
+      if (s.state === 'downloading' && s.version && found.current !== s.version) {
+        found.current = s.version;
+        toast(`Argus ${s.version} is downloading`, { id: 'update', description: 'Keep working. You can restart into it when it’s ready.' });
+      }
+      return;
+    }
     if (s.state === 'checking') toast('Checking for updates…', { id: 'update' });
     else if (s.state === 'downloading') toast(`Downloading Argus ${s.version}`, { id: 'update', description: 'Keep working; a Restart button appears when it’s ready.' });
     else if (s.state === 'current') toast(`Argus ${s.current} is the newest version`, { id: 'update' });

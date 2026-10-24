@@ -5,8 +5,8 @@
 set -euo pipefail
 version="$1" dmg="$2" sha="${3:-HEAD}"
 here=$(cd "$(dirname "$0")" && pwd)
-model=$(git -C "$here" show "$sha:engine/src/cull.rs" | sed -n 's/^pub const DEFAULT_OLLAMA_MODEL: &str = "\(.*\)";/\1/p')
-[ -n "$model" ] || { echo "stamp-install: no DEFAULT_OLLAMA_MODEL in engine/src/cull.rs at $sha" >&2; exit 1; }
+model=$(git -C "$here" show "$sha:engine/src/providers/ollama.rs" | sed -n 's/^pub const DEFAULT_OLLAMA_MODEL: &str = "\(.*\)";/\1/p')
+[ -n "$model" ] || { echo "stamp-install: no DEFAULT_OLLAMA_MODEL in engine/src/providers/ollama.rs at $sha" >&2; exit 1; }
 if command -v shasum >/dev/null; then sum=$(shasum -a 256 "$dmg"); else sum=$(sha256sum "$dmg"); fi
 out=$(sed -e "s/@@VERSION@@/$version/" -e "s/@@DMG_NAME@@/$(basename "$dmg")/" \
   -e "s/@@DMG_SHA256@@/${sum%% *}/" -e "s/@@MODEL@@/$model/" "$here/install.sh")

@@ -27,7 +27,7 @@ Fixed: issue 3 has a parity check now (`cd prototype && npm run preset-parity`, 
 Build: warm `just check` with goldens went from 43 s to 34 s (test binaries run side by side through `scripts/test-parallel`, a lighter denoise unit test). `cargo test -p argus-engine` was rebuilding about 90 crates because `-p` resolves features differently; every doc and skill now runs tests from the repo root. Goldens had been skipping silently in projects sessions because the container resumes a snapshot taken before `/mnt/project-files` was mounted; `just check` now fetches the sample RAWs itself (`scripts/cloud-ensure`).
 
 Still open, ranked:
-1. Issues 1 and 2 (split `tools.rs`, move Providers out of `cull.rs`): Greg's call on timing.
+1. Issues 1 and 2 (split `tools.rs`, move Providers out of `cull.rs`): done 2026-10-22 as pure moves, to `engine/src/tools/` (one file per area) and `engine/src/providers/`.
 2. Python copies of engine rules that can drift silently: `bench/taste_head.py:42-70` (the `awkward` and `taste::score` rules), `bench/crs.py:21` (`TEMP_PER_MIRED`, the XMP mapping), and `edit_head.py` folds that differ from `splits.fold`.
 3. The prototype has six ETA formatters and three byte formatters, each with different text. Merging them changes visible copy, so it needs a design call.
 4. App-shell Tauri calls (`restart_to_update`, window and menu events) skip `backend.ts`; a small `data/shell.ts` would give them one seam.

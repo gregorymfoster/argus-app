@@ -65,10 +65,13 @@ fn lens_blur_softens_the_background_and_keeps_the_people() {
     let render = || jpeg(&call("render_photo", json!({ "photo_id": 1, "long_edge": 768 }))[1]);
     let before = render();
 
-    call(
+    let edit = call(
         "edit_recipe",
         json!({ "photo_ids": [1], "set": { "lensBlur.amount": 100, "lensBlur.bokeh": "blade" } }),
     );
+    // The reply shows the Lens Blur it set, not only the global sliders.
+    let reply = &part_json(&edit[0])["photos"]["1"]["lensBlur"];
+    assert_eq!(reply["amount"], 100.0, "{reply}");
     let recipe = call("read_recipe", json!({ "photo_id": 1 }));
     let lb = &part_json(&recipe[0])["recipe"]["lensBlur"];
     assert_eq!(lb["amount"], 100.0, "{lb}");

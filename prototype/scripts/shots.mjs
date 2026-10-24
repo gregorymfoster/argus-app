@@ -259,6 +259,56 @@ await shot('13b-sort-menu', '#/cull', {
     },
   });
 }
+// Edit as you cull: Keepers first re-orders the frames ahead as you flag (data/keepers.ts), and a
+// hand edit gets the Picks and likely keepers their Shoot match (data/preEdit.ts).
+const flagSome = async (p, n = 12) => {
+  for (let i = 0; i < n; i++) {
+    await p.keyboard.press(i % 3 ? 'p' : 'x');
+    await p.waitForTimeout(240);
+  }
+  await p.waitForTimeout(1600);
+};
+await shot('13d-keepers-first-loupe', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Shift+K');
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(400);
+    await flagSome(p);
+  },
+});
+await shot('13e-keepers-first-menu', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Shift+K');
+    await p.getByTestId('sort').click();
+    await p.waitForTimeout(300);
+  },
+});
+const handEdit = async (p) => {
+  await p.goto(`${base}#/edit/p15`);
+  await p.waitForTimeout(500);
+  await p.getByRole('slider', { name: 'Temp' }).first().focus();
+  for (let i = 0; i < 5; i++) await p.keyboard.press('ArrowRight');
+  await p.waitForTimeout(300);
+};
+await shot('13f-pre-edits-grid', '#/cull', {
+  act: async (p) => {
+    await handEdit(p);
+    await p.goto(`${base}#/cull`);
+    await p.waitForTimeout(600);
+  },
+});
+await shot('13g-pre-edit-loupe', '#/cull', {
+  act: async (p) => {
+    await handEdit(p);
+    await p.goto(`${base}#/cull`);
+    await p.waitForTimeout(400);
+    await p.getByTestId('pre-edits-show').click();
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(400);
+    await p.keyboard.press('Backslash');
+    await p.waitForTimeout(600);
+  },
+});
 await shot('14-cull-hover-stars', '#/cull', {
   act: async (p) => {
     await p.locator('.tile').nth(1).locator('.stars button').nth(3).hover();
@@ -559,6 +609,53 @@ await check('smoke-look-slider', async () => {
   for (let i = 0; i < 10; i++) await p.keyboard.press('ArrowRight');
   const after = await p.locator('.look-after img').first().evaluate((el) => getComputedStyle(el).filter);
   if (before === after) throw new Error('slider did not change render');
+  await ctx.close();
+});
+
+await check('smoke-keepers-first-holds-what-you-passed', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.keyboard.press('Shift+K');
+  if ((await p.getByTestId('sort').getAttribute('data-sort')) !== 'keepers:asc') throw new Error('⇧K did not choose Keepers first');
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(400);
+  const seen = [await p.evaluate(() => location.hash)];
+  for (let i = 0; i < 12; i++) {
+    await p.keyboard.press(i % 3 ? 'p' : 'x');
+    await p.waitForTimeout(240);
+    seen.push(await p.evaluate(() => location.hash));
+  }
+  await p.waitForTimeout(1600);
+  if (!(await p.getByTestId('up-next').count())) throw new Error('no Up next mark in the filmstrip');
+  // Walking back retraces the frames flagged, in order: nothing behind moved.
+  for (let i = seen.length - 2; i >= 0; i--) {
+    await p.keyboard.press('ArrowLeft');
+    await p.waitForTimeout(80);
+    const at = await p.evaluate(() => location.hash);
+    if (at !== seen[i]) throw new Error(`frame ${i} moved: ${at} vs ${seen[i]}`);
+  }
+  await ctx.close();
+});
+
+await check('smoke-pre-edit-accept-in-loupe', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  await p.getByRole('slider', { name: 'Temp' }).first().focus();
+  for (let i = 0; i < 5; i++) await p.keyboard.press('ArrowRight');
+  await p.goto(`${base}#/cull`);
+  await p.waitForTimeout(400);
+  const line = p.getByTestId('pre-edits');
+  const n = Number(/ready for (\d+)/.exec((await line.textContent()) ?? '')?.[1]);
+  if (!n) throw new Error('no Shoot match line after a hand edit');
+  await p.getByTestId('pre-edits-show').click();
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(300);
+  if (!(await p.getByTestId('loupe-match').count())) throw new Error('the Loupe shows no Shoot match');
+  await p.keyboard.press('a');
+  await p.waitForTimeout(300);
+  if (await p.getByTestId('loupe-match').count()) throw new Error('A did not accept the Shoot match');
+  await p.keyboard.press('g');
+  await p.waitForTimeout(300);
+  const left = Number(/ready for (\d+)/.exec((await p.getByTestId('pre-edits').textContent()) ?? '')?.[1] ?? 0);
+  if (left !== n - 1) throw new Error(`expected ${n - 1} left, got ${left}`);
   await ctx.close();
 });
 
@@ -908,6 +1005,14 @@ await check('smoke-restart-to-update', async () => {
   const { p: q, ctx: c2 } = await page('#/cull');
   if (await q.getByTestId('update-restart').count()) throw new Error('Restart to update shows with nothing to install');
   await c2.close();
+  // The launch check found a release: one quiet toast while it downloads, no button yet.
+  const c3 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const d = await c3.newPage();
+  await d.goto(`${base}?update=downloading#/cull`);
+  await d.getByText('Argus 0.1.2 is downloading').waitFor();
+  if (await d.getByTestId('update-restart').count()) throw new Error('Restart to update shows before the download is done');
+  await d.screenshot({ path: `${out}/15-update-downloading.png` });
+  await c3.close();
 });
 
 await check('smoke-settings-nav-only-selected-active', async () => {
