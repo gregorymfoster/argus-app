@@ -258,6 +258,28 @@ pub fn tilt(facts: &Facts) -> Option<f32> {
     )
 }
 
+/// How many of a frame's main faces ([`eyes::main_faces`]) the frame cuts: the face box at a side
+/// or the bottom, or the top of the head (about half a face above the box) out of the frame.
+///
+/// Greg, tapping near-identical pairs (2026-10-24): he keeps the frame with more faces visible,
+/// more smiles, open eyes, sharper focus and nobody's head cut off. Read by the face model, only
+/// the last held up head to head: the frame that cuts fewer heads was his keeper in 12 of the
+/// 12 pairs where the two differ (10 blind taps, 2 drive bursts), while counting faces, smiles,
+/// open eyes and sharpness lost to the burst order already shipped (bench/burst_keeper.py,
+/// docs/research/burst-keeper.md).
+pub fn cut_off(facts: &Facts) -> usize {
+    let boxes = facts
+        .get("faces")
+        .map(crate::analyzers::faces::read)
+        .unwrap_or_default();
+    let reads = facts.get("eyes").map(eyes::read).unwrap_or_default();
+    eyes::main_faces(&reads)
+        .iter()
+        .filter_map(|r| boxes.get(r.face))
+        .filter(|f| f.x < 0.005 || f.x + f.w > 0.995 || f.y - 0.5 * f.h < 0.0 || f.y + f.h > 0.995)
+        .count()
+}
+
 /// A frame this much darker than the median of the frames shot within [`NEAR_S`] of it is a
 /// misjudged exposure of the same moment: 2 EV under is well below this, while on Greg's cards
 /// only 4 of 661 frames fall under it, none of them keepers. The Technical check leaves such a
@@ -378,15 +400,22 @@ pub fn rate(sheet: &ContactSheet, mut result: CullResult) -> CullResult {
             }
         }
         for (b, mut frames) in bursts {
-            // Inside a burst, the most upright heads first ([`tilt`]); a frame whose faces
-            // weren't found counts as the burst's average, so taste decides between those.
+            // Inside a burst, the frame that cuts off fewer heads first ([`cut_off`]), then the
+            // most upright heads ([`tilt`]); a frame whose faces weren't found counts as the
+            // burst's average lean, so taste decides between those.
             let tilts: Vec<f32> = frames
                 .iter()
                 .filter_map(|c| by_n.get(&c.n).and_then(|p| p.tilt))
                 .collect();
             let usual = tilts.iter().sum::<f32>() / tilts.len().max(1) as f32;
             let lean = |c: &CullPhoto| by_n.get(&c.n).and_then(|p| p.tilt).unwrap_or(usual);
-            frames.sort_by(|a, b| lean(a).total_cmp(&lean(b)).then_with(|| order(a, b)));
+            let cut = |c: &CullPhoto| by_n.get(&c.n).map_or(0, |p| p.cut_off);
+            frames.sort_by(|a, b| {
+                cut(a)
+                    .cmp(&cut(b))
+                    .then(lean(a).total_cmp(&lean(b)))
+                    .then_with(|| order(a, b))
+            });
             for (rank, c) in frames.into_iter().enumerate() {
                 c.stack = Some(b as u32 + 1);
                 c.rank = Some(rank as u32 + 1);

@@ -43,9 +43,10 @@ claude mcp add argus -- /path/to/argus/target/release/argus mcp --library /Users
 | --- | --- |
 | `list_shoots` | Shoots in the Library, with Photo counts |
 | `rename_shoot` | Rename a Shoot by the naming rules; its originals folder follows |
+| `move_photos` | Move Photos to another Shoot or a new one (also how a Shoot is split); copied originals follow, an emptied Shoot is removed |
 | `list_photos` | Photos in capture order with Verdict, reason and Stack; filter by Shoot or Verdict |
 | `find_cards` | Memory cards mounted on this Mac (volumes with a `DCIM` folder) |
-| `scan_folder` | The photos in a folder or on a Card without importing them, each marked if the Library already has it (same name, size and capture time); a RAW+JPEG frame is one Photo, the RAW |
+| `scan_folder` | The photos in a folder or on a Card without importing them, each marked if the Library already has it (same name, size and capture time); a RAW+JPEG frame is one Photo, the RAW; `shoots` proposes a Shoot per outing (a new one after an hour's gap) |
 | `import_folder` | Import a folder, or just the chosen `files` in it, as one new Shoot. A RAW+JPEG frame is one Photo (the RAW, with its JPEG kept beside it, or skipped with `raw_only`) (dedupes, never writes to originals) |
 | `estimate_import` | How much disk an Import would take before running it: the originals' size, whether they'd be copied into the Library, the estimated previews, the total and the free space. Reads file sizes only |
 | `library_storage` | Where the Library folder is and what each part takes on disk (originals inside and outside it, previews, cache, database, Backups), how many originals are missing, and the free space |
@@ -99,7 +100,9 @@ claude mcp add argus -- /path/to/argus/target/release/argus mcp --library /Users
 | `crop.*` settings | `edit_recipe` also straightens (`crop.angle`, degrees) and crops (`crop.x/y/w/h`, fractions of the straightened frame, never empty corners) |
 | `suggest_edits` | Queue Suggestions (2-3 whole edits each) for one Photo, a list, or a Shoot (rejects skipped, Picks first) |
 | `match_to_photo` | "Apply this look to the rest": the Hero Photo's style becomes a Look, the others get 2 matched Suggestions under it (on a RAW the first is the Shoot match, worked out from the Shoot's hand edits without a model call) |
-| `pre_edit_shoot` | Edit as you cull: a Shoot match Suggestion for each Pick and likely keeper (4★ and up) the person hasn't edited, from the Shoot's hand edits, in the background with no model call. Runs by itself after each hand edit of a RAW and as the stars refresh |
+| `pre_edit_shoot` | Edit as you cull: a Shoot match Suggestion for each Pick and likely keeper (4★ and up) the person hasn't edited, from the Shoot's hand edits, in the background with no model call. Runs by itself after each hand edit of a RAW and as the stars refresh. `every: true` is Lock look: every frame that is not a Reject, answered Shoot matches worked out again |
+| `offer_crop` | Crop like this: offer a Photo's crop as a Suggestion to the frames of its Shoot with the same shape shot within 2 minutes (inside their Shoot match when one is waiting). Runs by itself after each hand crop; a Photo without a crop takes its open offers back. Accepting one changes only the crop |
+| `suggest_heroes` | Which Photos of a Shoot to edit by hand first so the Shoot match learns the most: the most typical frame for one, the least-uncertainty set for more, counting the ones already edited (research lab E6/E11) |
 | `list_suggestions` / `get_suggestion` | Open Suggestions for a Photo or Shoot (title, why, whole Recipe), or one with its preview JPEG |
 | `accept_suggestion` / `dismiss_suggestion` | The person's call: accepting saves a new Version; `suggestion_ids` accepts one take on each of several Photos in one batch |
 | `enqueue_job` / `list_jobs` / `cancel_job` / `reorder_jobs` | The Queue directly: kinds `suggest`, `suggest_shoot`, `match_hero`, `cull_shoot` (alias `rate_shoot`), `check_shoot`, `tag_photos`, `analyze`, `rank_presets`, `learn_edits`, `denoise`, `render_previews` (`jobs::KINDS`); asking twice returns the queued job; `reorder_jobs` sets the waiting order (the open Photo's work stays first) |

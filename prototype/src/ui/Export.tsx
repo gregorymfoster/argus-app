@@ -15,6 +15,7 @@ import { useLibrary, verdictOf } from '../store/library';
 import type { Photo } from '../domain/types';
 import { Kbd } from './kit';
 import { ProgressBar } from './Progress';
+import { EMPTY_ART } from './emptyArt';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -191,8 +192,9 @@ function ExportToast() {
     <div className="export-toast" aria-live="polite">
       {!r.finished && <ProgressBar label={r.current ?? 'Starting'} done={r.done} total={r.total} eta={left} testId="export-status" />}
       {r.finished && (
-        <div className="faint" style={{ fontSize: 11.5 }} data-testid="export-status">
-          {`${r.cancelled ? 'Stopped. ' : 'Done. '}${ok} ${ok === 1 ? 'file' : 'files'} in ${r.folder ?? 'the export folder'}`}
+        <div className="export-done faint" data-testid="export-status">
+          {!r.cancelled && !r.failed.length && <img className="empty-art" src={EMPTY_ART.done} alt="" />}
+          <span>{`${r.cancelled ? 'Stopped. ' : 'Done. '}${ok} ${ok === 1 ? 'file' : 'files'} in ${r.folder ?? 'the export folder'}`}</span>
         </div>
       )}
       {r.failed.slice(0, 3).map((f) => (

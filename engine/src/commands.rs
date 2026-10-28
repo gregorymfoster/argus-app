@@ -23,6 +23,7 @@
 //! | `thumbnail`    | {path, long_edge = 320}                | {images: [data URL]}          |
 //! | `face_crops`   | {faces: [{photo_id, face}], edge = 160} | {"<photo>-<face>": Library-relative square JPEG of the face, or null}; cached on disk |
 //! | `edited_previews` | {photo_ids, long_edge}              | {"<id>": Library-relative JPEG of the Photo with its edits, or null}; cached on disk by what it shows |
+//! | `shoot_look_preview` | {hero_id, recipe?, photo_ids?, long_edge?} | {hero_id, anchors, frames: [{photo_id, anchor, sliders, reach, check, image?, error}], ms}: the Shoot matched to the hero as dragged (crate::shoot_look) |
 //! | `suggest_name` | {paths? \| shoot_id?, captured_at?, provider?} | {name, by, note}       |
 //! | `shoot_name`   | {title, captured_at?}                  | {shoot_name, originals}       |
 //! | `reveal`       | {shoot_id? \| photo_id? \| path?}      | {path, shown}                 |
@@ -31,7 +32,7 @@
 //! | `focus_photo` | {photo_id, next_ids?}                | {raised}                      |
 //! | `render_previews` | {shoot_id?, compute?}           | [`crate::library::PreviewReport`] |
 //! | `pending_previews` | {shoot_id?}                    | {pending}                     |
-//! | `start_import` | as `import_folder`                     | {started: true}               |
+//! | `start_import` | as `import_folder`, or `shoots: [{shoot_name, files}]` for a card split into Shoots | {started: true} |
 //! | `import_result` | {}                                    | {running, report?, error?}    |
 //! | `render_detail` | as `render_photo`, long_edge up to full size | as `render_photo`: the zoomed view's sharp render |
 //! | `cancel_import` | {}                                    | {cancelled}: stops after the files in hand, keeping them |
@@ -52,7 +53,10 @@
 //! `start_import` runs `import_folder` on its own thread and returns at once, so the app
 //! can open the new Shoot (its Photos land as they're copied) without a request in flight
 //! across a page load (Tauri resends one the page dropped, which imported twice).
-//! `import_result` says how the last one ended. One Import runs at a time.
+//! `import_result` says how the last one ended. One Import runs at a time. With `shoots`
+//! (the Splits the person kept, from `scan_folder`) it imports each as its own Shoot, in
+//! order, with the other arguments shared; `report` is the last one's, and a cancel stops
+//! before the next Shoot.
 //!
 //! `agent` runs the Agent's tool-use loop ([`crate::agent`]): a request in plain words,
 //! carried out through the same tools, as one undoable batch (`undo_batch`).
@@ -206,6 +210,18 @@ struct EditedPreviewArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ShootLookArgs {
+    hero_id: PhotoId,
+    /// The hero's Recipe as it stands on screen; its saved one when left out.
+    recipe: Option<Value>,
+    /// Which frames; every frame of the Shoot that isn't a Reject when left out.
+    photo_ids: Option<Vec<PhotoId>>,
+    /// Render each frame this big; only the match when left out.
+    long_edge: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FaceCropArgs {
     faces: Vec<crate::library::FaceRef>,
     #[serde(default = "face_edge")]
@@ -298,6 +314,37 @@ fn args<T: DeserializeOwned>(command: &str, v: Value) -> Result<T> {
 static IMPORT: std::sync::Mutex<(bool, Option<std::result::Result<Value, String>>)> =
     std::sync::Mutex::new((false, None));
 
+/// Set by a cancel, so a split Import stops before its next Shoot.
+static IMPORT_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `start_import`'s arguments as one `import_folder` call per Shoot: with `shoots`, each
+/// gets the shared arguments plus its own `shoot_name` and `files`.
+fn split_import(mut a: Value) -> Result<Vec<Value>> {
+    let Some(shoots) = a.as_object_mut().and_then(|o| o.remove("shoots")) else {
+        return Ok(vec![a]);
+    };
+    let shoots = shoots
+        .as_array()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Error("start_import: `shoots` must be a non-empty list".into()))?;
+    shoots
+        .iter()
+        .map(|s| {
+            let mut part = a.clone();
+            for key in ["shoot_name", "files"] {
+                match s.get(key) {
+                    Some(v) => part[key] = v.clone(),
+                    None if key == "files" => {
+                        return Err(Error("start_import: each Shoot needs `files`".into()))
+                    }
+                    None => {}
+                }
+            }
+            Ok(part)
+        })
+        .collect()
+}
+
 /// Polled every few seconds: in the Debug log only when slow or failing.
 const POLLS: &[&str] = &[
     "queue_status",
@@ -347,8 +394,25 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
                 *state = (true, None);
             }
             let library = tools.library().to_path_buf();
+            IMPORT_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
             std::thread::spawn(move || {
-                let r = dispatch(&Tools::new(library), "import_folder", a).map_err(|e| e.0);
+                let tools = Tools::new(library);
+                let r = match split_import(a) {
+                    Ok(parts) => {
+                        let mut last = Ok(json!(null));
+                        for part in parts {
+                            if IMPORT_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
+                            last = dispatch(&tools, "import_folder", part).map_err(|e| e.0);
+                            if last.is_err() {
+                                break;
+                            }
+                        }
+                        last
+                    }
+                    Err(e) => Err(e.0),
+                };
                 *IMPORT.lock().unwrap() = (false, Some(r));
             });
             Ok(json!({ "started": true }))
@@ -361,11 +425,17 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
                 None => json!({ "running": state.0 }),
             })
         }
-        "cancel_import" => Ok(json!({ "cancelled": crate::progress::cancel("import") })),
+        "cancel_import" => {
+            IMPORT_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(json!({ "cancelled": crate::progress::cancel("import") }))
+        }
         "cancel_task" => {
             let a: CancelArgs = args(command, a)?;
             if !["auto", "cull", "import"].contains(&a.kind.as_str()) {
                 return Err(Error(format!("{} can't be cancelled", a.kind)));
+            }
+            if a.kind == "import" {
+                IMPORT_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Ok(json!({ "cancelled": crate::progress::cancel(&a.kind) }))
         }
@@ -388,6 +458,49 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             let lib = Library::open(tools.library())?;
             let files = crate::tools::edited_previews(&lib, &a.photo_ids, a.long_edge)?;
             Ok(json!(files))
+        }
+        // The Shoot look: the whole Shoot matched to the hero as it is dragged (crate::shoot_look).
+        "shoot_look_preview" => {
+            let a: ShootLookArgs = args(command, a)?;
+            let lib = Library::open(tools.library())?;
+            let hero = lib
+                .photo(a.hero_id)?
+                .ok_or_else(|| Error(format!("no Photo with id {}", a.hero_id)))?;
+            let recipe = match &a.recipe {
+                Some(v) => crate::recipe::Recipe::from_value(v)?,
+                None => crate::tools::current_recipe(&lib, hero.id)?,
+            };
+            let ids = match a.photo_ids {
+                Some(ids) => ids,
+                None => lib
+                    .list_photos(&crate::library::PhotoFilter {
+                        shoot: Some(hero.shoot_id),
+                        verdict: None,
+                    })?
+                    .into_iter()
+                    .filter(|p| p.verdict != crate::library::Verdict::Reject)
+                    .map(|p| p.id)
+                    .collect(),
+            };
+            let edge = a
+                .long_edge
+                .map(|e| e.clamp(64, crate::auto::MEASURE_EDGE as u32) as usize);
+            let t = std::time::Instant::now();
+            let pv = crate::shoot_look::preview(&lib, &hero, &recipe, &ids, edge)?;
+            let frames: Vec<Value> = pv
+                .frames
+                .iter()
+                .map(|f| {
+                    let mut v = json!(f);
+                    if let Some(j) = &f.jpeg {
+                        v["image"] = data_url(j);
+                    }
+                    v
+                })
+                .collect();
+            Ok(
+                json!({ "hero_id": pv.hero_id, "anchors": pv.anchors, "frames": frames, "ms": t.elapsed().as_millis() as u64 }),
+            )
         }
         "face_crops" => {
             let a: FaceCropArgs = args(command, a)?;

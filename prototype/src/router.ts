@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { routeSwap } from './ui/motion';
 
 export type Route =
   | { name: 'import' }
@@ -31,7 +32,14 @@ export function go(r: Route) {
 export function useRoute(): Route {
   const [route, setRoute] = useState(() => parse(location.hash));
   useEffect(() => {
-    const on = () => setRoute(parse(location.hash));
+    // Screen to screen goes through routeSwap, so the photo can fly between grid and Loupe.
+    let cur = parse(location.hash).name;
+    const on = () => {
+      const next = parse(location.hash);
+      const from = cur;
+      cur = next.name;
+      routeSwap(from, next.name, () => setRoute(next));
+    };
     window.addEventListener('hashchange', on);
     return () => window.removeEventListener('hashchange', on);
   }, []);

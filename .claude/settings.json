@@ -28,5 +28,10 @@
         "ref": "v0.9.99"
       }
     }
+  },
+  "permissions": {
+    "allow": [
+      "mcp__remote-devices__computer_request_access"
+    ]
   }
 }

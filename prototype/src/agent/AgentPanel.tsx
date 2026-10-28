@@ -9,6 +9,7 @@ import type { Photo } from '../domain/types';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
 import { Button } from '@/components/ui/button';
 import { TaskProgress, wasStopped } from '../ui/Progress';
+import { useChanged } from '../ui/motion';
 
 const DEMO_PROVIDERS = [
   { id: 'ollama', label: 'Ollama · qwen3.8:27b', note: 'On this Mac · nothing leaves it' },
@@ -52,6 +53,15 @@ export function useAgentRunner(ctx: string) {
   );
 }
 
+/** A step's mark: the spinner while it runs, then a tick that draws itself the moment it lands. */
+function StepMark({ s }: { s: { done: boolean; failed?: boolean; stopped?: boolean } }) {
+  const landed = useChanged(s.done);
+  if (s.stopped) return <CircleSlash size={12} strokeWidth={2.2} color="var(--text-3)" />;
+  if (s.failed) return <X size={12} strokeWidth={2.6} color="var(--reject)" />;
+  if (s.done) return <Check size={12} strokeWidth={2.6} color="var(--done)" className={landed ? 'draw' : undefined} />;
+  return <span className="spin" />;
+}
+
 function Message({ m, ctx, onReview }: { m: ChatMessage; ctx: string; onReview?: (ids: string[]) => void }) {
   const { dispatch } = useLibrary();
   const undo = (a: NonNullable<ChatMessage['actions']>[number]) => (a.batch != null ? void liveUndo(ctx, m.id, a.batch, dispatch) : dispatch({ type: 'undo' }));
@@ -66,7 +76,7 @@ function Message({ m, ctx, onReview }: { m: ChatMessage; ctx: string; onReview?:
             const [label, time] = s.label.split(' ·');
             return (
               <div className="step" key={i}>
-                {s.stopped ? <CircleSlash size={12} strokeWidth={2.2} color="var(--text-3)" /> : s.failed ? <X size={12} strokeWidth={2.6} color="var(--reject)" /> : s.done ? <Check size={12} strokeWidth={2.6} color="var(--done)" /> : <span className="spin" />}
+                <StepMark s={s} />
                 <span className="label">{label}</span>
                 <span className="time">{time ?? ''}</span>
               </div>

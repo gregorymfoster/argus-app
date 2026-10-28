@@ -1,12 +1,14 @@
 # Argus
 
-![Argus after an AI cull: a Shoot of 34 photos with star ratings and Stacks, and the Agent panel on the right](docs/media/grid.webp)
+![Argus: a glass camera with light trailing behind it](prototype/src/assets/brand/hero-wide.webp)
 
 Argus is a photo editor for the Mac that does the boring half of Lightroom for you. Import a card, and a model looks at the whole Shoot at once: it rejects the blurry and blinking frames, stars the rest, groups bursts into Stacks and picks the best of each. Then it offers two or three finished edits per Photo (Natural, Punchy, Bright) that you accept, dial down or ignore. You can also just ask it things, like "fix the lighting on this one" or "make the whole shoot consistent", and undo anything it did in one step.
 
 It runs on your own Mac with a local model, so your photos never leave the machine unless you choose otherwise. There are no API keys and no accounts. Your originals are never written to.
 
 It's early. Expect rough edges, and please tell Greg when you hit one.
+
+![Argus after an AI cull: a Shoot of 34 photos with star ratings and Stacks, and the Agent panel on the right](docs/media/grid.webp)
 
 ## A look around
 

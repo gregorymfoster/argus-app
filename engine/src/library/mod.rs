@@ -50,9 +50,9 @@ pub use people::{FaceName, FaceRef, Person, PersonId};
 pub use previews::PreviewReport;
 pub use ratings::{BestPhoto, CullState};
 pub use remove::{Removal, RemoveReport, RestoreReport, TRASH_FILE};
-pub use scan::{find_cards, is_on_card, Card, Scan, ScannedPhoto};
+pub use scan::{find_cards, is_on_card, Card, Scan, ScanShoot, ScannedPhoto};
 pub use search::{Album, Hit as SearchHit};
-pub use shoots::RenameReport;
+pub use shoots::{MoveTo, PhotoMoveReport, RenameReport};
 pub use storage::{
     move_library, move_library_via, ImportEstimate, MissingOriginal, MoveReport, RebuildReport,
     RelinkReport, Settings, Storage, Usage,
@@ -583,6 +583,7 @@ impl Library {
             lib.log_recipe(photo, next, recipe, author.as_str(), batch);
             crate::denoise::queue_if_needed(lib, photo, recipe, author)?;
             if author == Author::Person {
+                crate::crop_offer::after_edit(lib, photo, recipe)?;
                 crate::pre_edit::queue_after_edit(lib, photo)?;
             }
             Ok(next)

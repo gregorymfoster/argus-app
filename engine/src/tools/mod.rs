@@ -28,7 +28,7 @@ use crate::compute::Compute;
 use crate::cull::{self, Provider};
 use crate::jobs;
 use crate::library::{
-    is_on_card, Author, BatchId, ImportOptions, Library, Look, Photo, PhotoFilter, PhotoId,
+    is_on_card, Author, BatchId, ImportOptions, Library, Look, MoveTo, Photo, PhotoFilter, PhotoId,
     ShootId, Verdict,
 };
 use crate::masks::{Canvas, Mask, Shape};
@@ -382,6 +382,13 @@ pub(crate) fn album_photos(lib: &Library, query: &Value) -> Result<Vec<PhotoId>>
         .into_iter()
         .map(|h| h.photo_id)
         .collect())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SuggestHeroes {
+    shoot_id: Option<ShootId>,
+    count: Option<usize>,
 }
 
 #[derive(Deserialize)]

@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { Aperture } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import heroWelcome from '../assets/brand/hero-welcome.webp';
 import { pickFolder } from '../data/backend';
 import { createLibrary, openLibrary, reloadOnLibrary, tidy, type LibraryInfo } from '../data/libraries';
 
@@ -34,6 +35,7 @@ export function FirstRun({ info }: { info: LibraryInfo }) {
   return (
     <div className="first-run" data-testid="first-run">
       <div className="first-run-card">
+        {!lost && <img className="first-run-hero" src={heroWelcome} alt="" />}
         <div className="brand">
           <Aperture size={18} strokeWidth={1.6} />
           Argus

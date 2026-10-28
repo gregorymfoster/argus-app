@@ -33,6 +33,7 @@ const MAX_RESULT_CHARS: usize = 6000;
 pub const TOOLS: &[&str] = &[
     "list_shoots",
     "list_photos",
+    "move_photos",
     "get_preview",
     "get_contact_sheet",
     "set_verdict",
@@ -52,6 +53,7 @@ pub const TOOLS: &[&str] = &[
     "paste_settings",
     "suggest_edits",
     "match_to_photo",
+    "suggest_heroes",
     "list_suggestions",
     "queue_status",
     "analyze_photo",

@@ -6,6 +6,7 @@ import { Sparkles } from 'lucide-react';
 import { PHOTO_BY_ID } from '../data/dummy';
 import { useLibrary, verdictOf } from '../store/library';
 import { PhotoView } from './PhotoView';
+import { useChanged } from './motion';
 
 const SPAN = 40;
 
@@ -30,7 +31,7 @@ export function Filmstrip({ order, pos, stackIds = [], upNext = false, moved, op
         const thumb = (
           <button key={id} className={cls} onClick={() => open(id)} aria-label={`${s.file}, ${s.reason}`}>
             <PhotoView photo={s} size="tile" edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
-            {v === 'pick' && <span className="dot pick" />}
+            <PickDot on={v === 'pick'} />
           </button>
         );
         if (!upNext || id !== order[pos] || pos === order.length - 1) return thumb;
@@ -45,4 +46,10 @@ export function Filmstrip({ order, pos, stackIds = [], upNext = false, moved, op
       })}
     </div>
   );
+}
+
+/** The filmstrip's Pick dot, which stamps on when the Photo is Picked while the strip is showing. */
+function PickDot({ on }: { on: boolean }) {
+  const stamp = useChanged(on);
+  return on ? <span key={stamp} className={`dot pick${stamp ? ' stamp' : ''}`} /> : null;
 }

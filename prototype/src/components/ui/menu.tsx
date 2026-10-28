@@ -1,6 +1,7 @@
 // Dropdown and context menus share one look, as in shadcn/ui.
 import * as React from 'react';
 import { ContextMenu as CM, DropdownMenu as DM } from 'radix-ui';
+import { ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { markEscape } from './dialog';
 
@@ -36,4 +37,21 @@ function ContextMenuSeparator({ className, ...props }: React.ComponentProps<type
   return <CM.Separator className={cn('-mx-1 my-1 h-px bg-border', className)} {...props} />;
 }
 
-export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator };
+const ContextMenuSub = CM.Sub;
+function ContextMenuSubTrigger({ className, children, ...props }: React.ComponentProps<typeof CM.SubTrigger>) {
+  return (
+    <CM.SubTrigger className={cn(item, 'data-[state=open]:bg-selected data-[state=open]:text-text', className)} {...props}>
+      {children}
+      <ChevronRight size={13} className="ml-auto" />
+    </CM.SubTrigger>
+  );
+}
+function ContextMenuSubContent({ className, ...props }: React.ComponentProps<typeof CM.SubContent>) {
+  return (
+    <CM.Portal>
+      <CM.SubContent className={cn(content, className)} {...props} />
+    </CM.Portal>
+  );
+}
+
+export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent };

@@ -126,3 +126,18 @@ The shipped `shoot_match.json` is retrained on the full set (same recipe: within
 ## Greg's taps (review page, 2026-10-23 5:38-5:55 PM ET)
 
 Blind pairs from the held-out run (61 Photos, no hidden-window days), latest answer per Photo and question, Shoot match wins-losses-same: against Sync with 1 hero 16-7-4, against Sync with 3 heroes 4-3-6, against the Edit head 8-5-2. All three together 28-15 on decisive taps (sign test p = 0.07). The one-hero case is where dE said the gain was biggest over Sync, and it is where his eye agrees most (p = 0.09 alone). With three heroes the two look alike to him, as the 0.6 dE gap predicts. Left-side picks 25 of 44, so no strong side bias. Leaning the right way, not yet decisive: about 20 more taps per question would settle it.
+
+## Smarter Shoot match on by default (2026-10-24)
+
+Greg's check-in answer: "turn it on, with an off switch". The research lab's E10 (lab notebook) now runs in `engine::shoot_match`. It reads the anchors as a Gaussian process, and a frame unlike every anchor leans toward the Edit head. The lab measured 9.24 to 9.04 linearised dE at one hero and 8.63 to 8.50 at three (8.32 with its suggested heroes, which aren't in the engine yet). Its `gp` and `fallback` hypers sit on top of the retrained 6,456-pair model above; they were tuned on the 4,860-pair one. Settings › AI and Compute › Smarter Shoot match (the queue setting `shoot_match_smart`, also through `set_queue`) turns it off and goes back to the weighted mean.
+
+Checked in the bench afterwards (`within-gp` in `bench/shoot_style.py`, same hypers): on the 6,456-pair set it still helps, 9.42 to 9.27 at one hero and 8.63 to 8.55 at three (linearised dE, dev folds, own sensitivity). Rendered on 84 cloud bench Photos with the bigger training set:
+
+| | 1 hero | 3 heroes |
+|---|---|---|
+| Edit head | 9.81 | |
+| Sync | 10.35 | 9.25 |
+| Shoot match | 8.93 | 8.20 |
+| Smarter Shoot match | 8.85 | 8.17 |
+
+`page --draw N` writes one review-page run per hero draw, so the same Photos give more blind trials (2026-10-24: three draws on 72 votable Photos, with the smarter match as its own column).

@@ -46,7 +46,9 @@ for i in range(8):
 `, folder]);
 
 // A stand-in for Ollama on :7879 for the Agent's AI cull: answers the model load, then
-// picks photo 1, stacks 1 and 2, rejects the rest.
+// picks photo 1, stacks 1 and 2, rejects the rest. ARGUS_CULL_ASK=all sends it every Photo:
+// by default the model only sees the ones the rules find doubtful, and these flat test
+// images never are.
 let modelCalls = 0;
 let agentCalls = 0;
 let namingCalls = 0;
@@ -85,7 +87,7 @@ const port = 4444;
 // A virtual screen when there is no real one (the cloud container).
 let display = process.env.DISPLAY;
 const xvfb = display ? null : spawn('Xvfb', [(display = `:${90 + Math.floor(Math.random() * 9)}`), '-screen', '0', '1440x900x24'], { stdio: 'ignore' });
-const driver = spawn('tauri-driver', [], { stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, DISPLAY: display, ARGUS_LIBRARY: library, ARGUS_CONFIG: join(tmp, 'config/libraries.json'), ARGUS_VOLUMES: volumes, OLLAMA_HOST: '127.0.0.1:7879', ARGUS_PROVIDER: 'ollama', ARGUS_CULL_CHECK: 'model', ARGUS_COMPUTE: 'full' } });
+const driver = spawn('tauri-driver', [], { stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, DISPLAY: display, ARGUS_LIBRARY: library, ARGUS_CONFIG: join(tmp, 'config/libraries.json'), ARGUS_VOLUMES: volumes, OLLAMA_HOST: '127.0.0.1:7879', ARGUS_PROVIDER: 'ollama', ARGUS_CULL_CHECK: 'model', ARGUS_CULL_ASK: 'all', ARGUS_COMPUTE: 'full' } });
 
 const wd = async (method, path, body) => {
   const r = await fetch(`http://127.0.0.1:${port}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
@@ -117,6 +119,21 @@ const waitFor = async (css, ms = 15000) => {
     if (await js(`return !!document.querySelector(arguments[0])`, [css])) return;
   }
   throw new Error(`timed out waiting for ${css}`);
+};
+// Click once the photo's zoom between grid and Loupe/Edit (a View Transition) has finished: while
+// it runs the page sits under the transition's snapshot and WebDriver calls elements not interactable.
+const clickWhenReady = async (css, ms = 5000) => {
+  for (const t0 = Date.now(); ; await sleep(150)) {
+    const zooming = await js(`return !!document.documentElement.dataset.zoom`);
+    if (!zooming || Date.now() - t0 > ms) {
+      try {
+        const el = await find(css);
+        return await wd('POST', `/session/${sid}/element/${Object.values(el)[0]}/click`, {});
+      } catch (e) {
+        if (Date.now() - t0 > ms) throw e;
+      }
+    }
+  }
 };
 const shot = async (name) => writeFileSync(join(out, `app-${name}.png`), Buffer.from(await wd('GET', `/session/${sid}/screenshot`), 'base64'));
 const invoke = (command, args) =>
@@ -258,21 +275,25 @@ try {
   const loupe = await js(`return [...document.querySelectorAll('img')].filter((i) => i.naturalWidth > 0 && i.getBoundingClientRect().width > 400).length`);
   check(loupe > 0, 'the loupe shows the Photo large');
   const side0 = await js(`return document.querySelector('aside.side')?.textContent ?? ''`);
-  check(!/Claude/.test(side0) && !/suggests/.test(side0), `before any cull the loupe claims no AI suggestion ("${side0.slice(0, 40)}")`);
+  // An AI suggestion shows as the "AI read" section; the Keywords hint ("The AI suggests some
+  // after a cull") is not one.
+  check(!/Claude/.test(side0) && !/AI read/.test(side0), `before any cull the loupe claims no AI suggestion ("${side0.slice(0, 40)}")`);
   await shot('loupe');
 
   // Flagging jumps to the next Photo: X right after P lands on the second Photo.
   await js(`location.hash = '#/cull'`);
   await waitFor('.tile img');
-  await (async () => {
-    const el = await find(`[data-testid="tile-${first}"]`);
-    await wd('POST', `/session/${sid}/element/${Object.values(el)[0]}/click`, {});
-  })();
+  await clickWhenReady(`[data-testid="tile-${first}"]`);
+  // Let the grid settle (sorts, previews) between keys, as a person's keystrokes would.
+  await sleep(300);
   await press('p');
+  await sleep(300);
   await press('x');
   await sleep(600);
-  const second = (await invoke('photos', {})).find((p) => p.id === photos[1].id);
-  check(second.verdict === 'reject', `P then X flags the next Photo (second got ${second.verdict})`);
+  const flagged = await invoke('photos', {});
+  const second = flagged.find((p) => p.id === photos[1].id);
+  const rejected = flagged.filter((p) => p.verdict === 'reject').map((p) => p.file_name ?? p.id);
+  check(second.verdict === 'reject', `P then X flags the next Photo (second got ${second.verdict}; rejected: ${rejected.join(', ') || 'none'})`);
 
   await js(`location.hash = '#/compare/${photos[0].id},${photos[1].id}'`);
   await sleep(1200);

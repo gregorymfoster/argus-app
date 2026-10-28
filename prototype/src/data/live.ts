@@ -260,10 +260,16 @@ export interface ImportReport {
  * Resolves with the report only when the Import ends before its Shoot could open (nothing
  * new, or an error).
  */
-export async function liveImport(folder: string, shoot: string | null, cullAfter: boolean, files?: string[], rawOnly = false, copy?: boolean, bytes?: number, auto = false, suggest = cullAfter): Promise<ImportReport> {
+/**
+ * Import a folder or card, then open the new Shoot as soon as its first Photo lands. With
+ * `shoots` (a card split into Shoots), each is imported as its own Shoot, in order, and the
+ * first one opens.
+ */
+export async function liveImport(folder: string, shoot: string | null, cullAfter: boolean, files?: string[], rawOnly = false, copy?: boolean, bytes?: number, auto = false, suggest = cullAfter, shoots?: { shoot_name: string; files: string[] }[]): Promise<ImportReport> {
   if (bytes) noteImportStarted(bytes, copy ?? true);
   const before = new Set((await call<EngineShoot[]>('list_shoots')).map((s) => s.id));
-  await call('start_import', { folder, ...(shoot ? { shoot_name: shoot } : {}), ...(files ? { files } : {}), raw_only: rawOnly, cull: cullAfter, suggest, auto, provider: chosenProvider(), ...(copy != null ? { copy } : {}) });
+  const what = shoots?.length ? { shoots } : { ...(shoot ? { shoot_name: shoot } : {}), ...(files ? { files } : {}) };
+  await call('start_import', { folder, ...what, raw_only: rawOnly, cull: cullAfter, suggest, auto, provider: chosenProvider(), ...(copy != null ? { copy } : {}) });
   for (;;) {
     await new Promise((r) => setTimeout(r, 300));
     const fresh = (await call<EngineShoot[]>('list_shoots').catch(() => [])).find((s) => !before.has(s.id) && s.photos > 0);
@@ -357,11 +363,23 @@ export interface ScannedPhoto {
   jpeg: string | null;
 }
 
+/** A Shoot the engine proposes for a card's new photos (a Split at each long gap). */
+export interface ScanShoot {
+  name: string;
+  first: string;
+  last: string;
+  count: number;
+  gap_before_minutes: number | null;
+  /** Indexes into `Scan.photos`, in capture order. */
+  photos: number[];
+}
+
 export interface Scan {
   folder: string;
   photos: ScannedPhoto[];
   new: number;
   imported: number;
+  shoots: ScanShoot[];
 }
 
 export interface NameSuggestion {
@@ -628,6 +646,26 @@ export async function renameShoot(id: string, name: string): Promise<string> {
   }
   for (const s of [SHOOT, ...OTHER_SHOOTS]) if (s.id === id) s.name = stored;
   return stored;
+}
+
+/** Move Photos to another Shoot or a new one (engine `move_photos`), then reload this Shoot:
+ * the grid's data is loaded once. A Shoot left empty is removed, so the newest opens then. */
+export async function movePhotos(ids: string[], to: { shoot_id: string } | { new_shoot_name: string }): Promise<{ shoot_id: string; name: string; moved: number }> {
+  const target = 'shoot_id' in to ? { shoot_id: Number(to.shoot_id) } : to;
+  const r = await call<{ shoot_id: number; name: string; moved: number; removed_shoots: number[] }>('move_photos', { photo_ids: ids.map(Number), ...target });
+  const stay = r.removed_shoots.map(String).includes(SHOOT.id) ? String(r.shoot_id) : SHOOT.id;
+  remember(NOTE_KEY, `Moved ${r.moved} Photo${r.moved === 1 ? '' : 's'} to ${r.name}`);
+  openShoot(stay);
+  return { shoot_id: String(r.shoot_id), name: r.name, moved: r.moved };
+}
+
+const NOTE_KEY = 'argus:note-after-load';
+
+/** A line to show once after a change reloaded the UI (a move between Shoots). */
+export function takeNoteAfterLoad(): string | null {
+  const note = remembered(NOTE_KEY);
+  remember(NOTE_KEY, null);
+  return note;
 }
 
 /** A name for a Shoot from the configured local model, looking at a few of its previews. */

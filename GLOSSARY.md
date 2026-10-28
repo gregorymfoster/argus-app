@@ -16,6 +16,10 @@ _Avoid_: Image, asset, picture
 The Photos brought in by one Import, usually one outing. A Library holds many Shoots.
 _Avoid_: Session, event, folder
 
+**Split**:
+Where Import proposes that one card becomes two Shoots: a gap of an hour or more in capture time (a stray frame joins the nearer Shoot). The person can move or remove any Split before importing, and later move Photos between Shoots; every Photo belongs to exactly one Shoot (`engine::shoot_split`).
+_Avoid_: Break, event boundary
+
 **Shoot name**:
 A Shoot's date and title with no spaces, `2026-10-18_Boat-Trip`, which is also its folder name. See docs/naming.md.
 _Avoid_: Slug, folder name
@@ -176,6 +180,14 @@ _Avoid_: Overview, summary, context dump
 A shared creative style (color grade, contrast, mood) applied across a set of Photos so they read as one shoot.
 _Avoid_: Preset, filter, style
 
+**Shoot look**:
+A Shoot's style set by hand-editing a hero or two while the whole Shoot shows the edit, each frame matched to its own light (the Shoot match). **Lock look** readies that match as a Suggestion on every frame that isn't a Reject; nothing changes until the person accepts.
+_Avoid_: batch edit, sync
+
+**Crop offer**:
+"Crop like this": after the person crops a Photo by hand, the same crop offered as a Suggestion to the frames of its Shoot with the same shape shot within 2 minutes of it (or folded into a Shoot match already waiting there). Accepting one changes only the crop.
+_Avoid_: recompose, auto crop
+
 **Correction**:
 A per-Photo adjustment (exposure, white balance, light on faces) that brings each frame to the same baseline under a Look.
 _Avoid_: Auto fix, adjustment
@@ -213,6 +225,7 @@ _Avoid_: Iteration, self-critique, refine step
 
 **Hero Photo**:
 The Photo the person edited by hand and wants the rest of the Shoot to match ("apply to the rest"). Its style becomes a Look, and every other Photo gets matched Suggestions under it.
+Argus can suggest which Photos to make the heroes (tool `suggest_heroes`): the Shoot's most typical frame for one, the frames that leave the Shoot match least unsure about the rest for more.
 _Avoid_: Reference image, master, source
 
 **Shoot match**:

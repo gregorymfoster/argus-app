@@ -642,7 +642,9 @@ try {
     // People: the face models read the Shoot in the Queue, and list_people groups the faces.
     const queued = await api('/api/read_faces', { method: 'POST', body: '{}' });
     let people = await api('/api/list_people', { method: 'POST', body: '{}' });
-    for (let i = 0; i < 60 && people?.unread_photos > 0; i++) {
+    // The Queue reaches the face read after the Shoot's earlier jobs (pre-edit, Shoot match), which
+    // can take a few minutes on a busy Mac, so allow up to 4 minutes.
+    for (let i = 0; i < 240 && people?.unread_photos > 0; i++) {
       await p.waitForTimeout(1000);
       people = await api('/api/list_people', { method: 'POST', body: '{}' });
     }

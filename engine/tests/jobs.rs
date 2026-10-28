@@ -6,7 +6,7 @@
 use argus_engine::agent::{Chat, Msg};
 use argus_engine::compute::Compute;
 use argus_engine::jobs;
-use argus_engine::library::Library;
+use argus_engine::library::{Author, Library};
 use argus_engine::tools::{Part, Tools};
 use argus_engine::Result;
 use serde_json::{json, Value};
@@ -562,6 +562,140 @@ fn a_hand_edit_pre_edits_the_picks_with_a_shoot_match_until_the_person_answers()
     let after = matches(pick);
     assert_eq!(after.len(), 1, "{after:?}");
     assert_eq!(after[0]["status"], "accepted");
+}
+
+#[test]
+fn the_shoot_look_follows_the_hero_as_dragged_and_locking_it_readies_every_frame() {
+    let raws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw");
+    let mut found: Vec<_> = std::fs::read_dir(&raws)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "ARW"))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if found.len() < 3 {
+        eprintln!("jobs: fewer than three fixtures/raw/*.ARW, skipping");
+        return;
+    }
+    let (_t, tools, ids, seen) = library_of(
+        |src| {
+            for f in &found[..3] {
+                std::fs::copy(f, src.join(f.file_name().unwrap())).unwrap();
+            }
+        },
+        false,
+    );
+    let (hero, other, reject) = (ids[0], ids[1], ids[2]);
+    tools
+        .call(
+            "set_verdict",
+            json!({ "photo_ids": [reject], "verdict": "reject" }),
+        )
+        .unwrap();
+    let preview = |temp: i64, edge: Option<u32>| {
+        let mut a =
+            json!({ "hero_id": hero, "recipe": { "global": { "temp": temp, "saturation": 12 } } });
+        if let Some(e) = edge {
+            a["long_edge"] = json!(e);
+        }
+        argus_engine::commands::dispatch(&tools, "shoot_look_preview", a).unwrap()
+    };
+    // Nothing saved yet: the hero's Recipe as it stands on screen sets the match.
+    let warm = preview(40, Some(160));
+    let frames = warm["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 2, "the Shoot less its Reject: {warm}");
+    let f = |v: &Value, id: i64| {
+        v["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["photo_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(f(&warm, hero)["anchor"], true);
+    assert_eq!(f(&warm, hero)["sliders"]["temp"], 40.0);
+    let o = f(&warm, other);
+    assert_eq!(o["anchor"], false);
+    assert!(o["error"].is_null(), "{o}");
+    assert!(o["image"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/jpeg;base64,"));
+    let cool = preview(-40, None);
+    assert!(
+        f(&cool, other)["sliders"]["temp"].as_f64() < o["sliders"]["temp"].as_f64(),
+        "the frame follows the hero's drag: {} then {}",
+        o["sliders"],
+        f(&cool, other)["sliders"]
+    );
+    assert!(f(&cool, other)["image"].is_null(), "no render asked");
+    assert!(
+        json1(&tools, "read_recipe", json!({ "photo_id": hero }))
+            .get("version")
+            .is_none_or(Value::is_null),
+        "a preview saves nothing"
+    );
+
+    // Saved and locked: every frame that isn't a Reject gets a Shoot match ready to accept,
+    // even an unflagged one, and even after its last one was dismissed.
+    argus_engine::commands::dispatch(
+        &tools,
+        "edit",
+        json!({ "photo_id": hero, "recipe": { "global": { "temp": 40, "saturation": 12 } } }),
+    )
+    .unwrap();
+    jobs::drain(&tools, Compute::Full).unwrap();
+    let matches = |id: i64| -> Vec<Value> {
+        json1(
+            &tools,
+            "list_suggestions",
+            json!({ "photo_id": id, "all": true }),
+        )
+        .as_array()
+        .unwrap()
+        .clone()
+    };
+    assert!(
+        matches(other).is_empty(),
+        "unflagged: no pre-edit before the lock"
+    );
+    tools
+        .call("pre_edit_shoot", json!({ "shoot_id": 1, "every": true }))
+        .unwrap();
+    jobs::drain(&tools, Compute::Full).unwrap();
+    let m = matches(other);
+    assert_eq!(m.len(), 1, "{m:?}");
+    assert_eq!(
+        (m[0]["title"].as_str(), m[0]["status"].as_str()),
+        (Some("Shoot match"), Some("open"))
+    );
+    assert_eq!(
+        m[0]["recipe"]["global"]["temp"].as_f64().unwrap() + 0.0,
+        f(&preview(40, None), other)["sliders"]["temp"]
+            .as_f64()
+            .unwrap(),
+        "what the strip showed is what the lock suggests"
+    );
+    assert!(matches(reject).is_empty(), "Rejects are left out");
+    tools
+        .call("dismiss_suggestion", json!({ "suggestion_id": m[0]["id"] }))
+        .unwrap();
+    argus_engine::commands::dispatch(
+        &tools,
+        "edit",
+        json!({ "photo_id": hero, "recipe": { "global": { "temp": 10, "saturation": 12 } } }),
+    )
+    .unwrap();
+    jobs::drain(&tools, Compute::Full).unwrap();
+    assert!(
+        matches(other).iter().any(|s| s["status"] == "open"),
+        "the Shoot stays locked: a later hand edit re-matches every frame, even a dismissed one"
+    );
+    assert!(seen.lock().unwrap().is_empty(), "no model asked");
 }
 
 #[test]
@@ -1208,4 +1342,54 @@ fn a_take_is_accepted_at_its_amount() {
         let have = got["recipe"]["global"][k].as_f64().unwrap();
         assert!((have - want).abs() < 1e-6, "{k}: {have} vs {want}");
     }
+}
+
+#[test]
+fn suggest_heroes_names_photos_to_edit_first_and_skips_hand_edited_ones() {
+    let raws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw");
+    let mut found: Vec<_> = std::fs::read_dir(&raws)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "ARW"))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if found.len() < 3 {
+        eprintln!("jobs: fewer than three fixtures/raw/*.ARW, skipping");
+        return;
+    }
+    let (_t, tools, ids, _seen) = library_of(
+        |src| {
+            for f in &found[..3] {
+                std::fs::copy(f, src.join(f.file_name().unwrap())).unwrap();
+            }
+        },
+        false,
+    );
+    let ask = |count: usize| -> Vec<i64> {
+        let got = json1(&tools, "suggest_heroes", json!({ "count": count }));
+        got["heroes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["photo_id"].as_i64().unwrap())
+            .collect()
+    };
+    let two = ask(2);
+    assert_eq!(two.len(), 2);
+    assert_ne!(two[0], two[1]);
+    // a hand edit (the tools write as the AI)
+    let mut lib = Library::open(tools.library()).unwrap();
+    lib.write_recipe(
+        ids[0],
+        &json!({ "schema": 1, "global": { "temp": 20 } }),
+        Author::Person,
+        None,
+    )
+    .unwrap();
+    let next = ask(3);
+    assert_eq!(next.len(), 2, "only the unedited ones are left: {next:?}");
+    assert!(!next.contains(&ids[0]));
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { ArrowLeft, Bandage, Copy, Crop as CropIcon, History, Layers, SlidersHorizontal, SquareDashedMousePointer } from 'lucide-react';
+import { ArrowLeft, Bandage, Copy, Crop as CropIcon, GalleryHorizontal, History, Layers, SlidersHorizontal, SquareDashedMousePointer } from 'lucide-react';
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
 import type { Crop, LocalAdjust, NumKey, Recipe, Spot, Version } from '../domain/types';
 import { fmt, recipeOf, useLibrary } from '../store/library';
@@ -12,6 +12,8 @@ import { listVersions } from '../data/liveAgent';
 import { PhotoView } from '../ui/PhotoView';
 import { TakesPanel } from '../ui/Suggestions';
 import { Filmstrip } from '../ui/Filmstrip';
+import { ShootLookStrip } from '../ui/ShootLookStrip';
+import { usePref } from '../store/variants';
 import { acceptSuggestion, applyToRest, cancelTakes, dismissSuggestion, requestSuggestions, useQueue, useSuggestionImage, useSuggestions, useTakesProgress } from '../data/suggestions';
 import { Kbd, Tip, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { QueueChip } from '../ui/Queue';
@@ -229,6 +231,10 @@ export function EditScreen({ id }: { id: string }) {
     setSelSpot(null);
   }, [tab, selSpot, recipe]);
   // G goes back to the grid as in every other view (Lightroom's Library key).
+  // The Shoot look: the whole Shoot matched to this Photo, under it in place of the filmstrip.
+  const [shootLook, setShootLook] = usePref<'on' | 'off'>('shoot-look', 'off');
+  const toggleShootLook = () => setShootLook(shootLook === 'on' ? 'off' : 'on');
+  useHotkeys('w', toggleShootLook, [shootLook]);
   useHotkeys('g', back, [state.look]);
   useHotkeys('escape', () => (rulerOut() ? setRuler(false) : brush ? setBrush(false) : refine !== 'off' ? setRefine('off') : depthView ? setDepthView(false) : tab === 'heal' && selSpot ? setSelSpot(null) : back()), ESC_OUTSIDE_DIALOGS, [brush, state.look, tab, selSpot, refine, depthView]);
   // Lightroom's Sync: fold this photo's sliders into the Shoot's Look.
@@ -519,6 +525,11 @@ export function EditScreen({ id }: { id: string }) {
               <Copy size={12} /> Apply to rest
             </Button>
           </Tip>
+          <Tip label="The whole Shoot under this Photo, matched to each frame's light as you edit" keys="W">
+            <Button variant="ghost" size="sm" className={shootLook === 'on' ? 'bg-chip text-text' : undefined} onClick={toggleShootLook} aria-pressed={shootLook === 'on'} data-testid="shoot-look-toggle">
+              <GalleryHorizontal size={12} /> Shoot look
+            </Button>
+          </Tip>
           <Button variant="ghost" size="sm" className={masks ? 'bg-chip text-text' : undefined} onClick={() => setMasks(!masks)} aria-pressed={masks}>
             <Layers size={12} /> Masks
           </Button>
@@ -590,7 +601,7 @@ export function EditScreen({ id }: { id: string }) {
           </PhotoView></div>
           <ZoomReadout z={zp.z} loading={detail.loading} />
         </div>
-        <Filmstrip order={order} pos={pos} open={(n) => go({ name: 'edit', id: n })} />
+        {shootLook === 'on' ? <ShootLookStrip hero={p} recipe={live} /> : <Filmstrip order={order} pos={pos} open={(n) => go({ name: 'edit', id: n })} />}
       </main>
       <Agent ctx={`edit:${p.id}`} chips={[p.file, ...(recipe.local.length ? [`${recipe.local.length} Masks`] : [])]} placeholder="A bit more on the face…" header={controls} strip={strip} />
     </>

@@ -12,6 +12,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { ProgressBar, eta, useEngineTask, useTimedEstimate } from '../ui/Progress';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
 import { Check, ChevronDown, ChevronRight, Folder, HardDrive, Plus, RotateCw, Sparkles, X } from 'lucide-react';
+import { gapText, shootGroups, timeRange } from '../domain/splits';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { Kbd, MenuKeys, Seg } from '../ui/kit';
 import { usePref } from '../store/variants';
@@ -81,6 +82,15 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
   const [suggestPref, setSuggest] = usePref<'1' | '0'>('import-suggest', '1');
   const suggest = suggestPref === '1';
   const [focused, setFocused] = useState<string | null>(null);
+  // A card holding several outings imports as several Shoots (the engine proposes the
+  // Splits). The person can turn it off, remove a Split, rename a Shoot or drag a photo
+  // to another Shoot; every photo still lands in exactly one.
+  const [splitOn, setSplitOn] = useState(true);
+  const [removed, setRemoved] = useState<Set<number>>(new Set());
+  const [moved, setMoved] = useState<Map<string, number>>(new Map());
+  const [shootNames, setShootNames] = useState<Record<number, string>>({});
+  const [namingShoots, setNamingShoots] = useState(false);
+  const [dropOn, setDropOn] = useState<number | null>(null);
   const [thumb, setThumb] = useState(150);
   const [recent] = useState(recentFolders);
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null);
@@ -119,6 +129,9 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
       const s = await scanFolder(path);
       setScan(s);
       setChosen(new Set(s.photos.filter((p) => !p.imported).map((p) => p.path)));
+      setRemoved(new Set());
+      setMoved(new Map());
+      setShootNames({});
       if (s.photos.length === 0) setNote('No photos found there.');
     } catch (e) {
       setNote(String(e));
@@ -149,9 +162,11 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
   }, [open, folder, choose]);
 
   // Name the Shoot from what's new on the card, unless Greg has typed one.
+  const proposals = scan?.shoots ?? [];
+  const splitting = splitOn && show === 'new' && proposals.length > 1;
   useEffect(() => {
     if (!scan) return;
-    if (scan.photos.length === 0) return setNaming('idle');
+    if (scan.photos.length === 0 || splitting) return setNaming('idle');
     const fresh = scan.photos.filter((p) => !p.imported);
     // AI naming off: the date names it, and Name with AI still asks once.
     if (aiNamePref === '0' && askAgain === 0) return setNaming({ name: '', by: 'date', note: AI_NAME_OFF });
@@ -167,7 +182,26 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
     return () => {
       live = false;
     };
-  }, [scan, askAgain]);
+  }, [scan, askAgain, splitting]);
+
+  // Each proposed Shoot named from its own photos, one at a time, unless Greg typed a name.
+  useEffect(() => {
+    if (!scan || !splitting || (aiNamePref === '0' && askAgain === 0)) return;
+    let live = true;
+    setNamingShoots(true);
+    (async () => {
+      for (const [i, s] of proposals.entries()) {
+        const ps = s.photos.map((idx) => scan.photos[idx]);
+        const r = await suggestName(ps).catch(() => null);
+        if (!live) return;
+        if (r?.by === 'ai' && r.name) setShootNames((cur) => (cur[i] != null ? cur : { ...cur, [i]: r.name }));
+      }
+    })().finally(() => live && setNamingShoots(false));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scan, splitting, askAgain]);
 
   const photos = scan?.photos ?? [];
   const fresh = photos.filter((p) => !p.imported);
@@ -232,7 +266,8 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
     try {
       // Format what's in the field now, not the preview, which may lag a keystroke behind.
       const shoot = name.trim() ? await formatShootName(name, firstCapture).catch(() => name.trim()) : null;
-      const r = await liveImport(folder, shoot, autoCull, files, rawOnly, copy, estimate?.original_bytes, autoTone, suggest);
+      const shoots = shootsToImport ? await Promise.all(shootsToImport.map(async (g) => ({ ...g, shoot_name: await formatShootName(g.shoot_name, null).catch(() => g.shoot_name) }))) : undefined;
+      const r = await liveImport(folder, shoot, autoCull, files, rawOnly, copy, estimate?.original_bytes, autoTone, suggest, shoots);
       if (r.shoot_id == null) setNote(`Nothing new: all ${r.duplicates} photos are already in the Library.`);
     } catch (e) {
       setNote(String(e));
@@ -245,7 +280,12 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
   const camera = scan?.photos[0]?.camera;
   const sourceName = folder ? (card ? card.name : tidy(folder)) : cards === null ? 'Looking for a memory card…' : 'No memory card';
   const sourceMeta = folder ? [camera, scan ? `${scan.photos.length} photos` : scanning ? 'reading…' : null].filter(Boolean).join(' · ') : cards === null ? '' : 'choose a folder';
-  const groups = byDay(visible);
+  const groups = splitting
+    ? shootGroups(photos, proposals, removed, moved).map((g) => ({ day: `shoot-${g.key}`, label: shootNames[g.key] ?? g.proposed, photos: g.photos, shoot: g }))
+    : byDay(visible).map((g) => ({ ...g, shoot: null }));
+  const shootsToImport = splitting
+    ? groups.map((g) => ({ shoot_name: g.label, files: g.photos.filter((p) => chosen.has(p.path)).map((p) => p.path) })).filter((g) => g.files.length > 0)
+    : null;
   const model = PROVIDERS.find((x) => x.id === chosenProvider());
   const namedBy = typeof naming === 'object' && naming.by === 'ai' && !typed ? `Named by ${modelName(model?.model ?? model?.label ?? 'AI')} from ${Math.min(4, fresh.length || photos.length)} photos` : null;
   const into = savedAs && libraryRoot ? `into ${tidy(libraryRoot)}/originals/${savedAs}/` : null;
@@ -377,6 +417,24 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
           </button>
         </header>
 
+        {proposals.length > 1 && show === 'new' && (
+          <div className="imp-split" data-testid="import-split-bar">
+            <Sparkles size={12} className="ai-icon" />
+            <span className="imp-split-lead">{splitting ? `Split into ${groups.length} Shoots` : `${proposals.length} outings on this card`}</span>
+            <span className="muted imp-split-why">{splitting ? 'by gaps in capture time. Drag a photo to another Shoot, or remove a Split.' : 'Importing as one Shoot.'}</span>
+            <span className="grow" />
+            <Seg
+              quiet
+              label="One Shoot or split"
+              value={splitOn ? 'split' : 'one'}
+              onChange={(v) => setSplitOn(v === 'split')}
+              items={[
+                { value: 'one', label: 'One Shoot' },
+                { value: 'split', label: `Split · ${proposals.length - removed.size}` },
+              ]}
+            />
+          </div>
+        )}
         <div className="imp-body" ref={gridRef}>
           {scanning && (
             <div className="imp-pad">
@@ -406,8 +464,33 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
           )}
           {groups.map((g, gi) => {
             const ticked = g.photos.filter((p) => chosen.has(p.path)).length;
+            const sh = g.shoot;
             return (
-              <section key={g.day} className="imp-group">
+              <section
+                key={g.day}
+                className={`imp-group ${sh && dropOn === sh.key ? 'drop' : ''}`}
+                data-testid={sh ? 'import-shoot' : undefined}
+                onDragOver={sh ? (e) => (e.preventDefault(), setDropOn(sh.key)) : undefined}
+                onDragLeave={sh ? () => setDropOn((k) => (k === sh.key ? null : k)) : undefined}
+                onDrop={
+                  sh
+                    ? (e) => {
+                        e.preventDefault();
+                        setDropOn(null);
+                        const path = e.dataTransfer.getData('text/x-argus-path');
+                        if (path) setMoved((cur) => new Map(cur).set(path, sh.key));
+                      }
+                    : undefined
+                }
+              >
+                {sh && gi > 0 && (
+                  <div className="imp-cut" data-testid="import-split">
+                    <span>Split{sh.gapBefore != null ? ` · gap of ${gapText(sh.gapBefore)}` : ''}</span>
+                    <button className="import-link" onClick={() => setRemoved((cur) => new Set(cur).add(sh.key))} disabled={busy} data-testid="import-split-remove">
+                      Remove
+                    </button>
+                  </div>
+                )}
                 <div className="imp-group-head">
                   <Checkbox
                     checked={ticked === g.photos.length ? true : ticked ? 'indeterminate' : false}
@@ -415,10 +498,30 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
                     disabled={busy}
                     aria-label={`Tick every photo from ${g.label}`}
                   />
-                  <span className="imp-day">{g.label}</span>
-                  <span className="mono faint">
-                    {ticked} of {g.photos.length}
-                  </span>
+                  {sh ? (
+                    <>
+                      <input
+                        className="imp-shoot-name mono"
+                        value={g.label}
+                        onChange={(e) => setShootNames((cur) => ({ ...cur, [sh.key]: e.target.value }))}
+                        disabled={busy}
+                        spellCheck={false}
+                        aria-label="Shoot name"
+                        data-testid="import-shoot-name"
+                      />
+                      <span className="mono faint">
+                        {ticked} of {g.photos.length}
+                      </span>
+                      <span className="muted">{timeRange(g.photos)}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="imp-day">{g.label}</span>
+                      <span className="mono faint">
+                        {ticked} of {g.photos.length}
+                      </span>
+                    </>
+                  )}
                   {gi === 0 && (
                     <>
                       <span className="grow" />
@@ -448,7 +551,7 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
                 </div>
                 <div className="import-grid" data-testid="import-grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(thumb)}px, 1fr))` }}>
                   {g.photos.map((p) => (
-                    <ScanTile key={p.path} photo={p} on={chosen.has(p.path)} onToggle={() => toggle(p.path)} onFocus={() => setFocused(p.path)} disabled={busy} />
+                    <ScanTile key={p.path} photo={p} on={chosen.has(p.path)} onToggle={() => toggle(p.path)} onFocus={() => setFocused(p.path)} disabled={busy} draggable={!!sh} />
                   ))}
                 </div>
               </section>
@@ -457,6 +560,25 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
         </div>
 
         <footer className="imp-foot">
+          {splitting ? (
+            <div className="imp-row" data-testid="import-split-names">
+              <span className="imp-label">Shoots</span>
+              {namingShoots ? (
+                <div style={{ width: 320 }}>
+                  <ProgressBar label="Naming each Shoot from its photos" testId="import-name-progress" />
+                </div>
+              ) : (
+                <span className="imp-hint">
+                  {shootsToImport!.length} Shoots, each named above
+                  <button className="import-link imp-again" onClick={() => (setShootNames({}), setAskAgain((n) => n + 1))} disabled={busy} data-testid="import-name-retry">
+                    <RotateCw size={11} /> {aiNamePref === '0' && askAgain === 0 ? 'Name with AI' : 'Ask again'}
+                  </button>
+                </span>
+              )}
+              <span className="grow" />
+              {copy && libraryRoot && <span className="mono faint imp-into">into {tidy(libraryRoot)}/originals/</span>}
+            </div>
+          ) : (
           <div className="imp-row">
             <label htmlFor="shoot" className="imp-label">
               Shoot
@@ -499,6 +621,7 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
             <span className="grow" />
             {into && copy && <span className="mono faint imp-into" title={into}>{into}</span>}
           </div>
+          )}
           <div className="imp-row">
             <label className="imp-check">
               <Checkbox checked={autoCull} onCheckedChange={(c) => setAutoCull(c === true)} disabled={busy} data-testid="import-auto-cull" />
@@ -537,7 +660,7 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
               Cancel <Kbd quiet>esc</Kbd>
             </Button>
             <Button variant="default" onClick={run} disabled={!canImport} data-testid="import-start">
-              {busy ? 'Importing…' : `Import ${files.length}`} {!busy && <Kbd>↵</Kbd>}
+              {busy ? 'Importing…' : shootsToImport ? `Import ${files.length} into ${shootsToImport.length} Shoots` : `Import ${files.length}`} {!busy && <Kbd>↵</Kbd>}
             </Button>
           </div>
         </footer>
@@ -583,7 +706,7 @@ function rememberFolder(path: string, count: number) {
 }
 
 /** One file on the card: its embedded preview once it scrolls into view, and a tick. */
-function ScanTile({ photo, on, onToggle, onFocus, disabled }: { photo: ScannedPhoto; on: boolean; onToggle: () => void; onFocus: () => void; disabled: boolean }) {
+function ScanTile({ photo, on, onToggle, onFocus, disabled, draggable = false }: { photo: ScannedPhoto; on: boolean; onToggle: () => void; onFocus: () => void; disabled: boolean; draggable?: boolean }) {
   const ref = useRef<HTMLButtonElement>(null);
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
@@ -611,6 +734,8 @@ function ScanTile({ photo, on, onToggle, onFocus, disabled }: { photo: ScannedPh
       }}
       onMouseEnter={onFocus}
       disabled={disabled}
+      draggable={draggable && !disabled}
+      onDragStart={draggable ? (e) => (e.dataTransfer.setData('text/x-argus-path', photo.path), (e.dataTransfer.effectAllowed = 'move')) : undefined}
       aria-pressed={on}
       title={photo.file_name}
       data-testid="import-tile"

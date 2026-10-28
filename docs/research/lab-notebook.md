@@ -90,6 +90,10 @@ But how much of that is Greg's intent? When two frames of one day carry identica
 
 **Result.** Adding log(R/B) and log(G/√RB) of the as-shot multipliers: 8.61 → 8.59 at k = 3, Temp's share 11.8 → 11.7. **Killed.** A real light-source classifier is still open but this cheap version carries nothing.
 
+### E10. E4 + E8 in the engine
+
+`engine::shoot_match` reads optional `gp` (rho, length) and `fallback` (tau) from `shoot_match.json`; without them it is the shipped weighted mean. The fallback is the engine's own Edit head, and with it and no EXIF (as the engine runs) the screen gives k = 1 9.235 → 9.044 and k = 3 8.629 → 8.495 against the shipped rule; test fold once: k = 1 -0.16 ± 0.06, k = 3 -0.15 ± 0.06 (`out/lab/fallback_enginehead.py`). Length and tau are rescaled for the 32 live facts the engine averages over (the bench averages over all 35): length 0.45 x √(35/32), tau 4 x 35/32. A Python port of the engine formula matches lab_edit's GP plus fallback to 0.0008 of a slider unit on 40 random anchor sets, and the Rust code matches the port to 1e-13 (`out/lab/parity.py` plus a throwaway test). Tests: `engine/src/shoot_match.rs` (closed form for look-alike anchors, far anchors lean on the head), `engine/tests/jobs.rs` apply_to_the_rest.
+
 ### E11. The whole guided protocol, as the engine would run it
 
 **Question.** E4, E6 and E8 were each scored on their own and with EXIF facts. Stacked together, on the 32 facts the engine has live, what does the full protocol (Argus suggests which photos to edit first, GP Shoot model, lean on the engine's Edit head when no hero looks alike) buy over today's Shoot match?
@@ -109,7 +113,7 @@ But how much of that is Greg's intent? When two frames of one day carry identica
 | MI | 3 | 8.435 | 8.319 |
 | MI | 5 | 8.133 | 8.008 |
 
-**Verdict: holds.** The model upgrade is worth 0.13 to 0.19 at every k, whichever heroes are edited. Suggesting heroes adds another 0.09 to 0.18 from k=2 up, so at three heroes the stack goes from 8.63 to 8.32 (-0.31). At one hero the information pick no longer helps without EXIF (9.08 vs 9.04); E6's k=1 win leaned on camera facts, so for a single hero "most typical" (E6) is the better rule. Still parked with the E10 port, per Greg's hold.
+**Verdict: holds.** The model upgrade is worth 0.13 to 0.19 at every k, whichever heroes are edited. Suggesting heroes adds another 0.09 to 0.18 from k=2 up, so at three heroes the stack goes from 8.63 to 8.32 (-0.31). At one hero the information pick no longer helps without EXIF (9.08 vs 9.04); E6's k=1 win leaned on camera facts, so for a single hero "most typical" (E6) is the better rule. The GP and fallback went on by default on 2026-10-24 (Greg's check-in, "turn it on, with an off switch", 17595cf, switch in Settings › AI and Compute); suggesting heroes still needs a screen.
 
 ### C1. Greg's blind taps against his own Lightroom picks
 
@@ -311,9 +315,210 @@ A leave-one-hero-out gate (fit on two heroes, check the third, apply the look on
 
 **What it says.** The block-space proxy (the engine's HSL and grading applied to 8x8 block means) promised -0.2 to -0.4 on every fold, but real renders deliver that only on some days. On others the same sliders, applied per pixel, go the wrong way. Fitting on the proxy is the weak link, not the idea of a Shoot look: N5's quadratic transform was never rendered, and the oracle gap is still ~2.5 dE. **Verdict: not shippable as is.** The next step is to fit the Shoot's HSL and grading through real renders, by adding those sliders to `argus edit-fit`'s fit across a Shoot's heroes, then rerun this same dev and test check. That's an engine change for a later session.
 
+### N6. The Shoot look fitted on real pixels (2026-10-24, Mac; Greg: "do it")
+
+**Why.** N5e showed the block-space proxy doesn't carry over to real renders on the development folds (-0.05). So the look is fitted on what the engine actually draws: each hero rendered at its best sliders (vibrance and saturation at 0), then `bench/lab_shoot_fit.py fit` runs a torch copy of the engine's HSL, vibrance, saturation and Color Grading on those pixels (16 of 64 per block, Adam, about 30 s per Shoot) toward Greg's JPEGs. The copy sits 0.49 dE from the engine on a cloud RAW against a 4.4 dE effect, and it recovers a known edit from 4.45 to 0.61. The plan is 117 days with three heroes each; the 4,525 other photos are scored by real `argus edit-fit` renders at their best sliders, without and with their Shoot's look.
+
+**Result** (rendered dE against the best sliders alone, 4.860; test fold 1,045 photos, development folds 3,480):
+
+| look | all | development | test |
+|---|---|---|---|
+| hue and sat only | -0.273 (62%) | -0.322 (63%) | -0.113 (58%) |
+| hue and sat, half strength | -0.270 (77%) | -0.301 (77%) | -0.167 (77%) |
+| with lum | -0.322 (67%) | -0.363 (68%) | -0.185 (62%) |
+| with lum x 0.3 | -0.245 (90%) | -0.261 (89%) | -0.193 (90%) |
+| with lum x 0.4 | -0.299 (87%) | -0.320 (86%) | -0.231 (89%) |
+| with lum x 0.5 | -0.339 (84%) | -0.364 (83%) | -0.257 (86%) |
+| with lum x 0.6 | -0.365 (80%) | -0.394 (79%) | -0.270 (82%) |
+| **with lum x 0.75** | **-0.377 (75%)** | **-0.411 (75%)** | **-0.263 (76%)** |
+
+Strength was chosen on the development folds only (peak at 0.75). Two renders shared an edit-fit job file and ran side by side; both were rerun alone on 592e13b and matched to the last digit.
+
+**Verdict: holds, the first look that survives real renders on every fold.** Fitting through the engine's own pixels turned the development gain from -0.05 (N5e) to -0.41, and the test fold keeps about two thirds of it, better on three photos in four. Shrinking toward no look trades a little mean for a lot of consistency: at 0.4 it helps nine photos in ten. It runs on best-fit sliders, so in the app it would sit on top of the Shoot match's predicted sliders; the gain should mostly carry since the look lives in HSL and grading, which the Shoot match doesn't touch, but that's untested. **Too subtle to judge by eye.** On 40 test-fold photos (`lab_shoot_hsl.py page`), the look moves the render by only dE 1.4 to 4.2 at 192 px (median 2.1), all under the review page's floor of 5, so the pairs weren't shown to Greg (he asked not to see edits he can't tell apart). It's a real but quiet correction. A Rust port into "apply to the rest" is worth it only bundled with a bigger Shoot match change, and should be checked on predicted sliders first.
+
+### N7. Per-Shoot AI-Mask edits from the heroes
+
+**Hypothesis.** The rest of the render gap is local: Greg lifts faces, darkens skies, separates subject from background. `lab_shoot_fit.py local` fits each hero's local exposure (subject, background, faces, sky) and sky saturation with `edit-fit fit_local`, takes the Shoot's mean shrunk by k/(k+1), and renders it on the other photos.
+
+**Result.** +0.012 ± 0.005 overall (worse), development +0.017, test -0.007, better on 45-48%. **Killed.** A Shoot-wide mask move doesn't carry from heroes to the rest, likely because the right local lift depends on each frame's light and framing. Local edits would need a per-photo model, which the pairs can't train well (fit_local barely beats the global fit even on the heroes).
+
+### N8. A light-source read for white balance (2026-10-24, cloud)
+
+**Hypothesis.** Temp and Tint are about a quarter of the squared edit error with no heroes and still a fifth at k = 3. E9 showed the camera's as-shot multipliers alone carry nothing, but the picture itself should say what the light is (shade, tungsten, golden hour). So the Shoot model (GP, folds 1-4, lin dE) gets the as-shot multipliers plus either the image embedding's top principal components, fit on training folds only, or a 12-way k-means "light cluster" of it.
+
+**Result** (`bench/lab_wb.py`, 3,719 pairs, 105 days; Temp+Tint share in brackets):
+
+| | k = 0 | k = 1 | k = 3 |
+|---|---|---|---|
+| base | 9.813 (24.3) | 9.172 (19.4) | 8.610 (15.9) |
+| + as-shot WB | 9.810 (24.3) | 9.160 (19.1) | 8.589 (15.5) |
+| + 16 embedding PCs | 9.803 (23.9) | 9.195 (19.6) | 8.640 (16.0) |
+| + WB + 16 PCs | 9.794 (23.9) | 9.181 (19.3) | 8.619 (15.6) |
+| + light cluster | 9.832 (24.3) | 9.213 (19.6) | 8.667 (16.2) |
+
+**Killed.** The embedding trims Temp+Tint a little with no heroes (24.3 to 23.9) and then gets in the way once heroes exist, because it widens every slider's model, not just white balance. The best change anywhere is 0.02. Greg's white balance is a per-Shoot choice that the heroes already carry; the picture doesn't predict it better than his own edits of the same day.
+
+### N9. A stock VLM rating taste on the full card (2026-10-24, Mac)
+
+**Question.** The default cull is rules plus the Taste head (no model). Does a stock vision model reading the Contact sheet (Qwen 3.8 27B, variant `bench/variants/whole-cull.json`) rank Greg's picks better? It's the only vision model on the Mac; no downloads.
+
+**Result** (`just bench --only cull`, AUC of stars against his picks, best Photos picked):
+
+| Shoot | Qwen rates taste | rules + Taste head |
+|---|---|---|
+| 2023-05-20 | 0.59, 5/8 | 0.51, 4/10 |
+| 2024-08-10 | 0.57, 8/8 | 0.44, 7/10 |
+| 2024-10-19 | 0.58, 1/4 | 0.57, 3/10 |
+| 2025-03-22 | 0.54, 6/8 | 0.61, 8/10 |
+| 2026-10-10 | 0.61, 12/25 | 0.65, 11/26 |
+
+Mean AUC 0.578 against 0.556, worse on two of five Shoots, and 36-46 min per 100 photos (122 min for 261) against 11 s. Asking the model about doubtful frames only (`ARGUS_CULL_CHECK=model`) changed nothing: it rejected three frames and AUC moved by at most 0.01.
+
+**Verdict: not worth it.** A 0.02 edge that flips sign by Shoot, at about 200 times the time, sits well inside the 0.66 ceiling C1 found for any label of Greg's. The default stays. A stronger or newer VLM might change this; it would be a download for Greg to approve.
+
 ### Net D (cull) is blocked on clean data
 
 A cull fine-tune needs keeps and rejects rendered the same way. Favorites are Greg's edits (the edited-look leak), and the drive's rejects exist only as 768 px features, not images. The pairs' unedited renders give keepers as shot; rejects need `drive_bench.py` to save its renders. And per C1, the within-burst label ceiling is about 0.6, so a cull net can only help whole-Shoot ranking. Left for after the edit nets.
+
+## 2026-10-25 (overnight, Greg: "keep trying new promising angles, don't give up")
+
+### H1. Which photos should Greg edit first? (`suggest_heroes`, landed 80c7a11)
+
+**Question.** Shoot match learns a Shoot's look from the photos the person edits by hand. Which ones should those be?
+
+**Setup.** `bench/lab_edit.py --anchors random|typical|mi|tmi`, Shoot match (within-gp) on 5,050 cloud pairs (155 days, folds 1-4), linearised dE. *typical* = nearest the Shoot's centre in the facts; *mi* = greedy, each next hero the one that most lowers the model's total uncertainty over the rest; *tmi* = typical first, then greedy.
+
+**Result** (the real GP after the 7a5655d fix; lower is better; the Edit head alone, no hero, is ~10.0):
+
+| heroes | random | typical | typical, then greedy | greedy (what ships) |
+|---|---|---|---|---|
+| 1 | 9.48 | **9.00** | 9.00 | |
+| 2 | 9.03 | 8.81 | 8.64 | **8.61** |
+| 3 | 8.75 | 8.64 | 8.50 | **8.47** |
+
+Picking on purpose is worth about one edited photo: two chosen heroes beat three random ones. The held-out test fold (scored once) agrees: one hero random 9.59, greedy 9.16, typical **9.04**; three heroes random 9.01, typical 8.81, greedy **8.46**, which is exactly the shipped rule. The first run of this screen used the similarity-weighted model by mistake (see N15's correction) and agreed: random 9.56 / 9.12 / 8.82 / 8.46 at 1 / 2 / 3 / 5, greedy 8.71 / 8.55 / 8.20 at 2 / 3 / 5. On the Mac's retrained model (7,140 pairs, test fold) random heroes give k1 9.36, k3 8.86 against the head's 10.02.
+
+**Verdict: shipped as a tool.** `suggest_heroes` returns the most typical frame for one hero and the greedy choice for more, counting photos already edited by hand. No UI yet (needs a mockup).
+
+### N10. Lightroom-style local Highlights and Shadows
+
+**Hypothesis.** Lightroom's Highlights and Shadows move an edge-aware base layer, so local contrast survives Greg's signature -63 / +47; Argus's move every pixel through one tone curve (`pipeline::tone_sliders`). If that is part of the ~5 dE floor, doing it Lightroom's way should lower the best-slider fit.
+
+**Setup.** A throwaway engine switch (`ARGUS_LOCAL_TONE=frac`) applied the Highlights and Shadows bumps to a guided-filter base of the luma (radius 2%, 6% or 15% of the long edge) and kept the detail on top. `argus edit-fit` with `fit: true` on the 99 cloud bench RAWs, once per setting.
+
+**Result.** Floor 5.181 with the curve; 5.178, 5.191, 5.194 local (all within ± 0.05, better on 38-44 of 99). The fit hardly uses the two sliders anyway (mean Highlights -10, Shadows -9 with the curve), because Argus's own Look already compresses highlights and lifts shadows.
+
+**Verdict: killed.** The switch was removed. Whatever the floor is, it isn't how Highlights and Shadows are drawn.
+
+### N11. Greg's own Lightroom settings, rendered through Argus
+
+**Question.** E5 said (in linearised slider space) that knowing Greg's Lightroom settings is barely better than the Shoot match. Does that hold on real renders, and can a learned translation from his settings to Argus's sliders close the gap?
+
+**Setup.** `bench/lab_translate.py`: 83 cloud bench RAWs whose XMP settings are in the pairs. A ridge (and LightGBM) from his settings plus the Photo's facts to the best Argus Basic sliders, trained on 2,765 pairs from 148 capture days with no bench Photo. Rendered with `edit-fit`, block dE76 to his JPEG.
+
+**Result.**
+
+| take | dE | vs head |
+|---|---|---|
+| Auto + Edit head (no hero) | 9.23 | |
+| his Basic sliders copied straight | 12.57 | +3.34 |
+| ... plus his curve, HSL, grading, Clarity, vignette | 12.33 | +3.09 |
+| translation from his settings alone | 9.06 | -0.18 |
+| translation from settings + facts (ridge) | 8.23 | -1.00 |
+| same, LightGBM | 8.09 | -1.14 |
+| best sliders (floor) | 5.10 | -4.13 |
+
+**Verdict: E5 holds on pixels.** Copying Lightroom's numbers into Argus is worse than doing nothing clever; even a learned translation that knows his exact settings lands at 8.1, about where the Shoot match is with three heroes, three dE above the floor. The facts carry most of the translation (9.06 → 8.23), so the two renderers part ways per photo. An "import my Lightroom edits" feature can't be a slider mapping; it would have to fit sliders to each exported JPEG (`edit-fit`, 5.1).
+
+Side check (`out/lab/align/align.py`): letting the render shift, zoom and rotate onto his JPEG lowers the floor only 5.25 → 5.00, and only 4 of 99 bench Photos move by more than 1 dE (two crops, one 2° straighten). Bench alignment is not where the floor hides, though those few outliers (14.8 → 7.2) are worth dropping from training.
+
+### N12. Is the default Look why identical settings need different Exposure?
+
+**Finding first** (`out/lab/expo/same_crs.py`): 26,230 pairs of same-day frames Greg edited with identical Basic settings (no HSL or curve) need Argus Exposures that differ by 0.45 EV (sd). 56% of that is explained by the unedited render: frames with more clipped highlights need *more* Argus Exposure (r 0.70 with the clipped share). Temp differs by 23 between such frames and nothing in the render explains it.
+
+**Setup.** A research switch in `edit-fit` (`ARGUS_LOOK=ev,knee,lift,contrast,sat`), fit on the 83 bench RAWs with his settings, and the share of (fit Exposure − his Exposure) the scene explains (`bench/lab_look_default.py`).
+
+**Result.** The highlight shoulder doesn't matter (knee 0.6-0.95: same floor, same scene share). The Look's strong shadow lift does: lift 1.118 (default) gap sd 0.458, scene R² 0.41; lift 0.75 0.397 / 0.32; 0.5 0.364 / 0.22; 0 0.348 / 0.13. The floor barely moves (4.99 default, 4.96 at 0.75, 5.00 at 0.5, 5.13 at 0), but plain Auto, tuned to the default Look, swings by ±1 dE.
+
+**Verdict: explains it, not shippable tonight.** Argus answers the same settings more like Lightroom with a gentler built-in shadow lift, at no cost to the floor. That would make Sync and copy-the-settings habits carry over better in the app, but every model (Auto, Edit head, Shoot match) and every golden is tuned to today's Look, so it's a Look redesign for Greg to decide on, not a tweak.
+
+### N13. Carry the hero's brightness, not its Exposure number
+
+**Hypothesis.** If Greg edits frames to look as bright as the rest of the Shoot, copy the hero's sliders and solve this frame's Exposure so it lands at the hero's finished brightness.
+
+**Setup.** `bench/lab_brightness.py`: 84 ordered (hero, frame) pairs of bench RAWs from the same day (26 days). Hero edit = its best sliders; Exposure solved from a ladder of renders.
+
+**Result.** Sync 10.15, brightness-matched 14.50 (+4.35 ± 1.37, better on 17/84), halfway 11.42. His finished mean L* differs by 13.3 (sd) between frames of one day, more than the frames' own spread.
+
+**Verdict: killed.** He doesn't hold a Shoot's brightness; he edits each scene to its own key.
+
+### C6. A stronger image model for the Taste head (SigLIP 2)
+
+**Setup.** `bench/cull_siglip.py` on the Mac: the five bench cull Shoots embedded by SigLIP 2 base (Apache 2.0) in place of the engine's MobileNet, `taste_head.py` unchanged, clean 2026-10-10 card held out.
+
+**Result** (star AUC against his picks, engine rule = faces + centroid head):
+
+| | MobileNet | SigLIP 2 |
+|---|---|---|
+| cold (other Shoots only) | 0.683 | 0.705 |
+| first 20 flags | 0.684 | 0.729 |
+| history + first 20 | 0.703 | 0.729 |
+| first 40 | 0.722 | 0.724 |
+| first 80 | 0.743 | 0.737 |
+| first 130 | 0.666 | 0.649 |
+
+**Verdict: small early edge, not worth a model download.** SigLIP helps the cold start and the first 20 flags by 0.02-0.045 on one Shoot (within its noise), and the edge is gone by 40 flags. Burst pairs aren't comparable (stacks come from the embedding, 504 vs 76 pairs). Revisit if another model brings more than this, or with a second clean card.
+
+### N14. Does Argus read the camera's white balance like Lightroom?
+
+**Question.** Same-day frames Greg edited with identical Lightroom settings still need Argus Temps that differ by 23 (sd). When the camera's as-shot white balance was identical too, the gap drops to 2.8. Either Argus follows the camera's auto white balance differently from Lightroom (an engine bug), or Greg pinned a fixed Kelvin that Argus's relative Temp has to chase.
+
+**Setup.** `bench/lab_asshot.py` on the Mac reads `crs:WhiteBalance`, Temperature and Tint from each pair's XMP (7,235 pairs) and compares same-day frames with identical Basic settings and the same white-balance mode (and the same Kelvin, unless As Shot).
+
+**Result.** Greg sets a Custom Kelvin on 4,877 pairs and leaves As Shot on 2,358. For Custom frames the Argus Temp gap has sd 23.0 and tracks the camera's drift, -199 Temp per unit of as-shot log(R/B) (r -0.87). For As Shot frames it is sd 6.4 with slope -0.5 (r -0.01), so Argus follows the camera exactly as Lightroom does.
+
+**Verdict: no engine bug.** The miss is Greg's absolute Kelvin meeting Argus's relative Temp. Sync and Shoot match copy relative values, so a frame where the camera's auto white balance wandered inherits the wrong cast. Modelling every photo as absolute (`lab_edit.py --kelvin`) made Shoot match worse (k1 9.56 to 10.15, k3 8.82 to 9.16 at 107 Temp per log(R/B)), because a third of his frames are As Shot. Absolute only where he set a Custom Kelvin (`--wb-modes`, Mac, 3,841 of 5,671 pairs) was worse still: k1 9.63 to 11.24 (150 Temp per log R/B) or 12.18 (199), k3 8.87 to 9.90 or 10.57.
+
+**Why.** He re-sets the Kelvin as the light changes. On 139 Custom days with 3+ frames he used a median of 3 Kelvins and one Kelvin all day on only 23% of days. Within a day his log Kelvin follows the camera's as-shot log(R/B) at r +0.87, while the Argus Temp he needs barely does (r -0.14). The camera's auto white balance is already a good proxy for where he puts the Kelvin, so Argus's Temp relative to as-shot is the right thing to copy. The 23-point gap only shows up between frames where he kept one Kelvin but the camera drifted, a minority.
+
+**Verdict: killed, and the relative Temp stays.**
+
+### C7. "Looks like photos Greg edited before" as a cull signal
+
+**Setup.** `out/lab/keeps/knn.py` (scratch): each frame of the five cull Shoots scored by its mean cosine similarity to its 1, 10 or 50 nearest MobileNet embeddings among ~7k photos Greg edited (the pairs, same day excluded).
+
+**Result.** Star AUC on the clean 2026-10-10 card 0.59-0.61 alone, faces + kNN 0.667 against faces 0.654 and the engine's cold 0.683. On the other Shoots it swings from 0.40 to 0.75 with no pattern (they are edited previews, so the domain differs too).
+
+**Verdict: killed.** What he chose to edit over four years says little about which frames of a new card he keeps.
+
+
+### N15. Would a gentler default Look make edits carry across a Shoot?
+
+**Hypothesis.** N12: today's strong shadow lift is why identical Lightroom settings need different Argus Exposures. With less lift his edits should be more alike in Argus's sliders, so Shoot match and Sync should copy them better.
+
+**Setup.** `bench/lab_look_shoot.py` on the Mac refit the same 1,601 pairs (60 days, 8+ frames a day, test fold out) under three Looks (`ARGUS_LOOK`, lift 1.118 today, 0.75, 0.5), and `lab_edit.py --override` scored each with the head and the models retrained on those fits.
+
+**Result** (lin dE, 1,584 scored pairs):
+
+| Look | head | GP, 1 hero | GP, 3 heroes |
+|---|---|---|---|
+| today (lift 1.118) | 11.06 | 9.91 | 9.04 |
+| lift 0.75 | 10.94 | 9.81 | 8.98 |
+| lift 0.5 | 10.89 | 9.76 | 8.94 |
+
+**Verdict: real but small.** A gentler lift helps every row, by 0.17 with no hero and 0.10 with three, at no cost to the floor (N12). Too small to justify re-tuning Auto, the head, Shoot match and every golden on its own. Worth folding in if the Look is redesigned for another reason. Caveat: the linearised score uses sensitivities measured under today's Look.
+
+**Correction (2026-10-25).** Until 7a5655d, `lab_edit.py` had no method called `within-gp` or `sync`: both names silently ran its similarity-weighted path (within-sim). Overnight numbers labelled within-gp from `lab_edit.py` (H1, N14's `--kelvin` runs) are that path; the Mac screen numbers from `shoot_style.py` (9.36 / 8.86) are the real GP. Rerun with the GP: base k1 9.57, k3 8.82 (within-sim 9.63, 8.87); Custom-only absolute white balance at 150 still loses (11.14, 9.95). Conclusions unchanged.
+
+### N16 and N17. Where the Shoot match error is left, and two tries at it
+
+**Where it is.** Splitting the GP Shoot match's squared error by slider (cloud, 5,050 pairs): with no hero, the floor is 21%, Exposure 45%, Temp 13%, everything else 2-5% each. With three heroes: floor 30%, Exposure 40%, Temp 12%. Exposure is the one lever that matters.
+
+**N16, capture order.** Frames shot close together share the light, so part of the GP's smooth kernel followed the distance in frame numbers (same camera, `lab_edit.py --time share,frames`). Base k1 9.48, k3 8.75; every setting tried (share 0.5-0.8, scale 5-80 frames) was equal or worse (best 9.49, 8.76). The facts already say "same scene".
+
+**N17, per-slider GP settings.** Exposure and Temp got their own rho and length scale (`--gp-slider`). Nothing beat the shared (0.8, 0.45) by more than 0.01; shorter or longer length scales lost 0.02-0.13.
+
+**Verdict: both killed.** The Shoot model's settings are at their best; what is left in Exposure is Greg choosing a different brightness for each scene (N13), which no fact here predicts.
 
 ## Open leads
 

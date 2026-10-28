@@ -41,9 +41,10 @@ use std::time::Duration;
 ///   ([`crate::meaning::download`], progress in MB), then an `analyze` of the whole Library
 /// - `denoise` {photo_id}: AI Denoise's base for one RAW ([`crate::denoise`]), queued when a
 ///   Recipe with a Denoise Amount is saved
-/// - `pre_edit_shoot` {shoot_id}: edit as you cull, a Shoot match Suggestion for each Pick and
+/// - `pre_edit_shoot` {shoot_id, every?}: edit as you cull, a Shoot match Suggestion for each Pick and
 ///   likely keeper from the Shoot's hand edits ([`crate::pre_edit`], no model), queued when the
-///   person saves an edit of a RAW and when the AI's stars refresh
+///   person saves an edit of a RAW and when the AI's stars refresh; with `every` (Lock look) for
+///   every frame that isn't a Reject
 pub const KINDS: &[&str] = &[
     "learn_edits",
     "rank_presets",
@@ -198,6 +199,10 @@ pub struct QueueConfig {
     /// "Run now" from the Background work panel: run model work while the person works,
     /// until the queue is empty.
     pub go_ahead: bool,
+    /// The Shoot match reads the Shoot's hand edits as a Gaussian process and leans on the
+    /// Edit head for frames unlike them (lab notebook E10). Off: the first shipped rule
+    /// (Greg, 2026-10-24: "turn it on, with an off switch").
+    pub shoot_match_smart: bool,
 }
 
 impl Default for QueueConfig {
@@ -213,6 +218,7 @@ impl Default for QueueConfig {
             battery_override: false,
             idle_only: true,
             go_ahead: false,
+            shoot_match_smart: true,
         }
     }
 }
@@ -343,7 +349,15 @@ pub fn enqueue(
         }
         "pre_edit_shoot" => (
             shoot("Shoot match"),
-            format!("pre_edit_shoot:{}", id("shoot_id").unwrap_or(0)),
+            format!(
+                "pre_edit_shoot:{}{}",
+                id("shoot_id").unwrap_or(0),
+                if args.get("every").and_then(|v| v.as_bool()) == Some(true) {
+                    ":every"
+                } else {
+                    ""
+                }
+            ),
             PRIORITY_MATCH,
         ),
         "download_model" => (
@@ -483,14 +497,18 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             #[derive(Deserialize)]
             struct A {
                 shoot_id: ShootId,
+                #[serde(default)]
+                every: bool,
             }
             let a: A = args(job)?;
             let mut lib = Library::open(tools.library())?;
             let progress = Library::open(tools.library())?;
             let id = job.id;
-            let report = crate::pre_edit::run(&mut lib, a.shoot_id, Some(id), &|done, total| {
-                let _ = progress.job_progress(id, done as i64, total as i64);
-            })?;
+            let every = a.every || crate::pre_edit::locked(&lib, a.shoot_id)?;
+            let report =
+                crate::pre_edit::run(&mut lib, a.shoot_id, every, Some(id), &|done, total| {
+                    let _ = progress.job_progress(id, done as i64, total as i64);
+                })?;
             serde_json::to_value(report).map_err(|e| Error(format!("pre-edit: {e}")))
         }
         "cull_shoot" | "check_shoot" => {

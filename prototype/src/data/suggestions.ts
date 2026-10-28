@@ -44,6 +44,8 @@ export interface QueueStatus {
   /** Idle, but a cull or a big batch still waits for overnight (or Run now). */
   waiting_for_overnight?: boolean;
   run_now?: boolean;
+  /** The Shoot match reads the Shoot's hand edits as a Gaussian process and falls back to the Edit head (on by default). */
+  shoot_match_smart?: boolean;
   /** The Mac is running hot: background work waits for it to cool. */
   thermal_paused?: boolean;
   /** Another Argus process has the model ("`argus cull` is using the model"). */

@@ -162,15 +162,18 @@ impl Library {
         for s in list {
             let recipe = match amount {
                 Some(a) if a != 1.0 => self.suggestion_at(&s, a)?,
+                _ if crate::crop_offer::is_offer(&s.title) => self.framed(s.photo_id, &s.recipe)?,
                 _ => self.keeping_spots(s.photo_id, s.recipe.clone())?,
             };
             let version = self.write_recipe(s.photo_id, &recipe, Author::Ai, Some(batch))?;
             // Only the newest accepted one reads as accepted; an earlier pick is open again.
+            // A crop offer only frames the Photo, so it and the look beside it both stand.
+            let offer = crate::crop_offer::is_offer(&s.title);
             self.db
                 .execute(
                     "UPDATE suggestions SET status = CASE WHEN id = ?1 THEN 'accepted' ELSE 'open' END
-                     WHERE photo_id = ?2 AND (id = ?1 OR status = 'accepted')",
-                    params![s.id, s.photo_id],
+                     WHERE photo_id = ?2 AND (id = ?1 OR (NOT ?3 AND status = 'accepted' AND title NOT LIKE ?4))",
+                    params![s.id, s.photo_id, offer, format!("{}%", crate::crop_offer::PREFIX)],
                 )
                 .map_err(db_err)?;
             self.log_usage(
@@ -197,19 +200,79 @@ impl Library {
         self.keeping_spots(s.photo_id, r)
     }
 
-    /// `take` with the Photo's current Heal and Clone Spots when it has none of its own:
-    /// takes are looks, not retouching, so accepting one keeps the person's Spots.
+    /// `take` with the Photo's current Heal and Clone Spots and crop when it has none of its
+    /// own: takes are looks, not retouching or framing, so accepting one keeps the person's
+    /// Spots and crop, as a Lightroom preset does.
     fn keeping_spots(&self, photo: PhotoId, mut take: Value) -> Result<Value> {
         let has = |v: &Value| v["spots"].as_array().is_some_and(|a| !a.is_empty());
-        if has(&take) {
-            return Ok(take);
-        }
         if let (Some(cur), Some(o)) = (self.read_recipe(photo)?, take.as_object_mut()) {
-            if has(&cur.recipe) {
+            if !has(&Value::Object(o.clone())) && has(&cur.recipe) {
                 o.insert("spots".into(), cur.recipe["spots"].clone());
+            }
+            // A Recipe leaves out a whole-frame crop.
+            if !o.contains_key("crop") {
+                if let Some(c) = cur.recipe.get("crop") {
+                    o.insert("crop".into(), c.clone());
+                }
             }
         }
         Ok(take)
+    }
+
+    /// A crop offer ([`crate::crop_offer`]) frames the Photo as it is now: its current Recipe
+    /// with the offered crop, whatever else changed since the offer.
+    fn framed(&self, photo: PhotoId, take: &Value) -> Result<Value> {
+        let mut r = match self.read_recipe(photo)? {
+            Some(v) => v.recipe,
+            None => crate::recipe::Recipe::default().to_value(),
+        };
+        if let (Some(o), Some(c)) = (r.as_object_mut(), take.get("crop")) {
+            o.insert("crop".into(), c.clone());
+        }
+        Ok(r)
+    }
+
+    /// Add one open Suggestion after the Photo's others, inside the caller's write (no
+    /// transaction of its own, so it can run while a Recipe is saved).
+    pub(crate) fn add_suggestion(
+        &self,
+        photo: PhotoId,
+        reference: Option<PhotoId>,
+        title: &str,
+        note: &str,
+        recipe: &Value,
+    ) -> Result<i64> {
+        self.db
+            .execute(
+                "INSERT INTO suggestions (photo_id, job_id, reference_id, rank, title, note, recipe, preview, status, at)
+                 VALUES (?1, NULL, ?2, (SELECT COALESCE(MAX(rank), 0) + 1 FROM suggestions WHERE photo_id = ?1 AND status = 'open'),
+                         ?3, ?4, ?5, NULL, 'open', ?6)",
+                params![photo, reference, title, note, recipe.to_string(), time::now()],
+            )
+            .map_err(db_err)?;
+        Ok(self.db.last_insert_rowid())
+    }
+
+    /// Change an open Suggestion's words and Recipe in place (its time and rank stay).
+    pub(crate) fn update_suggestion(&self, id: i64, note: &str, recipe: &Value) -> Result<()> {
+        self.db
+            .execute(
+                "UPDATE suggestions SET note = ?2, recipe = ?3 WHERE id = ?1 AND status = 'open'",
+                params![id, note, recipe.to_string()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Take back an open Suggestion the person never answered.
+    pub(crate) fn withdraw_suggestion(&self, id: i64) -> Result<()> {
+        self.db
+            .execute(
+                "DELETE FROM suggestions WHERE id = ?1 AND status = 'open'",
+                [id],
+            )
+            .map_err(db_err)?;
+        Ok(())
     }
 
     pub fn dismiss_suggestion(&self, id: i64) -> Result<()> {

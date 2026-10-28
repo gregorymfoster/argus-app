@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
+import { useKeyEcho } from './ui/motion';
 import { toast } from 'sonner';
 import { PHOTOS, SHOOT } from './data/dummy';
 import { lastRemovalAt, takeRemovedToast, undoRemoval } from './data/remove';
 import { RemoveDialog, askRemove, showRemoved } from './ui/Remove';
 import { PasteSettingsDialog } from './ui/PasteSettings';
 import { CreatePresetDialog } from './ui/CreatePreset';
-import { LIVE, inCollection, exportAfterLoad, noteImportFinished, refreshLivePhotos, runningImport, takeCullAfterLoad } from './data/live';
+import { LIVE, inCollection, exportAfterLoad, noteImportFinished, takeNoteAfterLoad, refreshLivePhotos, runningImport, takeCullAfterLoad } from './data/live';
 import { zoom } from './ui/zoom';
 import { initialCull } from './agent/agent';
 import { liveCullChat, useAgentRunner } from './agent/AgentPanel';
@@ -34,6 +35,7 @@ import { checkForUpdates } from './data/updates';
 
 export function App() {
   const route = useRoute();
+  useKeyEcho();
   const { state, dispatch } = useLibrary();
   const [palette, setPalette] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -92,6 +94,12 @@ export function App() {
   useEffect(() => {
     const r = LIVE ? takeRemovedToast() : null;
     if (r) showRemoved(r, () => void undoRemoval());
+  }, []);
+
+  // Live: Photos moved to another Shoot reloaded the UI; say where they went.
+  useEffect(() => {
+    const note = LIVE ? takeNoteAfterLoad() : null;
+    if (note) toast(note, { id: 'argus' });
   }, []);
 
   // Live: Export… from another Shoot's menu reloaded into that Shoot.

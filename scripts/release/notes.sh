@@ -12,10 +12,13 @@ cd "$(git rev-parse --show-toplevel)"
 highlights="docs/release-notes/$VERSION.md"
 # Screenshots of the app on public-domain photos live in the public repo, so the page shows them
 # for every version; refresh them with prototype/scripts/release-shots.mjs (docs/release.md).
+# The hero art comes from the public source repo (prototype/src/assets/brand/).
 SHOTS="https://raw.githubusercontent.com/$RELEASE_REPO/main/screenshots"
 [ -f "$highlights" ] || { echo "notes: write $highlights first (what's new, for people who use the app)" >&2; exit 1; }
 
 cat <<MD
+![Argus](https://raw.githubusercontent.com/gregorymfoster/argus-app/main/prototype/src/assets/brand/hero-wide.webp)
+
 Argus is a photo editor for the Mac that culls and edits a whole shoot with an AI model running on your own computer. Your photos stay on your Mac.
 
 ![Argus showing a shoot of 34 photos, each rated with stars by the AI cull]($SHOTS/grid.jpg)

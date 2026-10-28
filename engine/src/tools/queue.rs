@@ -50,7 +50,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "set_queue",
-            description: "Set how hard the background queue works: compute gentle (default, leaves the Mac to the person), balanced or full; pause it; how many idle minutes before it goes to full on its own (0 = never); whether it goes to full overnight (1:00-7:00); whether the Photo open in Loupe or Edit jumps the queue; how many Suggestions each Photo gets (1-5); run_on_battery to always run background work on battery (off by default); run_anyway to run on battery until the Mac is next plugged in; idle_only (on by default) to hold model work (Suggestions, culls) until the Mac is idle and plugged in, or overnight; and run_now to run it anyway until the queue is empty.",
+            description: "Set how hard the background queue works: compute gentle (default, leaves the Mac to the person), balanced or full; pause it; how many idle minutes before it goes to full on its own (0 = never); whether it goes to full overnight (1:00-7:00); whether the Photo open in Loupe or Edit jumps the queue; how many Suggestions each Photo gets (1-5); run_on_battery to always run background work on battery (off by default); run_anyway to run on battery until the Mac is next plugged in; idle_only (on by default) to hold model work (Suggestions, culls) until the Mac is idle and plugged in, or overnight; run_now to run it anyway until the queue is empty; and shoot_match_smart (on by default) for the Shoot match that reads the Shoot's hand edits as a Gaussian process and leans on the Edit head for unfamiliar frames (off: the first rule, a similarity-weighted mean).",
             input_schema: json!({ "type": "object", "properties": {
                 "compute": { "type": "string", "enum": ["gentle", "balanced", "full"] },
                 "paused": { "type": "boolean" },
@@ -61,7 +61,8 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                 "run_on_battery": { "type": "boolean" },
                 "run_anyway": { "type": "boolean" },
                 "idle_only": { "type": "boolean" },
-                "run_now": { "type": "boolean" } } }),
+                "run_now": { "type": "boolean" },
+                "shoot_match_smart": { "type": "boolean" } } }),
             read_only: false,
         },
         ToolSpec {
@@ -148,6 +149,9 @@ impl Tools {
                 if let Some(v) = a.run_now {
                     c.go_ahead = v;
                 }
+                if let Some(v) = a.shoot_match_smart {
+                    c.shoot_match_smart = v;
+                }
                 jobs::set_config(&lib, &c)?;
                 one(queue_status(&lib)?)
             }
@@ -205,6 +209,7 @@ struct SetQueue {
     run_anyway: Option<bool>,
     idle_only: Option<bool>,
     run_now: Option<bool>,
+    shoot_match_smart: Option<bool>,
 }
 
 /// The queue for the app's progress line: [`crate::library::QueueSummary`] plus its settings.
@@ -229,6 +234,7 @@ fn queue_status(lib: &Library) -> Result<Value> {
     v["boost"] = json!(boost);
     v["idle_only"] = json!(c.idle_only);
     v["run_now"] = json!(c.go_ahead);
+    v["shoot_match_smart"] = json!(c.shoot_match_smart);
     // Model work (Suggestions, culls) waits for the person to step away.
     let held = jobs::held_kinds(&c, boost, jobs::model_backlog(lib)?);
     v["waiting_for_idle"] = json!(!held.is_empty());

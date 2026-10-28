@@ -60,6 +60,16 @@ import-check:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
     cd prototype && ../scripts/progress import-check -- node scripts/import-check.mjs
 
+# The Shoot look against the real engine: the whole Shoot under the hero in Edit (W), a drag redrawing it, Lock look and Accept all.
+shoot-look-check:
+    scripts/progress build-cli -- cargo build --profile fast -p argus-cli
+    cd prototype && ../scripts/progress shoot-look-check -- node scripts/shoot-look-check.mjs
+
+# Motion that answers the person (flag stamp, key echo, ticking counts, grid-Loupe zoom, gliding sliders,
+# Import pop-in, Reduce motion off) through the real UI; `--clips DIR` also records a webm per moment.
+motion-check *args:
+    cd prototype && ../scripts/progress motion-check -- node scripts/motion-check.mjs {{args}}
+
 # How light the open app is (Linux/cloud only): startup, bundle, idle engine calls, React renders and CPU (visible and hidden), and memory after scrolling a 1,000-Photo grid. Writes prototype/out/perf/<label>.json; compare two with `node prototype/scripts/perf.mjs --diff a.json b.json`. See docs/agents/performance.md.
 perf *args:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli

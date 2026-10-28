@@ -39,6 +39,30 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// The Look renders start from: Look::DEFAULT, or with `ARGUS_LOOK=ev,knee,lift,contrast,sat`
+/// a research variant (lab notebook N12) so a bench can ask how another default Look fits.
+fn look() -> &'static Look {
+    static L: std::sync::OnceLock<Look> = std::sync::OnceLock::new();
+    L.get_or_init(|| {
+        let v: Vec<f32> = std::env::var("ARGUS_LOOK")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        match v[..] {
+            [ev, knee, lift, contrast, sat] => Look {
+                exposure_ev: ev,
+                shoulder_knee: knee,
+                shadow_lift: lift,
+                contrast,
+                saturation: sat,
+                ..Look::DEFAULT
+            },
+            _ => Look::DEFAULT,
+        }
+    })
+}
+
 #[derive(Deserialize)]
 pub struct Job {
     cases: Vec<Case>,
@@ -286,7 +310,7 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
             global: base.global.plus(a),
             ..base.clone()
         };
-        d.finish(&Look::DEFAULT, &r, None)
+        d.finish(look(), &r, None)
     };
     // Plain Auto, without the Edit head: the head is what's learned on top of it.
     let plain = argus_engine::auto::Params {
@@ -438,7 +462,7 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
             }
             // The whole frame plus faces and sky on their own: a face is a small share of
             // the frame, so the whole-frame dE alone barely sees a face tweak.
-            let img = d.finish(&Look::DEFAULT, &r, Some(a));
+            let img = d.finish(look(), &r, Some(a));
             let mut s = distance(&img, &target)[0];
             for w in regions.iter().flatten() {
                 s += weighted_distance(&img, &target, Some(w))[0];
@@ -491,7 +515,7 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
                 }
                 .map_err(|x| e(&x))?;
             }
-            let mut img = d.finish(&Look::DEFAULT, &r, analysis.as_ref());
+            let mut img = d.finish(look(), &r, analysis.as_ref());
             // Post-crop Vignette and Grain, as render_photo adds them.
             argus_engine::effects::post_crop(&mut img, &r.render_adjust());
             scores.insert(name.clone(), json!(rnd(distance(&img, &target))));
@@ -509,7 +533,7 @@ fn run_case(job: &Job, c: &Case) -> Result<Value, String> {
             if let (Some(dir), true) = (&job.save_dir, wanted) {
                 let img = match &big {
                     Some(b) => {
-                        let mut big = b.finish(&Look::DEFAULT, &r, analysis.as_ref());
+                        let mut big = b.finish(look(), &r, analysis.as_ref());
                         argus_engine::effects::post_crop(&mut big, &r.render_adjust());
                         big
                     }

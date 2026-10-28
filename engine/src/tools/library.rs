@@ -22,6 +22,14 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             read_only: false,
         },
         ToolSpec {
+            name: "move_photos",
+            description: "Move Photos to another Shoot, or to a new one (every Photo belongs to exactly one Shoot). Give shoot_id for an existing Shoot or new_shoot_name to make one (named by the naming rules and dated by its first Photo); for \"split this Shoot here\", move the Photos from that point on into a new Shoot. Copied originals move into the target's originals folder. A moved Photo leaves its Stack; a Shoot left empty is removed.",
+            input_schema: json!({ "type": "object", "required": ["photo_ids"], "properties": {
+                "photo_ids": ids, "shoot_id": id,
+                "new_shoot_name": { "type": "string", "minLength": 1 } } }),
+            read_only: false,
+        },
+        ToolSpec {
             name: "list_photos",
             description: "List Photos in capture order with their Verdict (pick, reject, unflagged), who set it and why, their star Rating (0-5, 0 = unrated) and who set it, their Stack, and `best`: their rank in the Shoot's Best Photos. Narrow by Shoot, Verdict and/or least stars.",
             input_schema: json!({ "type": "object", "properties": {
@@ -112,7 +120,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "scan_folder",
-            description: "List the photos in a folder or on a card without importing them: path, name, size, capture time, camera, and whether the Library already has each one (same name, size and capture time). A RAW+JPEG frame is one entry, the RAW, with its JPEG beside it, as Import makes it one Photo. Fast: reads only file headers.",
+            description: "List the photos in a folder or on a card without importing them: path, name, size, capture time, camera, and whether the Library already has each one (same name, size and capture time). A RAW+JPEG frame is one entry, the RAW, with its JPEG beside it, as Import makes it one Photo. `shoots` splits the new photos into proposed Shoots wherever the camera sat idle for an hour or more (a stray frame joins the nearer Shoot), each with a name and the indexes of its photos; import each with import_folder's `files` and `shoot_name`. Fast: reads only file headers.",
             input_schema: json!({ "type": "object", "required": ["folder"], "properties": {
                 "folder": { "type": "string", "description": "Absolute path, e.g. a card from find_cards" } } }),
             read_only: true,
@@ -166,6 +174,19 @@ impl Tools {
             "rename_shoot" => {
                 let a: RenameShoot = parse(args)?;
                 one(lib.rename_shoot(a.shoot_id, &a.name)?)
+            }
+            "move_photos" => {
+                let a: MovePhotos = parse(args)?;
+                let to = match (a.shoot_id, a.new_shoot_name) {
+                    (Some(s), None) => MoveTo::Shoot(s),
+                    (None, Some(n)) => MoveTo::New(n),
+                    _ => {
+                        return Err(Error(
+                            "move_photos takes shoot_id or new_shoot_name, not both".into(),
+                        ))
+                    }
+                };
+                one(lib.move_photos(&a.photo_ids, to)?)
             }
             "list_photos" => {
                 let a: ListPhotos = parse(args)?;
@@ -328,6 +349,14 @@ struct SetRating {
     stars: u8,
     #[serde(rename = "as")]
     author: Option<Author>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MovePhotos {
+    photo_ids: Vec<PhotoId>,
+    shoot_id: Option<ShootId>,
+    new_shoot_name: Option<String>,
 }
 
 #[derive(Deserialize)]

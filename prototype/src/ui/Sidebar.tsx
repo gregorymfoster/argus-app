@@ -10,6 +10,7 @@ import { MeterLine } from './Meter';
 import { UpdateButton } from './Updates';
 import { AlbumList } from './Search';
 import { useNamedCount } from '../data/people';
+import { Tick } from './motion';
 
 /**
  * The Library sidebar (Design pass v2): search, the Library's views, every Shoot newest
@@ -62,7 +63,7 @@ export function Sidebar({ route, onPalette, onExport, onAuto, onCull }: { route:
       <button className={`nav-item ${SHOOT.id === 'picks' && route.name === 'cull' ? 'active' : ''}`} onClick={() => view('picks')} aria-current={SHOOT.id === 'picks' || undefined} data-testid="nav-picks">
         <Flag size={14} />
         Picks
-        <span className="count">{SHOOT.id === 'picks' ? state.imported : collection ? '' : picks || ''}</span>
+        <span className="count"><Tick value={SHOOT.id === 'picks' ? state.imported : collection ? '' : picks || ''} /></span>
       </button>
       <button className="nav-item" onClick={() => newest && (newest.id === SHOOT.id ? go({ name: 'cull' }) : LIVE ? openShoot(newest.id) : later())} disabled={!newest}>
         <Clock size={14} />

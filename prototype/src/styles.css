@@ -87,6 +87,8 @@
   --highlight: inset 0 1px 0 rgb(255 255 255 / 0.04);
   --pop: 0 0 0 1px rgb(0 0 0 / 0.35), 0 4px 12px -2px rgb(0 0 0 / 0.4), 0 20px 48px -8px rgb(0 0 0 / 0.55);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* A small overshoot, for things the person just set (a flag stamping on). */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --fast: 120ms;
   --text: #f0efec;
   --text-2: #b4b2ab;
@@ -203,7 +205,7 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 /* Buttons */
 
 /* Photo grid */
-.tile { margin: 0; border-radius: 4px; overflow: hidden; background: var(--raised); border: 1px solid var(--border); position: relative; cursor: default; transition: opacity 0.15s, border-color var(--fast); }
+.tile { margin: 0; border-radius: 4px; overflow: hidden; background: var(--raised); border: 1px solid var(--border); position: relative; cursor: default; transition: opacity 220ms var(--ease-out), border-color var(--fast); }
 .tile:hover { border-color: var(--border-hover); }
 .tile.sel { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
 .tile.hl { box-shadow: 0 0 0 2px var(--shoot); }
@@ -481,6 +483,7 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .first-run { min-height: 100vh; display: grid; place-items: center; background: var(--bg); padding: 16px; }
 .first-run-card { width: min(520px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 24px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: var(--pop); }
 .first-run-card .brand { padding: 0 0 4px; }
+.first-run-hero { display: block; width: calc(100% + 48px); max-width: none; margin: -24px -24px 4px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 10px 10px 0 0; border-bottom: 1px solid var(--border); }
 .first-run h1 { font-size: 15px; font-weight: 500; letter-spacing: -0.01em; margin: 0; }
 .first-run p { font-size: 13px; margin: 0; line-height: 1.5; }
 .first-run-path { padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--raised); font-size: 12.5px; }
@@ -844,6 +847,17 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .imp-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; height: 100%; }
 .imp-group-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 9px; height: 40px; background: var(--panel); font-size: 12.5px; }
 .imp-day { color: var(--text); font-weight: 500; }
+.imp-split { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--border); flex: none; font-size: 12px; white-space: nowrap; min-width: 0; }
+.imp-split > * { flex: none; }
+.imp-split > .grow { flex: 1 1 auto; }
+.imp-split-lead { color: var(--text); }
+.imp-split-why { flex: 0 1 auto !important; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.imp-cut { display: flex; align-items: center; gap: 8px; height: 26px; margin-top: 6px; font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.imp-cut::before, .imp-cut::after { content: ''; flex: 1; height: 1px; background: repeating-linear-gradient(90deg, var(--accent) 0 4px, transparent 4px 8px); opacity: 0.55; }
+.imp-shoot-name { height: 26px; width: 260px; padding: 0 8px; border-radius: 6px; border: 1px solid transparent; background: none; color: var(--text); font-size: 12.5px; outline: 0; }
+.imp-shoot-name:hover { border-color: var(--border-strong); }
+.imp-shoot-name:focus { border-color: var(--ring); }
+.imp-group.drop .import-grid { outline: 1px dashed var(--accent); outline-offset: 4px; border-radius: 6px; }
 .imp-keys { display: flex; align-items: center; gap: 14px; font-size: 11.5px; color: var(--text-3); }
 .imp-keys kbd { height: 16px; min-width: 16px; line-height: 14px; font-size: 10px; padding: 0 3px; }
 .import-v2 .import-grid { gap: 10px 10px; padding: 0; }
@@ -1090,3 +1104,59 @@ button.people-tile:hover { background: var(--hover); }
 .people-photo:hover { border-color: var(--border-hover); }
 .people-photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .people-foot { flex: none; }
+
+/* The Shoot look under the hero in Edit (canvas board SL-Look): the whole Shoot matched to it. */
+.look-strip { flex: none; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--panel); }
+.look-strip-head { display: flex; align-items: center; gap: 8px; height: var(--row-h); padding: 0 10px; font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; }
+.look-strip-head .faint { overflow: hidden; text-overflow: ellipsis; }
+.look-strip-title { color: var(--text); font-size: 11.5px; }
+.look-strip-bar { width: 240px; flex: none; }
+.look-check-count { color: var(--shoot); background: var(--chip); border-radius: 4px; padding: 1px 6px; }
+.look-strip-grid { display: grid; grid-template-rows: repeat(2, auto); grid-auto-flow: column; grid-auto-columns: 88px; gap: 4px; padding: 0 10px 8px; overflow-x: auto; scrollbar-width: none; }
+.look-tile { position: relative; aspect-ratio: 3/2; padding: 0; border: none; border-radius: 4px; overflow: hidden; background: var(--photo-well); cursor: default; }
+.look-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.look-tile.hero { box-shadow: 0 0 0 1.5px var(--shoot); }
+.look-tile:hover:not(.hero) { box-shadow: 0 0 0 1px var(--border-hover); }
+.look-badge { position: absolute; left: 3px; bottom: 3px; display: inline-flex; align-items: center; gap: 3px; font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 4px; background: var(--depth-out); color: var(--text-2); }
+.look-badge.hero, .look-badge.check { color: var(--shoot); }
+.look-badge.next { color: var(--text); }
+
+/* Motion that answers the person (ui/motion.tsx; docs/design.md, Feedback and motion). Each plays on a
+   change the person just caused, never on mount, and the reduced-motion rule near the top stops it all. */
+/* A flag stamps on: the grid's corner chip and the filmstrip's Pick dot. */
+.chip.stamp, .dot.stamp { animation: stamp 280ms var(--ease-spring) both; }
+@keyframes stamp { 0% { opacity: 0; transform: scale(1.6); } 55% { opacity: 1; } }
+/* A count rolls a few pixels the way it moved (Picks 34 → 35). */
+.tick { display: inline-block; }
+.tick-up { animation: tick-up 240ms var(--ease-out); }
+.tick-down { animation: tick-down 240ms var(--ease-out); }
+@keyframes tick-up { from { opacity: 0; transform: translateY(5px); } }
+@keyframes tick-down { from { opacity: 0; transform: translateY(-5px); } }
+/* Key echo: the pressed key's hint in the bar lights, then settles back. */
+.echo { animation: echo 700ms var(--ease-out); }
+.echo kbd.quiet.quiet { animation: echo-key 700ms var(--ease-out); }
+@keyframes echo { from { color: var(--text); } }
+@keyframes echo-key { from { color: var(--accent); } }
+/* A finished step's tick draws itself. */
+svg.draw path { stroke-dasharray: 24; stroke-dashoffset: 24; animation: draw 360ms var(--ease-out) 60ms forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+/* Photos arriving in the grid as Import fills the Shoot. */
+.tile.arrive { animation: arrive 360ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 16ms); }
+@keyframes arrive { from { opacity: 0; transform: translateY(6px) scale(0.97); } }
+/* Sliders glide to values set for them (Auto, a Preset, a take, Undo, the next Photo), never while dragged or keyed. */
+.slider-root:not([data-live]) .slider-range { transition: left 220ms var(--ease-out), right 220ms var(--ease-out); }
+.slider-root:not([data-live]) span:has(> .slider-thumb) { transition: left 220ms var(--ease-out); }
+/* The open photo grows from its grid tile into the Loupe or Edit, and shrinks back (routeSwap). */
+html[data-zoom] .grid-v .tile.cur .ph > .photo, html[data-zoom] .stage-fit > .photo { view-transition-name: argus-photo; }
+html[data-zoom='out'] .tile .ph img { animation: none; }
+::view-transition-group(argus-photo) { animation-duration: 220ms; animation-timing-function: var(--ease-out); }
+::view-transition-old(argus-photo), ::view-transition-new(argus-photo) { height: 100%; object-fit: cover; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 140ms; }
+/* Empty and finished states (ui/Empty.tsx): Greg's glass art, small, rising in once. */
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 48px 24px; text-align: center; color: var(--text-2); font-size: 12px; }
+.empty-art { width: 112px; height: 112px; margin-bottom: 6px; user-select: none; animation: empty-in 520ms var(--ease-out) both; }
+.empty-title { color: var(--text); font-size: 13px; font-weight: 500; animation: fade-in 400ms var(--ease-out) 120ms both; }
+.empty-body { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 360px; line-height: 1.5; animation: fade-in 400ms var(--ease-out) 180ms both; }
+@keyframes empty-in { from { opacity: 0; transform: translateY(8px) scale(0.94); } }
+.export-done { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.export-done .empty-art { width: 32px; height: 32px; margin: 0; flex: none; }

@@ -1,17 +1,17 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Award, Check, ChevronDown, Columns2, Copy, Download, Flag, Folder, Grid2x2, Grid3x3, Layers, SlidersHorizontal, Sparkles, Square, Star, Trash2, Wand2, X } from 'lucide-react';
+import { Award, Check, ChevronDown, Columns2, Copy, Download, Flag, Folder, FolderInput, FolderPlus, Grid2x2, Grid3x3, Layers, Scissors, SlidersHorizontal, Sparkles, Square, Star, Trash2, Wand2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { acceptMany, useShootTakes } from '../data/suggestions';
 import { undoBatch } from '../data/liveAgent';
-import { LIVE, importingBytes, inCollection, revealInFinder } from '../data/live';
+import { LIVE, importingBytes, inCollection, movePhotos, revealInFinder } from '../data/live';
 import { call } from '../data/backend';
 import { useAiStatus, type AiState } from '../data/aiStatus';
 import { useEyeFlags, type EyeFlags } from '../data/facts';
 import { EyeBadges } from '../ui/EyeBadges';
 import { askRemove } from '../ui/Remove';
-import { PHOTOS, PHOTO_BY_ID, SHOOT, STACK_BY_ID, stackOf } from '../data/dummy';
+import { OTHER_SHOOTS, PHOTOS, PHOTO_BY_ID, SHOOT, STACK_BY_ID, stackOf } from '../data/dummy';
 import type { Photo, Verdict } from '../domain/types';
 import { recipeOf, starsOf, useLibrary, verdictOf } from '../store/library';
 import { autoAction, runAuto } from '../data/auto';
@@ -19,12 +19,15 @@ import { usePref } from '../store/variants';
 import { MIN_FLAGS, useLearnAsYouCull, type Learning } from '../data/learn';
 import { keeperRank, keepersAt, keepersReset, useKeepers } from '../data/keepers';
 import { acceptPreEdits, usePreEdits, type PreEdits } from '../data/preEdit';
+import { acceptCropOffers, dismissCropOffers, useCropOffers, type CropOffers } from '../data/cropOffer';
 import { sortToString } from '../domain/sort';
 import { go } from '../router';
 import { Agent } from '../agent/AgentPanel';
 import { PhotoView } from '../ui/PhotoView';
 import { eta } from '../ui/Progress';
 import { FlagButtons, VerdictChip } from '../ui/Flags';
+import { Tick } from '../ui/motion';
+import { EmptyState } from '../ui/Empty';
 import { STAR_KEYS, Stars } from '../ui/Stars';
 import { ViewSwitch } from '../ui/ViewBar';
 import { SortMenu, toggleKeepers, toggleStars, useSort } from '../ui/Sort';
@@ -36,7 +39,7 @@ import { ALL_GROUPS } from '../domain/settings';
 import { Button } from '@/components/ui/button';
 import { FoundLine } from '../ui/Search';
 import { Slider } from '@/components/ui/slider';
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
 
 type Filter = 'all' | Verdict | 'best';
 
@@ -50,6 +53,8 @@ const clampThumb = (n: number) => Math.max(THUMB_MIN, Math.min(THUMB_MAX, n));
 
 interface TileProps {
   p: Photo;
+  /** Arrived with the latest batch of an Import: its place in that batch, for a staggered pop-in. */
+  arrive?: number;
   v: Verdict | null;
   you: boolean;
   stars: { stars: number; you: boolean };
@@ -85,6 +90,16 @@ interface TileProps {
   small?: boolean;
 }
 
+const capturedOf = (p: Photo) => p.meta?.captured ?? '';
+
+/** A new Shoot's name before the person renames it: the engine dates it by its first Photo,
+ * so only the part of the day is given, as Import's Splits are named. */
+function partOfDay(ids: string[]): string {
+  const first = ids.map((id) => capturedOf(PHOTO_BY_ID[id])).sort()[0] ?? '';
+  const h = Number(first.slice(11, 13));
+  return Number.isNaN(h) || !first ? 'Shoot' : h >= 5 && h < 12 ? 'Morning' : h < 17 && h >= 12 ? 'Afternoon' : h < 21 && h >= 17 ? 'Evening' : 'Night';
+}
+
 interface TileMenu {
   /** How many other Photos are selected, for "to selection" items. */
   others: number;
@@ -102,6 +117,12 @@ interface TileMenu {
   onAllStacks: (open: boolean) => void;
   /** The Photo under the menu is in the selection, so selection items act on all of it. */
   selected: boolean;
+  /** Shoots the Photos can move to (not the open one), newest first. */
+  shoots: { id: string; name: string }[];
+  /** Move the Photos to that Shoot, or to a new one when null. */
+  onMoveTo: (shootId: string | null) => void;
+  /** Move this Photo and every later one into a new Shoot (null when no Shoot is open). */
+  onSplitHere: (() => void) | null;
 }
 
 type TileInfo = 'full' | 'compact' | 'photo';
@@ -116,13 +137,62 @@ const sameTile = (a: TileProps, b: TileProps) =>
     typeof a[k] === 'function' ? typeof b[k] === 'function' : k === 'stars' ? a.stars.stars === b.stars.stars && a.stars.you === b.stars.you : Object.is(a[k], b[k]),
   );
 
-const Tile = memo(function Tile({ p, v, you, stars, best, hero, takes, ai, eyes, onStars, selected, current, highlighted, stackSize, expanded, stackPos, stackFirst, stackLast, stackCover, culling, onToggleStack, onClick, onSet, menu, small }: TileProps) {
+/** What an empty grid says, with Greg's art and the one next step (docs/design.md, Feedback and motion). */
+function GridEmpty({ library, shoot, filter, stars, showAll }: { library: boolean; shoot: boolean; filter: Filter; stars: number; showAll: () => void }) {
+  if (!library || !shoot)
+    return (
+      <EmptyState art="tray" title={library ? 'This Shoot is empty' : 'No photos yet'} testId="grid-empty">
+        Import a card or a folder. Argus reads the originals in place and never changes them.
+        <Button variant="default" onClick={() => go({ name: 'import' })} data-testid="empty-import">
+          Import a Shoot <Kbd>⇧⌘I</Kbd>
+        </Button>
+      </EmptyState>
+    );
+  const all = (
+    <Button variant="outline" size="sm" onClick={showAll} data-testid="empty-show-all">
+      Show all
+    </Button>
+  );
+  if (filter === 'unflagged' && !stars)
+    return (
+      <EmptyState art="culled" title="Nothing left to cull" testId="grid-empty">
+        Every Photo in this Shoot has a flag.
+        {all}
+      </EmptyState>
+    );
+  const what = { all: 'Photos', pick: 'Picks', reject: 'Rejects', unflagged: 'Unflagged Photos', best: 'Best Photos' }[filter];
+  return (
+    <EmptyState art="tray" title={stars ? `No ${what} with ${stars}★ or more` : `No ${what} yet`} testId="grid-empty">
+      {filter === 'pick' && !stars ? <span>P picks the Photo under the cursor.</span> : null}
+      {all}
+    </EmptyState>
+  );
+}
+
+/**
+ * The Photos the latest Import batch just added, in order (docs/design.md: imported Photos pop into
+ * the grid). Only while an Import fills the open Shoot, so switching Shoots never animates.
+ */
+function useArrivals(imported: number, importing: boolean) {
+  const last = useRef({ n: imported, importing });
+  const map = useMemo(() => {
+    const prev = last.current;
+    if (!(importing || prev.importing) || imported <= prev.n) return null;
+    return new Map(PHOTOS.slice(prev.n, imported).map((p, i) => [p.id, i]));
+  }, [imported, importing]);
+  useEffect(() => {
+    last.current = { n: imported, importing };
+  }, [imported, importing]);
+  return map;
+}
+
+const Tile = memo(function Tile({ p, arrive, v, you, stars, best, hero, takes, ai, eyes, onStars, selected, current, highlighted, stackSize, expanded, stackPos, stackFirst, stackLast, stackCover, culling, onToggleStack, onClick, onSet, menu, small }: TileProps) {
   const stk = stackSize > 1 ? ['stk', expanded ? 'stk-open' : 'stk-shut', stackCover && 'stk-cover', stackFirst && 'stk-first', stackLast && 'stk-last'] : [];
-  const cls = ['tile', hero && 'hero', selected && 'sel', current && 'cur', highlighted && 'hl', v === 'reject' && 'faded', ...stk].filter(Boolean).join(' ');
+  const cls = ['tile', arrive != null && 'arrive', hero && 'hero', selected && 'sel', current && 'cur', highlighted && 'hl', v === 'reject' && 'faded', ...stk].filter(Boolean).join(' ');
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <figure className={cls} onClick={onClick} onDoubleClick={() => go({ name: 'loupe', id: p.id })} data-testid={`tile-${p.id}`} data-verdict={v ?? ''}>
+        <figure className={cls} style={arrive != null ? ({ '--i': Math.min(arrive, 24) } as CSSProperties) : undefined} onClick={onClick} onDoubleClick={() => go({ name: 'loupe', id: p.id })} data-testid={`tile-${p.id}`} data-verdict={v ?? ''}>
           <div className="ph">
             <PhotoView photo={p} size={small ? 'tile' : 'thumb'} edits style={{ width: '100%', height: '100%', borderRadius: 0 }} />
             <VerdictChip v={v} you={you} />
@@ -242,6 +312,26 @@ function TileMenuItems({ p, stars, onStars, onSet, menu: menuOf }: Pick<TileProp
         <Sparkles size={13} /> Ask Agent about this photo <MenuKeys keys={['⌘', 'L']} />
       </ContextMenuItem>
       <ContextMenuSeparator />
+      <ContextMenuSub>
+        <ContextMenuSubTrigger disabled={!LIVE} data-testid="tile-move">
+          <FolderInput size={13} /> {menu.others > 0 && menu.selected ? `Move ${menu.others + 1} Photos to Shoot` : 'Move to Shoot'}
+        </ContextMenuSubTrigger>
+        <ContextMenuSubContent className="max-h-[360px] overflow-y-auto">
+          <ContextMenuItem onSelect={() => menu.onMoveTo(null)} data-testid="tile-move-new">
+            <FolderPlus size={13} /> New Shoot
+          </ContextMenuItem>
+          {menu.shoots.length > 0 && <ContextMenuSeparator />}
+          {menu.shoots.map((s) => (
+            <ContextMenuItem key={s.id} onSelect={() => menu.onMoveTo(s.id)} data-testid="tile-move-to">
+              <span style={{ width: 13 }} /> {s.name}
+            </ContextMenuItem>
+          ))}
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+      <ContextMenuItem disabled={!LIVE || !menu.onSplitHere} onSelect={() => menu.onSplitHere?.()} data-testid="tile-split">
+        <Scissors size={13} /> Split Shoot here
+      </ContextMenuItem>
+      <ContextMenuSeparator />
       <ContextMenuItem disabled={!LIVE} onSelect={() => revealInFinder({ photo_id: Number(p.id) }).catch((e) => toast(String(e).replace(/^Error: /, ''), { id: 'argus' }))}>
         <Folder size={13} /> Show original in Finder <MenuKeys keys={['⌘', '⇧', 'R']} />
       </ContextMenuItem>
@@ -291,6 +381,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const keepers = useKeepers();
   // Edit as you cull: Shoot matches for the Picks and likely keepers, once a RAW is hand-edited.
   const pre = usePreEdits(state);
+  const crops = useCropOffers();
   // Sorted by Stars, the grid holds the order it had when the sort was chosen while the AI's
   // stars refresh, so nothing moves under the person (Greg, 2026-10-22); choosing it again re-sorts.
   const held = useRef<Record<string, number> | null>(null);
@@ -306,6 +397,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const gridRef = useRef<HTMLDivElement>(null);
   const all = PHOTOS.slice(0, state.imported);
   const culled = Object.keys(state.aiVerdicts).length > 0;
+  const arrived = useArrivals(state.imported, state.importing);
 
   // Best Photos: the cull's ranked short list, minus any the person has since rejected.
   const bestPhotos = useMemo(
@@ -623,8 +715,23 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
       stack: { size: p.stackId ? STACK_BY_ID[p.stackId].photoIds.length : 0, open: !!p.stackId && expanded.has(p.stackId), any: stackCount > 0 },
       onToggleStack: () => p.stackId && toggleStack(p.stackId),
       onAllStacks: setAllStacks,
+      shoots: OTHER_SHOOTS.filter((s) => s.id !== SHOOT.id).sort((a, b) => b.name.localeCompare(a.name)),
+      onMoveTo: (shootId) => {
+        const ids = sel.has(p.id) ? [...sel] : [p.id];
+        moveTo(ids, shootId ? { shoot_id: shootId } : { new_shoot_name: partOfDay(ids) });
+      },
+      // Lightroom has no Split; this is "everything from here on is another outing".
+      onSplitHere: inCollection()
+        ? null
+        : () => {
+            const from = capturedOf(p);
+            const later = PHOTOS.filter((x) => capturedOf(x) >= from).map((x) => x.id);
+            moveTo(later, { new_shoot_name: partOfDay([p.id]) });
+          },
     };
   };
+  const moveTo = (ids: string[], to: Parameters<typeof movePhotos>[1]) =>
+    void movePhotos(ids, to).catch((e) => toast(String(e).replace(/^Error: /, ''), { id: 'argus' }));
   // "Apply this edit": the whole edit onto the others, as one batch (⇧⌘S asks which groups).
   const copyEdit = (from: string, to: string[]) => pasteSettings(state, dispatch, from, to, ALL_GROUPS);
   const pasteCopied = (to: string[]) => pasteClip(state, dispatch, to);
@@ -685,7 +792,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
               label: (
                 <>
                   {f === 'all' ? 'All' : f === 'pick' ? <Flag size={11} /> : f === 'reject' ? <X size={12} /> : f === 'unflagged' ? <Square size={11} /> : <Award size={11} />}
-                  <span className="n">{culled || f === 'all' || f === 'unflagged' ? counts[f] : '–'}</span>
+                  <Tick className="n" value={culled || f === 'all' || f === 'unflagged' ? counts[f] : '–'} />
                 </>
               ),
             }))}
@@ -781,6 +888,16 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             }}
           />
         )}
+        {crops.ready.length > 0 && (
+          <CropOfferLine
+            crops={crops}
+            onAccept={() => acceptCropOffers(crops.ready)}
+            onShow={() => {
+              setAiFilter('ready');
+              setCur(0);
+            }}
+          />
+        )}
         {filter === 'best' && (
           <BestPhotos
             photos={visible}
@@ -789,6 +906,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
               <Tile
                 key={p.id}
                 p={p}
+                arrive={arrived?.get(p.id)}
                 v={verdictOf(state, p.id)}
                 you={p.id in state.overrides}
                 stars={starsOf(state, p.id)}
@@ -838,6 +956,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
               <Tile
                 key={p.id}
                 p={p}
+                arrive={arrived?.get(p.id)}
                 v={verdictOf(state, p.id)}
                 you={p.id in state.overrides}
                 stars={starsOf(state, p.id)}
@@ -867,17 +986,18 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
               </div>
             ))}
           </div>
-          {!visible.length &&
-            (PHOTOS.length === 0 ? (
-              <div className="faint row" style={{ padding: 24, gap: 12 }}>
-                No photos yet.
-                <Button variant="default" onClick={() => go({ name: 'import' })} data-testid="empty-import">
-                  Import a Shoot
-                </Button>
-              </div>
-            ) : (
-              <div className="faint" style={{ padding: 24 }}>Nothing here yet.</div>
-            ))}
+          {!visible.length && !state.importing && (
+            <GridEmpty
+              library={PHOTOS.length > 0}
+              shoot={all.length > 0}
+              filter={filter}
+              stars={minStars}
+              showAll={() => {
+                setFilter('all');
+                setMinStars(0);
+              }}
+            />
+          )}
         </div>
         {/* Lightroom's grid info line: what the cursor is on, then the keys. */}
         <footer className="panel-foot cull-foot">
@@ -1022,6 +1142,7 @@ function NextStep({ shootId, rejects, fourUp, best, onPick, onReview }: { shootI
 function PreEditLine({ pre, onAccept, onShow }: { pre: PreEdits; onAccept: () => void; onShow: () => void }) {
   const [hidden, setHidden] = useState(0);
   const n = pre.ready.length;
+  const cropped = pre.ready.filter((s) => s.recipe.crop).length;
   if (hidden >= n) return null;
   return (
     <div className="ai-bar next-step" data-testid="pre-edits">
@@ -1030,7 +1151,7 @@ function PreEditLine({ pre, onAccept, onShow }: { pre: PreEdits; onAccept: () =>
         <b>
           Shoot match ready for {n} Photo{n === 1 ? '' : 's'},
         </b>{' '}
-        from the {pre.heroes === 1 ? 'Photo' : `${pre.heroes} Photos`} you edited. <span className="faint">Nothing changes until you accept.</span>
+        from the {pre.heroes === 1 ? 'Photo' : `${pre.heroes} Photos`} you edited{cropped ? `, ${cropped} with your crop` : ''}. <span className="faint">Nothing changes until you accept.</span>
       </span>
       <span className="grow" />
       <Button variant="ghost" size="sm" onClick={onAccept} data-testid="pre-edits-accept">
@@ -1042,6 +1163,34 @@ function PreEditLine({ pre, onAccept, onShow }: { pre: PreEdits; onAccept: () =>
       <button className="next-close" onClick={() => setHidden(n)} aria-label="Hide until more are ready" title="Hide until more are ready">
         <X size={12} />
       </button>
+    </div>
+  );
+}
+
+/** Crop like this: the hand crop offered to the frames shot around it, in one line under the
+ * header (canvas board SL-Crop). Accept all is one Undo and changes only the crop; Not for these
+ * dismisses them, so the same crop isn't offered to them again. */
+function CropOfferLine({ crops, onAccept, onShow }: { crops: CropOffers; onAccept: () => void; onShow: () => void }) {
+  const n = crops.ready.length;
+  return (
+    <div className="ai-bar next-step" data-testid="crop-offers">
+      <Sparkles size={12} className="accent-text" />
+      <span className="trunc">
+        <b>
+          Your crop is ready for {n} frame{n === 1 ? '' : 's'} around {crops.hero ?? 'the Photo you cropped'},
+        </b>{' '}
+        the ones shot within 2 minutes of it. <span className="faint">Nothing changes until you accept.</span>
+      </span>
+      <span className="grow" />
+      <Button variant="ghost" size="sm" onClick={onAccept} data-testid="crop-offers-accept">
+        Accept all {n}
+      </Button>
+      <Button variant="ghost" size="sm" onClick={onShow} data-testid="crop-offers-show">
+        Show them
+      </Button>
+      <Button variant="ghost" size="sm" onClick={() => dismissCropOffers(crops.ready)} data-testid="crop-offers-dismiss">
+        Not for these
+      </Button>
     </div>
   );
 }

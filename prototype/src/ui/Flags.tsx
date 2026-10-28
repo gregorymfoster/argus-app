@@ -4,6 +4,7 @@
 import { Flag, X } from 'lucide-react';
 import type { Verdict } from '../domain/types';
 import { Tip, VERDICT_LABEL } from './kit';
+import { useChanged } from './motion';
 
 export function FlagButtons({ v, onSet, size = 'sm' }: { v: Verdict | null; onSet: (v: Verdict) => void; size?: 'sm' | 'lg' }) {
   const toggle = (x: Verdict) => onSet(v === x ? 'unflagged' : x);
@@ -33,11 +34,13 @@ export function FlagButtons({ v, onSet, size = 'sm' }: { v: Verdict | null; onSe
   );
 }
 
-/** The corner chip: blue Pick, red Reject, nothing when Unflagged. */
+/** The corner chip: blue Pick, red Reject, nothing when Unflagged. It stamps on when the flag
+ * changes while it's on screen (not when a scrolled-in tile mounts). */
 export function VerdictChip({ v, you }: { v: Verdict | null; you?: boolean }) {
+  const stamp = useChanged(v);
   if (v !== 'pick' && v !== 'reject') return null;
   return (
-    <span className={`chip ${v}`}>
+    <span key={stamp} className={`chip ${v}${stamp ? ' stamp' : ''}`}>
       {v === 'pick' ? <Flag size={10} strokeWidth={2.2} fill="currentColor" /> : <X size={10} strokeWidth={2.6} />}
       <span className="label">{VERDICT_LABEL[v]}</span>
       {you && <span className="you">· you</span>}

@@ -24,6 +24,7 @@ pub mod commands;
 pub mod compute;
 #[cfg(target_os = "macos")]
 pub mod coreml;
+pub mod crop_offer;
 pub mod cull;
 pub mod debug_log;
 pub mod denoise;
@@ -58,7 +59,9 @@ pub mod providers;
 pub mod rawcheck;
 pub mod recipe;
 pub mod render;
+pub mod shoot_look;
 pub mod shoot_match;
+pub mod shoot_split;
 pub mod signals;
 pub mod style;
 pub mod suggest;

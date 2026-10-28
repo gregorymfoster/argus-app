@@ -20,3 +20,4 @@ Notes for any agent working on Argus. Update this file the moment a new preferen
 - **Git.** Never open PRs. Commit to main and push without asking (solo private project).
 - **Originals.** Never modify Greg's original photo files.
 - **Colour reference.** On 2026-10-17 Greg chose not to provide Lightroom reference exports, so Argus's default colour and tone are matched to the camera's embedded JPEG (`argus fit-look`), not to Lightroom.
+- **Burst keepers, head to head (Greg, 2026-10-24).** Between two near-identical frames he keeps the one with more faces visible, more smiles, open eyes, nobody's head cut off and sharper focus. Call it as a head-to-head comparison inside the burst, not an absolute score. Only "no cut-off heads" has beaten the shipped burst order on his taps so far (docs/research/burst-keeper.md); retest the rest as taps grow.

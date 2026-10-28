@@ -55,7 +55,7 @@ const serve = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
 });
 const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5198, strictPort: true }, logLevel: 'error' });
 await vite.listen();
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
 try {
   for (let i = 0; i < 100; i++) {
     if (await fetch('http://127.0.0.1:7878/api/list_shoots').then((r) => r.ok, () => false)) break;
@@ -68,12 +68,28 @@ try {
   await p.goto('http://localhost:5198/?library=live#/import');
   await p.getByTestId('import-tile').first().waitFor({ timeout: 30000 });
   check((await p.getByTestId('import-source').innerText()).includes(`${raws.length} photos`), 'the source line names the card and its photo count');
+  // The A7R V samples span two days, so the card is proposed as two Shoots, each named
+  // from its own photos.
+  await p.getByTestId('import-split-bar').waitFor({ timeout: 10000 });
+  const shoots = p.getByTestId('import-shoot');
+  check((await shoots.count()) === 2, `the card is split into a Shoot per outing (${await shoots.count()})`);
+  for (let i = 0; i < 50 && !/Boat.Tour/.test(await p.getByTestId('import-shoot-name').last().inputValue()); i++) await p.waitForTimeout(200);
+  check(/Boat.Tour/.test(await p.getByTestId('import-shoot-name').last().inputValue()), 'each Shoot is named by the local model');
+  await p.screenshot({ path: `${out}import-split.png` });
+  // Drag the second Shoot's first photo into the first.
+  const before = await shoots.nth(1).getByTestId('import-tile').count();
+  await shoots.nth(1).getByTestId('import-tile').first().dragTo(shoots.nth(0).getByTestId('import-grid'));
+  await p.waitForTimeout(200);
+  check((await shoots.nth(1).getByTestId('import-tile').count()) === before - 1, 'dragging a photo moves it to another Shoot');
+  await p.screenshot({ path: `${out}import-split-moved.png` });
+  // One Shoot turns the Splits off: the single name field and the model's name, as before.
+  await p.getByRole('radio', { name: 'One Shoot' }).click();
   for (let i = 0; i < 50 && !/Boat-Tour/.test(await p.getByTestId('import-name').inputValue()); i++) await p.waitForTimeout(200);
   const name = await p.getByTestId('import-name').inputValue();
   check(/^\d{4}-\d{2}-\d{2}_Boat-Tour$/.test(name) && namingCalls >= 1, `the local model names the Shoot (${name})`);
   await p.waitForTimeout(1500);
   const space = await p.getByTestId('import-space').innerText();
-  check(new RegExp(`${raws.length} photos · .+ · (about|a few).+\\s.+ free`).test(space), `time and space before starting ("${space}")`);
+  check(new RegExp(`${raws.length} photos · .+ · (about|a few|~).+\\s.+ free`).test(space), `time and space before starting ("${space}")`);
   await p.screenshot({ path: `${out}import-dialog.png` });
   await p.getByTestId('import-source').click();
   await p.waitForTimeout(300);
@@ -89,6 +105,9 @@ try {
   check(/Import 0\b/.test(await p.getByTestId('import-start').innerText()), 'Untick all unticks them');
   await p.getByTestId('import-check-all').click();
   await p.getByTestId('import-auto-tone').click();
+  // Back to the Splits (the moved photo stays moved), and import them as two Shoots.
+  await p.getByRole('radio', { name: /^Split/ }).click();
+  check(/into 2 Shoots/.test(await p.getByTestId('import-start').innerText()), 'Import names how many Shoots it makes');
   await p.getByTestId('import-start').click();
   // The Shoot opens while the engine is still importing (a few sample RAWs go fast, so
   // watch the engine's task and the page together).
@@ -106,8 +125,11 @@ try {
   check(early, 'the grid opens while the Import still runs');
   await p.getByTestId('import-strip').waitFor({ state: 'detached', timeout: 600000 });
   await p.waitForTimeout(800);
-  for (const t0 = Date.now(); Date.now() - t0 < 10000 && (await p.locator('.tile').count()) < raws.length; ) await p.waitForTimeout(200);
-  check((await p.locator('.tile').count()) === raws.length, `every Photo lands in the grid (${await p.locator('.tile').count()})`);
+  for (const t0 = Date.now(); Date.now() - t0 < 120000 && (await fetch('http://127.0.0.1:7878/api/import_result').then((r) => r.json())).running; ) await p.waitForTimeout(300);
+  const made = (await fetch('http://127.0.0.1:7878/api/list_shoots').then((r) => r.json())).map((s) => s.photos).sort();
+  check(made.length === 2 && made[0] === before - 1 && made[0] + made[1] === raws.length, `two Shoots, the moved photo in the first (${made.join(' + ')})`);
+  for (const t0 = Date.now(); Date.now() - t0 < 10000 && (await p.locator('.tile').count()) < made[1]; ) await p.waitForTimeout(200);
+  check((await p.locator('.tile').count()) === made[1], `the first Shoot's Photos land in the grid (${await p.locator('.tile').count()})`);
   await p.screenshot({ path: `${out}import-done.png` });
   // Auto runs after the last Photo lands, before the Import reports back.
   for (const t0 = Date.now(); Date.now() - t0 < 120000 && (await fetch('http://127.0.0.1:7878/api/import_result').then((r) => r.json())).running; ) await p.waitForTimeout(300);
@@ -132,6 +154,29 @@ try {
   await p.getByTestId('import-show').click();
   await p.getByTestId('import-show-all').click();
   check((await p.getByTestId('import-tile').count()) === raws.length, 'All photos shows them again');
+  // In the grid: split the open Shoot at a Photo, then move a Photo back by hand.
+  const shootSizes = async () => (await fetch('http://127.0.0.1:7878/api/list_shoots').then((r) => r.json())).map((s) => s.photos);
+  await p.goto('http://localhost:5198/?library=live#/cull');
+  await p.locator('.tile').nth(2).waitFor({ timeout: 30000 });
+  const openBefore = await p.locator('.tile').count();
+  await p.locator('.tile').nth(2).click({ button: 'right' });
+  await p.getByTestId('tile-split').click();
+  await p.waitForLoadState('load');
+  await p.getByText(/^Moved \d+ Photos? to /).waitFor({ timeout: 30000 });
+  const split = await shootSizes();
+  check(split.length === 3 && split.reduce((a, b) => a + b, 0) === raws.length, `Split Shoot here makes a third Shoot (${split.join(' + ')})`);
+  await p.locator('.tile').first().waitFor({ timeout: 30000 });
+  const openAfter = await p.locator('.tile').count();
+  check(openAfter > 0 && openAfter < openBefore, `the open Shoot keeps the Photos before the Split (${openBefore} to ${openAfter})`);
+  await p.screenshot({ path: `${out}import-split-here.png` });
+  await p.locator('.tile').first().click({ button: 'right' });
+  await p.getByTestId('tile-move').click();
+  await p.getByTestId('tile-move-to').first().waitFor();
+  await p.screenshot({ path: `${out}import-move-menu.png` });
+  await p.getByTestId('tile-move-to').first().click();
+  await p.getByText(/^Moved 1 Photo to /).waitFor({ timeout: 30000 });
+  const moved = await shootSizes();
+  check(moved.reduce((a, b) => a + b, 0) === raws.length && moved.length >= 2, `Move to Shoot moves one Photo (${moved.join(' + ')})`);
 } catch (e) {
   failures.push(String(e).split('\n')[0]);
   await browser.contexts()[0]?.pages()[0]?.screenshot({ path: `${out}import-failed.png` }).catch(() => {});

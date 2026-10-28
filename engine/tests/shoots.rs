@@ -166,3 +166,116 @@ fn reveal_and_suggest_name_work_on_a_shoot_through_commands() {
     assert_eq!(r["by"], "date");
     assert!(r["name"].as_str().unwrap().starts_with("20"), "{r}");
 }
+
+fn call(tools: &Tools, name: &str, args: Value) -> Value {
+    match &tools.call(name, args).unwrap()[0] {
+        argus_engine::tools::Part::Json(v) => v.clone(),
+        _ => panic!("{name} answers JSON"),
+    }
+}
+
+fn ids(lib: &Library, shoot: i64) -> Vec<i64> {
+    lib.list_photos(&PhotoFilter {
+        shoot: Some(shoot),
+        verdict: None,
+    })
+    .unwrap()
+    .into_iter()
+    .map(|p| p.id)
+    .collect()
+}
+
+#[test]
+fn moving_photos_takes_their_originals_along_and_removes_an_emptied_shoot() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Library");
+    let mut lib = Library::open(&root).unwrap();
+    let walk = import(&mut lib, dir.path(), "2026-10-25_Walk", &[3, 5, 7], true);
+    let beach = import(&mut lib, dir.path(), "2026-10-25_Beach", &[9], true);
+    let stray = ids(&lib, beach);
+    drop(lib);
+    let tools = Tools::new(&root);
+
+    // The Beach's one frame belongs with the Walk.
+    let r = call(
+        &tools,
+        "move_photos",
+        json!({ "photo_ids": stray, "shoot_id": walk }),
+    );
+    assert_eq!(r["moved"], 1);
+    assert_eq!(r["removed_shoots"], json!([beach]));
+    let lib = Library::open(&root).unwrap();
+    assert_eq!(ids(&lib, walk).len(), 4);
+    assert_eq!(lib.shoots().unwrap().len(), 1);
+    for p in paths(&lib, walk) {
+        assert!(p.contains("/originals/2026-10-25_Walk/"), "{p}");
+        assert!(Path::new(&p).is_file(), "{p} is missing");
+    }
+    assert!(!root.join("originals/2026-10-25_Beach").exists());
+    assert!(lib.missing_originals().unwrap().is_empty());
+}
+
+#[test]
+fn splitting_a_shoot_moves_the_rest_into_a_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Library");
+    let mut lib = Library::open(&root).unwrap();
+    let day = import(&mut lib, dir.path(), "2026-10-25_Day", &[3, 5, 7, 9], true);
+    let later = ids(&lib, day)[2..].to_vec();
+    drop(lib);
+    let tools = Tools::new(&root);
+
+    let r = call(
+        &tools,
+        "move_photos",
+        json!({ "photo_ids": later, "new_shoot_name": "Dinner" }),
+    );
+    let new = r["shoot_id"].as_i64().unwrap();
+    assert!(r["name"].as_str().unwrap().ends_with("_Dinner"), "{r}");
+    assert_eq!(r["removed_shoots"], json!([]));
+    let lib = Library::open(&root).unwrap();
+    assert_eq!(ids(&lib, day).len(), 2);
+    assert_eq!(ids(&lib, new), later);
+    for p in paths(&lib, new) {
+        assert!(p.contains("_Dinner/"), "{p}");
+        assert!(Path::new(&p).is_file(), "{p} is missing");
+    }
+    assert!(lib.missing_originals().unwrap().is_empty());
+
+    let err = tools
+        .call(
+            "move_photos",
+            json!({ "photo_ids": later, "shoot_id": day, "new_shoot_name": "x" }),
+        )
+        .unwrap_err();
+    assert!(err.0.contains("not both"), "{}", err.0);
+}
+
+#[test]
+fn scanning_a_card_proposes_a_shoot_per_outing() {
+    use std::time::{Duration, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let card = dir.path().join("card/DCIM");
+    // No EXIF, so capture time is the file's time: a morning, then three hours later.
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_000_000);
+    for (i, mins) in [0u64, 10, 20, 200, 210, 220].iter().enumerate() {
+        let p = card.join(format!("DSC{:05}.JPG", i + 1));
+        write_jpeg(&p, i as u8 + 3);
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(t0 + Duration::from_secs(mins * 60))
+            .unwrap();
+    }
+    let root = dir.path().join("Library");
+    Library::open(&root).unwrap();
+    let tools = Tools::new(&root);
+    let scan = call(&tools, "scan_folder", json!({ "folder": card }));
+    let shoots = scan["shoots"].as_array().unwrap();
+    assert_eq!(shoots.len(), 2, "{scan}");
+    assert_eq!(shoots[0]["photos"], json!([0, 1, 2]));
+    assert_eq!(shoots[1]["photos"], json!([3, 4, 5]));
+    assert_eq!(shoots[1]["gap_before_minutes"], 180.0);
+    assert_ne!(shoots[0]["name"], shoots[1]["name"]);
+}

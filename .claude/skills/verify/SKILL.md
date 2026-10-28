@@ -23,6 +23,8 @@ ADR 0005: every change is checkable by Claude without a human. Pick the narrowes
 | How any screen looks (unintended visual change) | `just shots [name]`: dummy-data screens diffed against blessed baselines, diffs in `prototype/out/shots/diff/`; `just shots-bless [names]` after an intended change | 3 min all | cloud |
 | The native menu bar itself | `just mac-menus`: launches Argus.app on a throwaway Library, checks menus and shortcuts, clicks Edit › Undo/Redo, Zoom, Settings | 1 min | Mac thread (Accessibility granted once) |
 | Bars, labels, window widths | `just layout`; Import: `just import-check` | 1-2 min | both |
+| Shoot look (strip under the hero, Lock look) | `just shoot-look-check` | ~1 min | cloud |
+| Motion and empty states (flag stamp, key echo, counts, zoom, sliders, Import pop-in, Reduce motion) | `just motion-check` | ~40 s | cloud |
 | Design tokens, stray styles | `npm run design-lint` (in `just check`) | 2 s | both |
 | Random-input crashes | `just fuzz <lib> [seed] [steps]` | 2-5 min | both |
 | Idle cost, memory | `just perf` | 5 min | cloud |

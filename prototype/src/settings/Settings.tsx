@@ -235,6 +235,12 @@ function AiSection() {
         </Row>
       )}
 
+      {q && (
+        <Row title="Smarter Shoot match" note="Weighs the photos you edited by how alike their scenes are, and leans on Argus’s own edit for frames unlike any of them. Off: the earlier, simpler match">
+          <Switch checked={q.shoot_match_smart !== false} onCheckedChange={(c) => set({ shoot_match_smart: c })} aria-label="Smarter Shoot match" data-testid="settings-shoot-match" />
+        </Row>
+      )}
+
       <h3>Search</h3>
       <MeaningRow />
     </div>

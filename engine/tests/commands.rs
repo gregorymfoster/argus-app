@@ -726,3 +726,55 @@ fn flag_and_rate_with_no_ids_make_no_undo_step_and_repeats_count_once() {
     let r = dispatch(&tools, "rate", json!({ "ids": [id, id], "stars": 4 })).unwrap();
     assert_eq!(r["rated"], 1);
 }
+
+#[test]
+fn start_import_with_shoots_imports_each_split_as_its_own_shoot() {
+    let dir = tempfile::tempdir().unwrap();
+    let card = dir.path().join("card/DCIM");
+    let files: Vec<String> = (0..4)
+        .map(|i| {
+            let p = card.join(format!("DSC{i:05}.JPG"));
+            write_jpeg(&p, 64, 48, i as u8 + 3);
+            p.to_string_lossy().into_owned()
+        })
+        .collect();
+    let tools = Tools::new(dir.path().join("lib"));
+    dispatch(
+        &tools,
+        "start_import",
+        json!({ "folder": card, "copy": true, "shoots": [
+            { "shoot_name": "2026-10-25_Morning", "files": files[..2] },
+            { "shoot_name": "2026-10-25_Evening", "files": files[2..] } ] }),
+    )
+    .unwrap();
+    let t0 = std::time::Instant::now();
+    let last = loop {
+        let r = dispatch(&tools, "import_result", Value::Null).unwrap();
+        if !r["running"].as_bool().unwrap() {
+            break r;
+        }
+        assert!(t0.elapsed().as_secs() < 60, "import never finished");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(last["report"]["shoot_name"], "2026-10-25_Evening", "{last}");
+    let shoots = dispatch(&tools, "list_shoots", Value::Null).unwrap();
+    let mut names: Vec<(String, i64)> = shoots
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["name"].as_str().unwrap().to_string(),
+                s["photos"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            ("2026-10-25_Evening".to_string(), 2),
+            ("2026-10-25_Morning".to_string(), 2)
+        ]
+    );
+}

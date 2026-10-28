@@ -370,6 +370,7 @@ fn sheet_photo(n: usize, at: &str) -> SheetPhoto {
         taste: 0.0,
         burst: None,
         tilt: None,
+        cut_off: 0,
         sharpness: Default::default(),
         shut_eyes: false,
     }
@@ -1031,6 +1032,61 @@ fn inside_a_burst_the_most_upright_heads_come_first() {
     let r = argus_engine::taste::rate(&sheet, technical(4, &[]));
     let rank = |n: usize| r.photos.iter().find(|c| c.n == n).unwrap().rank.unwrap();
     assert_eq!((rank(2), rank(3), rank(4), rank(1)), (1, 2, 3, 4));
+}
+
+#[test]
+fn inside_a_burst_a_frame_that_cuts_off_a_head_goes_after_one_that_doesnt() {
+    // Frame 1's heads sit most level, but the frame cuts one off; frame 3 cuts none, so it
+    // leads, then frame 2 (also uncut), then frame 1. Greg kept the uncut frame in 12 of 12
+    // such pairs (docs/research/burst-keeper.md).
+    let mut sheet = sheet_of(&[(0.9, Some(0)), (0.5, Some(0)), (0.1, Some(0))]);
+    for (p, (tilt, cut)) in sheet.photos.iter_mut().zip([(1.0, 1), (12.0, 0), (5.0, 0)]) {
+        p.tilt = Some(tilt);
+        p.cut_off = cut;
+    }
+    let r = argus_engine::taste::rate(&sheet, technical(3, &[]));
+    let rank = |n: usize| r.photos.iter().find(|c| c.n == n).unwrap().rank.unwrap();
+    assert_eq!((rank(3), rank(2), rank(1)), (1, 2, 3));
+}
+
+#[test]
+fn a_head_at_the_frames_edge_or_above_its_top_counts_as_cut_off() {
+    use argus_engine::analyzers::{Fact, Facts};
+    use serde_json::json;
+    let face = |x: f32, y: f32| {
+        json!({"x": x, "y": y, "w": 0.1, "h": 0.15, "score": 0.9,
+        "eyes": [[x + 0.03, y + 0.05], [x + 0.07, y + 0.05]], "nose": [x + 0.05, y + 0.08],
+        "mouth": [[x + 0.03, y + 0.11], [x + 0.07, y + 0.11]]})
+    };
+    let read = |i: usize| {
+        json!({"face": i, "read": true, "blink": [0.0, 0.0], "eyes_closed": false,
+        "focus": 1.0, "shapes": vec![0.0; 52], "size": 0.15, "x": 0.5})
+    };
+    let facts = |faces: Vec<serde_json::Value>| {
+        let reads: Vec<_> = (0..faces.len()).map(read).collect();
+        let mut f = Facts::new();
+        f.insert("faces", Fact::json(json!(faces)));
+        f.insert("eyes", Fact::json(json!({ "faces": reads })));
+        f
+    };
+    let cut = |faces| argus_engine::taste::cut_off(&facts(faces));
+    assert_eq!(cut(vec![face(0.3, 0.3), face(0.6, 0.3)]), 0);
+    assert_eq!(
+        cut(vec![face(0.3, 0.3), face(0.95, 0.3)]),
+        1,
+        "off the right side"
+    );
+    assert_eq!(
+        cut(vec![face(0.3, 0.05)]),
+        1,
+        "the top of the head is out of frame"
+    );
+    assert_eq!(
+        cut(vec![face(0.0, 0.3), face(0.4, 0.9)]),
+        2,
+        "left side and bottom"
+    );
+    assert_eq!(cut(vec![]), 0);
 }
 
 #[test]

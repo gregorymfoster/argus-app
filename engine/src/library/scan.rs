@@ -47,6 +47,18 @@ pub struct Scan {
     pub photos: Vec<ScannedPhoto>,
     pub new: usize,
     pub imported: usize,
+    /// The new Photos split into Shoots by gaps in capture time ([`crate::shoot_split`]),
+    /// for Import to offer; one Shoot when the card holds one outing.
+    pub shoots: Vec<ScanShoot>,
+}
+
+/// One proposed Shoot of a [`Scan`]'s new Photos.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanShoot {
+    #[serde(flatten)]
+    pub shoot: crate::shoot_split::ProposedShoot,
+    /// Indexes into [`Scan::photos`], in capture order.
+    pub photos: Vec<usize>,
 }
 
 /// Folders whose children are mounted volumes: `ARGUS_VOLUMES` (`:`-separated) if set,
@@ -162,10 +174,23 @@ pub(super) fn run(lib: &Library, folder: &Path) -> Result<Scan> {
         .collect();
     photos.sort_by(|a, b| (&a.captured_at, &a.file_name).cmp(&(&b.captured_at, &b.file_name)));
     let imported = photos.iter().filter(|p| p.imported).count();
+    let fresh: Vec<usize> = (0..photos.len()).filter(|&i| !photos[i].imported).collect();
+    let times: Vec<&str> = fresh
+        .iter()
+        .map(|&i| photos[i].captured_at.as_str())
+        .collect();
+    let shoots = crate::shoot_split::propose(&times, &Default::default())
+        .into_iter()
+        .map(|shoot| ScanShoot {
+            photos: fresh[shoot.start..shoot.start + shoot.count].to_vec(),
+            shoot,
+        })
+        .collect();
     Ok(Scan {
         folder,
         new: photos.len() - imported,
         imported,
         photos,
+        shoots,
     })
 }

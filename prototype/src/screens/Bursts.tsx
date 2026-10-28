@@ -11,6 +11,7 @@ import { starsOf, useLibrary, verdictOf, type Action } from '../store/library';
 import { go } from '../router';
 import { PhotoView } from '../ui/PhotoView';
 import { Stars } from '../ui/Stars';
+import { EmptyState } from '../ui/Empty';
 import { Button } from '@/components/ui/button';
 import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
@@ -155,11 +156,13 @@ export function BurstsScreen({ start }: { start?: string }) {
         <QueueMeter />
       </header>
       {!total || finished ? (
-        <div className="burst-empty" data-testid="bursts-done">
-          <span>{total ? `All ${total} Stacks culled.` : 'No Stacks in this Shoot yet. Bursts stack themselves once Import has looked at the Photos, or after an AI cull.'}</span>
-          <Button size="sm" onClick={() => go({ name: 'cull' })}>
-            Back to the grid <Kbd>Esc</Kbd>
-          </Button>
+        <div className="burst-empty">
+          <EmptyState art={total ? 'culled' : 'tray'} title={total ? `All ${total} Stacks culled` : 'No Stacks in this Shoot yet'} testId="bursts-done">
+            {!total && 'Bursts stack themselves once Import has looked at the Photos, or after an AI cull.'}
+            <Button size="sm" onClick={() => go({ name: 'cull' })}>
+              Back to the grid <Kbd>Esc</Kbd>
+            </Button>
+          </EmptyState>
         </div>
       ) : (
         <div className="burst-body">

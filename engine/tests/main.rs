@@ -29,6 +29,7 @@ mod agent;
 mod analyzers;
 mod commands;
 mod compute;
+mod crop_offer;
 mod cull;
 mod denoise;
 mod edit_head;

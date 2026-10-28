@@ -25,9 +25,23 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "pre_edit_shoot",
-            description: "Edit as you cull: give every Pick and likely keeper (4 stars and up) of a Shoot that the person hasn't edited a Shoot match Suggestion, the style of the RAWs they edited by hand in it moved for each frame's own light, in the background with no model call. Runs by itself after each hand edit and as the stars refresh; Photos with other matched takes, or whose Shoot match was accepted or dismissed, are left alone. Nothing changes until the person accepts.",
-            input_schema: json!({ "type": "object", "required": ["shoot_id"], "properties": { "shoot_id": id } }),
+            description: "Edit as you cull: give every Pick and likely keeper (4 stars and up) of a Shoot that the person hasn't edited a Shoot match Suggestion, the style of the RAWs they edited by hand in it moved for each frame's own light, in the background with no model call. Runs by itself after each hand edit and as the stars refresh; Photos with other matched takes, or whose Shoot match was accepted or dismissed, are left alone. every: true is Lock look, the person's Shoot look ready to accept on every frame that isn't a Reject (answered Shoot matches worked out again); the Shoot stays locked, so later hand edits re-match every frame. Nothing changes until the person accepts.",
+            input_schema: json!({ "type": "object", "required": ["shoot_id"], "properties": { "shoot_id": id,
+                "every": { "type": "boolean", "description": "every frame that isn't a Reject, not only Picks and likely keepers (Lock look)" } } }),
             read_only: false,
+        },
+        ToolSpec {
+            name: "offer_crop",
+            description: "Crop like this: offer a Photo's crop to the frames of its Shoot with the same shape shot within 2 minutes of it, as a Suggestion each (a frame with a Shoot match ready gets the crop inside it instead). Runs by itself whenever the person crops a Photo by hand; a Photo without a crop takes its open offers back. Frames already cropped, Rejects, and frames that dismissed this Photo's crop are left alone. Nothing changes until the person accepts; accepting an offer changes only the crop.",
+            input_schema: json!({ "type": "object", "required": ["photo_id"], "properties": { "photo_id": id } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "suggest_heroes",
+            description: "Which Photos of a Shoot to edit by hand first, so the Shoot match (match_to_photo, pre_edit_shoot) learns the most from them: with none edited yet and count 1, the most typical frame; otherwise the frames that leave the least uncertainty about the rest, counting the ones already edited by hand. RAWs that aren't rejected; measures each, so a big Shoot takes a while. Changes nothing.",
+            input_schema: json!({ "type": "object", "properties": {
+                "shoot_id": id, "count": { "type": "integer", "minimum": 1, "maximum": 8 } } }),
+            read_only: true,
         },
         ToolSpec {
             name: "list_suggestions",
@@ -112,15 +126,43 @@ impl Tools {
                 one(json!({ "job_id": job_id, "created": created }))
             }
             "pre_edit_shoot" => {
-                let a: ShootArg = parse(args)?;
+                let a: PreEditShoot = parse(args)?;
+                if a.every.unwrap_or(false) {
+                    crate::pre_edit::lock(&lib, a.shoot_id)?;
+                }
                 let (job_id, created) = jobs::enqueue(
                     &mut lib,
                     "pre_edit_shoot",
-                    &json!({ "shoot_id": a.shoot_id }),
+                    &if a.every.unwrap_or(false) {
+                        json!({ "shoot_id": a.shoot_id, "every": true })
+                    } else {
+                        json!({ "shoot_id": a.shoot_id })
+                    },
                     None,
                     None,
                 )?;
                 one(json!({ "job_id": job_id, "created": created }))
+            }
+            "offer_crop" => {
+                let a: PhotoArg = parse(args)?;
+                one(crate::crop_offer::offer(&mut lib, a.photo_id)?)
+            }
+            "suggest_heroes" => {
+                let a: SuggestHeroes = parse(args)?;
+                let shoot = match a.shoot_id {
+                    Some(s) => s,
+                    None => newest_shoot(&lib)?,
+                };
+                let (photos, edited) = crate::shoot_match::suggest_heroes(
+                    &lib,
+                    shoot,
+                    a.count.unwrap_or(3).clamp(1, 8),
+                )?;
+                one(json!({
+                    "shoot_id": shoot,
+                    "already_edited": edited,
+                    "heroes": photos.iter().map(|p| json!({ "photo_id": p.id, "file": p.file_name })).collect::<Vec<_>>(),
+                }))
             }
             "list_suggestions" => {
                 let a: ListSuggestions = parse(args)?;
@@ -234,4 +276,11 @@ struct SuggestionArg {
     suggestion_id: i64,
     long_edge: Option<u32>,
     amount: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreEditShoot {
+    shoot_id: ShootId,
+    every: Option<bool>,
 }

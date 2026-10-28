@@ -147,6 +147,9 @@ pub struct SheetPhoto {
     /// How far its faces' heads lean, in degrees ([`crate::taste::tilt`]); None without faces.
     /// Orders the frames of a burst.
     pub tilt: Option<f32>,
+    /// How many of its main faces the frame cuts off ([`crate::taste::cut_off`]); orders the
+    /// frames of a burst before [`Self::tilt`].
+    pub cut_off: usize,
     /// How sharp it is next to its Shoot and its look-alikes ([`crate::technical`]).
     pub sharpness: crate::technical::Sharpness,
     /// A main face has its eyes shut without laughing ([`crate::technical::shut_eyes`]).
@@ -283,6 +286,7 @@ impl ContactSheet {
                     taste: taste[i],
                     burst: burst_of.get(&p.id).copied(),
                     tilt: crate::taste::tilt(f),
+                    cut_off: crate::taste::cut_off(f),
                     sharpness: sharpness[i],
                     shut_eyes: crate::technical::shut_eyes(f),
                     facts: [
@@ -347,6 +351,7 @@ impl ContactSheet {
                     taste: p.taste,
                     burst: p.burst,
                     tilt: p.tilt,
+                    cut_off: p.cut_off,
                     sharpness: p.sharpness,
                     shut_eyes: p.shut_eyes,
                 }
