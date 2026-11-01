@@ -521,6 +521,7 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             }
             let mut chat = tools.chat(a.provider.as_deref(), Some(compute), suggest::schema())?;
             chat.cap_output(suggest::MAX_REPLY_TOKENS);
+            chat.prefer_models(crate::providers::SUGGEST_OLLAMA_MODELS);
             let ids = suggest::suggest_photo(
                 tools,
                 chat.as_ref(),
@@ -706,6 +707,8 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
                 Some(compute),
                 crate::tagging::schema(),
             )?;
+            // Keywords stay on the default model (its MLX build when installed): on 20
+            // Halloween Photos gemma4:26b-a4b gave 44 vague Keywords to qwen3.8:27b's 129.
             let progress = Library::open(tools.library())?;
             let id = job.id;
             let n =

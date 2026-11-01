@@ -22,7 +22,11 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// Long edge of what the model sees, and of the saved Suggestion previews.
-const SEE_EDGE: u32 = 768;
+/// Long edge of the images a Suggestion shows the model. 512 against 768 on the Mac edit
+/// bench (2026-11-01, qwen3.8:27b, 20 cases): first take 9.35 vs 9.40 dE, best 8.60 vs
+/// 8.57, 62 vs 84 s a Photo (a sixth fewer prompt tokens, shorter replies too). A
+/// variant's `see_edge` sets it (bench/variants/see-768.json is the old size).
+const SEE_EDGE: u32 = 512;
 
 /// Most output tokens one Suggestions reply may run to. Three takes are about 700 tokens
 /// (median on the Mac, qwen3.8:27b, 2026-11-01); the mean was 1,390 because a few replies

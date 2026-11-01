@@ -11,7 +11,8 @@ mod ollama;
 pub use claude::{check_api_key, parse_response, store_api_key, Claude};
 pub use claude_code::ClaudeCode;
 pub use ollama::{
-    choose_ollama_model, count_photo_keys, InstalledModel, Ollama, Stall, DEFAULT_OLLAMA_MODEL,
+    choose_ollama_model, count_photo_keys, model_pinned, pick_model, InstalledModel, Ollama, Stall,
+    DEFAULT_OLLAMA_MODEL, SUGGEST_OLLAMA_MODELS,
 };
 
 use crate::compute::Compute;

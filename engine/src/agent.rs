@@ -92,6 +92,9 @@ pub trait Chat {
     /// Hold each reply to at most `tokens` output tokens, for a caller that knows how long
     /// a good reply runs. Providers without a per-request cap ignore it.
     fn cap_output(&mut self, _tokens: u32) {}
+    /// Run on the first of `models` that is installed locally, if any, for batch work that
+    /// has a faster model benched for it. Providers without a model choice ignore it.
+    fn prefer_models(&mut self, _models: &[&str]) {}
 }
 
 /// What the person asked, with where they asked it.
@@ -648,14 +651,17 @@ pub fn chat_with_format(
             if let Some(c) = compute {
                 o.compute = c;
             }
-            Ok(Box::new(OllamaChat {
+            let mut chat = OllamaChat {
                 o,
                 format,
                 think: std::env::var("ARGUS_OLLAMA_THINK").is_ok_and(|v| v == "1")
                     || crate::variant::current().is_ok_and(|v| v.think == Some(true)),
                 max_tokens: None,
                 throttle: Mutex::new(None),
-            }))
+            };
+            // The same model's MLX build, when installed, runs faster at the same quality.
+            chat.prefer_models(&[]);
+            Ok(Box::new(chat))
         }
         "claude-code" => Ok(Box::new(ClaudeCodeChat::new(ClaudeCode::from_env())?)),
         "claude-api" | "claude" => Ok(Box::new(Claude::from_env()?)),
@@ -789,6 +795,19 @@ pub(crate) fn log_claude(model: &str, out: &std::process::Output, wall: Duration
 impl Chat for OllamaChat {
     fn cap_output(&mut self, tokens: u32) {
         self.max_tokens = Some(tokens);
+    }
+
+    fn prefer_models(&mut self, models: &[&str]) {
+        let installed: Vec<String> = match self.o.installed() {
+            Ok(list) => list.into_iter().map(|m| m.name).collect(),
+            Err(_) => return,
+        };
+        self.o.model = crate::providers::pick_model(
+            &self.o.model,
+            crate::providers::model_pinned(),
+            &installed,
+            models,
+        );
     }
 
     fn next(&self, system: &str, convo: &[Msg]) -> Result<String> {

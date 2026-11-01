@@ -36,6 +36,47 @@ pub struct Ollama {
 /// beat gemma4:31b on star AUC and Best Photos (2026-10-18, see ADR 0006).
 pub const DEFAULT_OLLAMA_MODEL: &str = "qwen3.8:27b";
 
+/// Models for a Shoot's batch Suggestions, best first, used when installed. On the Mac edit
+/// bench (2026-11-01, 20 cases, 512 px) gemma4:26b-a4b's best take scored 8.63 dE against
+/// qwen3.8:27b's 8.60 (first take 9.51 vs 9.35), at 6 s a Photo against 62: a mixture of
+/// experts with about 4B active weights, Apache 2.0. Keywords stay on the default model:
+/// gemma4:26b-a4b gave a third as many, and vaguer, on 20 Halloween Photos.
+pub const SUGGEST_OLLAMA_MODELS: &[&str] = &["gemma4:26b-a4b"];
+
+/// The model a request should run on, from what Ollama has installed: the first of
+/// `preferred` that is, else `current`; then that model's MLX build when installed
+/// (`<model>-mlx`: the same weights on Ollama's MLX runner, 1.6x the output speed of
+/// llama.cpp for qwen3.8:27b on an M4 Max, same quality on the edit bench). A `pinned`
+/// model (ARGUS_OLLAMA_MODEL, or one the person chose in Settings) is used as it is.
+pub fn pick_model(current: &str, pinned: bool, installed: &[String], preferred: &[&str]) -> String {
+    if pinned {
+        return current.to_string();
+    }
+    let has = |m: &str| installed.iter().any(|i| i == m);
+    let base = preferred
+        .iter()
+        .find(|p| has(p))
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| current.to_string());
+    let mlx = format!("{base}-mlx");
+    if has(&mlx) {
+        mlx
+    } else {
+        base
+    }
+}
+
+/// Whether the model in use was pinned by ARGUS_OLLAMA_MODEL or a Settings choice other
+/// than the default, so [`pick_model`] leaves it alone.
+pub fn model_pinned() -> bool {
+    std::env::var("ARGUS_OLLAMA_MODEL").is_ok()
+        || CHOSEN_MODEL
+            .read()
+            .unwrap()
+            .as_deref()
+            .is_some_and(|m| m != DEFAULT_OLLAMA_MODEL)
+}
+
 /// The model chosen in Settings › AI and Compute (kept in the Library as `ollama_model`).
 static CHOSEN_MODEL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
@@ -443,5 +484,50 @@ impl Provider for Ollama {
 
     fn local_model(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod pick_model_tests {
+    use super::pick_model;
+
+    fn have(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_pinned_model_is_left_alone() {
+        let installed = have(&["gemma4:26b-a4b", "qwen3.8:27b-mlx"]);
+        assert_eq!(
+            pick_model("qwen3.8:27b", true, &installed, &["gemma4:26b-a4b"]),
+            "qwen3.8:27b"
+        );
+    }
+
+    #[test]
+    fn an_installed_batch_model_is_preferred() {
+        let installed = have(&["qwen3.8:27b", "gemma4:26b-a4b"]);
+        assert_eq!(
+            pick_model("qwen3.8:27b", false, &installed, &["gemma4:26b-a4b"]),
+            "gemma4:26b-a4b"
+        );
+    }
+
+    #[test]
+    fn without_the_batch_model_the_current_one_stays() {
+        let installed = have(&["qwen3.8:27b"]);
+        assert_eq!(
+            pick_model("qwen3.8:27b", false, &installed, &["gemma4:26b-a4b"]),
+            "qwen3.8:27b"
+        );
+    }
+
+    #[test]
+    fn the_mlx_build_is_used_when_installed() {
+        let installed = have(&["qwen3.8:27b", "qwen3.8:27b-mlx"]);
+        assert_eq!(
+            pick_model("qwen3.8:27b", false, &installed, &[]),
+            "qwen3.8:27b-mlx"
+        );
     }
 }
