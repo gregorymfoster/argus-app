@@ -80,7 +80,9 @@ async function close({ p, ctx }, name) {
   await s.reset();
   await s.p.keyboard.press('z');
   await s.p.waitForTimeout(200);
-  check(!(await s.seen()).has('echo'), 'plain Z does not light ⌘Z');
+  const lit = await s.p.evaluate(() => [...document.querySelectorAll('.echo')].map((e) => e.textContent ?? ''));
+  check(lit.some((t) => t.includes('Pick')), 'Z lights the Pick hint');
+  check(!lit.some((t) => t.includes('⌘')), 'plain Z does not light ⌘Z');
   await close(s, 'flag');
 }
 

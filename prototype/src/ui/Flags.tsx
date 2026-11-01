@@ -11,7 +11,7 @@ export function FlagButtons({ v, onSet, size = 'sm' }: { v: Verdict | null; onSe
   const icon = size === 'lg' ? 16 : 13;
   return (
     <div className={`flags ${size}`} role="group" aria-label="Flag" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-      <Tip label={v === 'pick' ? 'Clear Pick' : 'Pick'} keys="P">
+      <Tip label={v === 'pick' ? 'Clear Pick' : 'Pick'} keys="Z">
         <button className={`flag pick ${v === 'pick' ? 'on' : ''}`} aria-pressed={v === 'pick'} aria-label="Pick" onClick={() => toggle('pick')}>
           <Flag size={icon} strokeWidth={2} fill={v === 'pick' ? 'currentColor' : 'none'} />
           {size === 'lg' && <span>Pick</span>}

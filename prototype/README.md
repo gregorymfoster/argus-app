@@ -15,7 +15,7 @@ Start at Import, or jump straight in with `#/cull`, `#/look`, `#/loupe/p15`, `#/
 ## What's in it
 
 - **Import**: a dialog over the grid. Card or folder, Shoot name, destination path (no spaces), then it opens the Shoot straight away and culls when previews are ready.
-- **Cull grid**: Lightroom flags (`P` `X` `U`, jump to next), hover flag buttons, right-click menu, Shift/⌘-click multi-select, filters for Picks, Rejects and Unflagged, Stacks collapsed to their best frame, Comfortable/Dense density, virtualized with TanStack Virtual.
+- **Cull grid**: Lightroom flags (`Z`/`P` `X` `U`, jump to next), hover flag buttons, right-click menu, Shift/⌘-click multi-select, filters for Picks, Rejects and Unflagged, Stacks collapsed to their best frame, Comfortable/Dense density, virtualized with TanStack Virtual.
 - **Loupe**: face boxes with blink flags, signals, three flag buttons, Stack filmstrip.
 - **Compare**: Lightroom's Survey for a Stack or selection (`C`), with Claude's best frame crowned and `K` to keep one and reject the rest.
 - **Look**: one Look for the whole Shoot, described to the Agent, per-photo Corrections, split before/after tiles.

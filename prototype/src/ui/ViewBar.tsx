@@ -68,7 +68,7 @@ export function BackToGrid() {
   );
 }
 
-/** A row of key hints: ["Z", "100%"], ["← →", "Move"]… */
+/** A row of key hints: ["Space", "100%"], ["← →", "Move"]… */
 export function Hints({ items }: { items: [keys: string, label: string][] }) {
   return (
     <span className="hints">

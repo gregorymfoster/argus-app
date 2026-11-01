@@ -33,7 +33,7 @@ import { ViewSwitch } from '../ui/ViewBar';
 import { SortMenu, toggleKeepers, toggleStars, useSort } from '../ui/Sort';
 import { sortPhotos } from '../domain/sort';
 import { aiName } from '../data/live';
-import { ESC_OUTSIDE_DIALOGS, Kbd, MenuKeys, Seg, Tip, VERDICT_KEYS } from '../ui/kit';
+import { ESC_OUTSIDE_DIALOGS, Kbd, MenuKeys, Seg, Tip, VERDICT_KEYS, VERDICT_HOTKEYS } from '../ui/kit';
 import { askSettings, hasCopiedSettings, pasteClip, pasteSettings, useSettingsKeys } from '../ui/PasteSettings';
 import { ALL_GROUPS } from '../domain/settings';
 import { Button } from '@/components/ui/button';
@@ -259,7 +259,7 @@ function TileMenuItems({ p, stars, onStars, onSet, menu: menuOf }: Pick<TileProp
   return (
     <>
       <ContextMenuItem onSelect={() => onSet('pick')}>
-        <Flag size={13} /> Pick <MenuKeys keys={['P']} />
+        <Flag size={13} /> Pick <MenuKeys keys={['Z']} />
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onSet('reject')}>
         <X size={13} /> Reject <MenuKeys keys={['X']} />
@@ -626,7 +626,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   useHotkeys('down', () => move(cols), { preventDefault: true }, [visible, cols]);
   useHotkeys('up', () => move(-cols), { preventDefault: true }, [visible, cols]);
   useHotkeys(
-    ['p', 'x', 'u'],
+    VERDICT_HOTKEYS,
     (e) => {
       setVerdict(targets, VERDICT_KEYS[e.key.toLowerCase()]);
       // design.md: flagging jumps to the next Photo. A multi-selection stays put.
@@ -682,7 +682,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   // Lightroom: Delete removes the selection (or the current Photo) from the Library, after asking.
   useHotkeys(['backspace', 'delete'], () => targets.length && askRemove({ photos: targets }), { preventDefault: true }, [targets]);
   // L sets a Look on the Shoot's Picks; say why when it can't.
-  useHotkeys('l', () => (inCollection() ? toast('Open a Shoot to set its Look', { id: 'argus' }) : counts.pick ? go({ name: 'look' }) : toast('Pick some Photos first', { id: 'argus', description: 'A Look is set on the Picks of a Shoot (P picks).' })), [counts.pick]);
+  useHotkeys('l', () => (inCollection() ? toast('Open a Shoot to set its Look', { id: 'argus' }) : counts.pick ? go({ name: 'look' }) : toast('Pick some Photos first', { id: 'argus', description: 'A Look is set on the Picks of a Shoot (Z picks).' })), [counts.pick]);
   // Lightroom's Auto on the selection, or on the whole Shoot before culling starts.
   const autoIds = sel.size > 1 ? [...sel] : all.map((p) => p.id);
   const autoAll = () => runAuto(autoIds, (id) => recipeOf(state, id), dispatch);
@@ -1013,7 +1013,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
           <span className="grow" />
           {culled && <LearnHint l={learn} moved={sort.key === 'keepers' ? keepers.moved : 0} />}
           <span className="foot-keys">
-            <span><Kbd quiet>P</Kbd> Pick</span>
+            <span><Kbd quiet>Z</Kbd> Pick</span>
             <span><Kbd quiet>X</Kbd> Reject</span>
             <span><Kbd quiet>U</Kbd> Clear</span>
             <span><Kbd quiet>1-5</Kbd> Stars</span>

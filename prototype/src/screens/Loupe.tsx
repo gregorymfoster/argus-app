@@ -12,7 +12,7 @@ import { Filmstrip } from '../ui/Filmstrip';
 import { STAR_KEYS, Stars } from '../ui/Stars';
 import { LIVE, aiName, focusPhoto } from '../data/live';
 import { useSuggestionImage, useSuggestions } from '../data/suggestions';
-import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
+import { Kbd, Seg, VERDICT_KEYS, VERDICT_HOTKEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
 import { Histogram } from '../ui/Histogram';
 import { toggleKeepers, useSort } from '../ui/Sort';
@@ -143,7 +143,7 @@ export function LoupeScreen({ id }: { id: string }) {
   useHotkeys('right', () => move(1), [pos]);
   useHotkeys('left', () => move(-1), [pos]);
   useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
-  useHotkeys(['p', 'x', 'u'], (e) => set(VERDICT_KEYS[e.key.toLowerCase()]), [p.id, pos]);
+  useHotkeys(VERDICT_HOTKEYS, (e) => set(VERDICT_KEYS[e.key.toLowerCase()]), [p.id, pos]);
   useHotkeys(STAR_KEYS, (e) => rate(Number(e.key)), [p.id, pos]);
   useHotkeys('f', () => setFaces((f) => !f));
   // On a frame with a Shoot match waiting, \ swaps between it and the frame as it is.
@@ -206,7 +206,7 @@ export function LoupeScreen({ id }: { id: string }) {
             )}
             <Hints
               items={[
-                ['Z', zoomed ? 'Fit' : '100%'],
+                ['Space', zoomed ? 'Fit' : '100%'],
                 ['← →', 'Move'],
                 ...(match ? ([['\\', showMatch ? 'As it is' : 'Shoot match'], ['A', 'Accept']] as [string, string][]) : ([['\\', before ? 'After' : 'Before']] as [string, string][])),
                 ...(stackIds.length ? ([['C', 'Compare']] as [string, string][]) : []),
@@ -292,7 +292,7 @@ function FlagSeg({ v, onSet }: { v: Verdict | null; onSet: (v: Verdict) => void 
   return (
     <span className="flag-seg" role="group" aria-label="Flag">
       <button className={v === 'pick' ? 'on pick' : 'pick'} aria-pressed={v === 'pick'} onClick={() => onSet(v === 'pick' ? 'unflagged' : 'pick')}>
-        <Flag size={11} strokeWidth={2} fill={v === 'pick' ? 'currentColor' : 'none'} /> Pick <Kbd>P</Kbd>
+        <Flag size={11} strokeWidth={2} fill={v === 'pick' ? 'currentColor' : 'none'} /> Pick <Kbd>Z</Kbd>
       </button>
       <button className={!v || v === 'unflagged' ? 'on' : ''} aria-pressed={!v || v === 'unflagged'} onClick={() => onSet('unflagged')}>
         Clear <Kbd>U</Kbd>

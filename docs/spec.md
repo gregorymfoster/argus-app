@@ -47,7 +47,7 @@ The AI can be a local open-source model through Ollama, Claude or OpenAI on Greg
 16. As a photographer, I want Rejects kept but hidden rather than deleted, so that I can change my mind later.
 17. As a photographer, I want culling to judge focus, blinks, expressions, exposure and composition, so that it catches what I would catch.
 17a. As a photographer, I want the AI to compare each frame against the rest of the Shoot (not just its own Stack) before choosing the best of similar shots, so that it doesn't keep three near-identical portraits from different moments of the same scene.
-17b. As a photographer, I want Pick and Reject flags that work like Lightroom's (P to pick, X to reject, U to unflag), so that my muscle memory carries over.
+17b. As a photographer, I want Pick and Reject flags that work like Lightroom's (Z or P to pick, X to reject, U to unflag; Z and X sit side by side), so that my muscle memory carries over.
 17c. As a photographer, I want to click a flag on any thumbnail to change it, so that I can cull with the mouse as easily as with the keyboard.
 17d. As a photographer, I want flagging to jump to the next Photo, so that a cull pass never stops for a keypress.
 17e. As a photographer, I want to select several Photos and flag them in one go, so that I can clear out a bad sequence quickly.

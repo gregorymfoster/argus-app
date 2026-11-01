@@ -270,7 +270,7 @@ export function LookScreen({ onExport }: { onExport: () => void }) {
           <QueueMeter />
         </header>
         {!picks.length || !sel ? (
-          <div className="faint" style={{ padding: 24 }}>No Picks yet. The AI cull only sets aside broken frames, so Pick the ones you want in the grid (P), then come back to set a Look.</div>
+          <div className="faint" style={{ padding: 24 }}>No Picks yet. The AI cull only sets aside broken frames, so Pick the ones you want in the grid (Z), then come back to set a Look.</div>
         ) : (
           <>
             <div className="stage look-stage">

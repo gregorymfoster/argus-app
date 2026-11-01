@@ -134,7 +134,7 @@ export function ZoomReadout({ z, loading }: { z: ZoomPan; loading?: boolean }) {
           <DropdownMenuItem key={String(p)} onSelect={() => z.preset(p)}>
             <span className="grow">{label(p)}</span>
             {p === "fit" && <Kbd>⌘0</Kbd>}
-            {p === 100 && <Kbd>Z</Kbd>}
+            {p === 100 && <Kbd>Space</Kbd>}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

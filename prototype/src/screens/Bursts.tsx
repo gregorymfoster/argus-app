@@ -13,7 +13,7 @@ import { PhotoView } from '../ui/PhotoView';
 import { Stars } from '../ui/Stars';
 import { EmptyState } from '../ui/Empty';
 import { Button } from '@/components/ui/button';
-import { Kbd, Seg, VERDICT_KEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
+import { Kbd, Seg, VERDICT_KEYS, VERDICT_HOTKEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
 import { aiName } from '../data/live';
 
@@ -116,10 +116,10 @@ export function BurstsScreen({ start }: { start?: string }) {
   useHotkeys(['left', 'h'], () => setFocus((f) => Math.max(0, f - 1)), [frames]);
   useHotkeys(['down', 'j', 'tab'], () => step(1), { preventDefault: true }, [stacks]);
   useHotkeys(['up', 'k', 'shift+tab'], () => step(-1), { preventDefault: true }, [stacks]);
-  useHotkeys(['p', 'x', 'u'], (e) => cur && set(cur.id, VERDICT_KEYS[e.key.toLowerCase()]), [cur]);
+  useHotkeys(VERDICT_HOTKEYS, (e) => cur && set(cur.id, VERDICT_KEYS[e.key.toLowerCase()]), [cur]);
   useHotkeys(['0', '1', '2', '3', '4', '5'], (e) => cur && stars(cur.id, Number(e.key)), [cur]);
   useHotkeys('enter', keep, { preventDefault: true }, [stack, cur, state, rest, at]);
-  useHotkeys(['z', 'space'], () => cur && go({ name: 'loupe', id: cur.id }), { preventDefault: true }, [cur]);
+  useHotkeys('space', () => cur && go({ name: 'loupe', id: cur.id }), { preventDefault: true }, [cur]);
   useHotkeys('d', () => cur && go({ name: 'edit', id: cur.id }), [cur]);
   useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
 
@@ -215,7 +215,7 @@ export function BurstsScreen({ start }: { start?: string }) {
       <footer className="view-foot">
         <span>{frames.length ? `${frames.length} frames · ${frames.filter((p) => verdictOf(state, p.id) === 'pick').length} kept` : ''}</span>
         <span className="grow" />
-        <Hints items={[['← →', 'Frame'], ['P X U', 'Flag'], ['1–5', 'Stars'], ['↵', 'Keep & next Stack'], ['↑ ↓', 'Stack'], ['Z', 'Loupe'], ['Esc', 'Grid']]} />
+        <Hints items={[['← →', 'Frame'], ['Z X U', 'Flag'], ['1–5', 'Stars'], ['↵', 'Keep & next Stack'], ['↑ ↓', 'Stack'], ['Space', 'Loupe'], ['Esc', 'Grid']]} />
       </footer>
     </div>
   );

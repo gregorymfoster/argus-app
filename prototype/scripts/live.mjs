@@ -148,7 +148,10 @@ try {
   const photos = await api(`/api/photos?shoot_id=${shoot.id}`);
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const p = await ctx.newPage();
-  p.on('pageerror', (e) => failures.push(`page error: ${e.message}`));
+  // WebKit rejects a fetch that a navigation (p.goto) cancels with "… due to access control checks"
+  // or "Load failed": the screen was being left, not broken, so only other page errors fail the run.
+  const aborted = /due to access control checks|^TypeError: Load failed$/;
+  p.on('pageerror', (e) => aborted.test(e.message) || failures.push(`page error: ${e.message}`));
   const state = async (id) => (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === id);
   const recipeOf = async (id) => (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: id }) }))?.recipe?.global ?? {};
   const target = photos[photos.length - 1].id;

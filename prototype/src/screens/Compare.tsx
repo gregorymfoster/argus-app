@@ -2,17 +2,17 @@
 // the best of a burst is one decision at a time. ← → bring up the next Candidate, ↑ makes
 // the Candidate the Pick and the Select, and the AI says which of the two it prefers.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { Flag, Sparkles, X } from 'lucide-react';
 import { PHOTO_BY_ID } from '../data/dummy';
 import type { Photo, Verdict } from '../domain/types';
 import { starsOf, useLibrary, verdictOf } from '../store/library';
 import { go } from '../router';
-import { PhotoView } from '../ui/PhotoView';
+import { PhotoView, photoRatio } from '../ui/PhotoView';
 import { Stars } from '../ui/Stars';
 import { Button } from '@/components/ui/button';
-import { Kbd, VERDICT_KEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
+import { Kbd, VERDICT_KEYS, VERDICT_HOTKEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
 import { LIVE, aiName } from '../data/live';
 
@@ -80,7 +80,7 @@ export function CompareScreen({ ids }: { ids: string[] }) {
   useHotkeys('right', () => nextCandidate(1), [others, cand]);
   useHotkeys('left', () => nextCandidate(-1), [others, cand]);
   useHotkeys('up', promote, [sel, cand, state]);
-  useHotkeys(['p', 'x', 'u'], (e) => flag(VERDICT_KEYS[e.key.toLowerCase()]), [cand, others]);
+  useHotkeys(VERDICT_HOTKEYS, (e) => flag(VERDICT_KEYS[e.key.toLowerCase()]), [cand, others]);
   useHotkeys('k', keepOnly, [sel, photos]);
   useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
   useHotkeys(['e', 'enter'], () => cand && go({ name: 'loupe', id: cand.id }), [cand]);
@@ -139,7 +139,7 @@ export function CompareScreen({ ids }: { ids: string[] }) {
       <footer className="view-foot">
         <span>White frame is the Select, terracotta the Candidate</span>
         <span className="grow" />
-        <Hints items={[['← →', 'Next candidate'], ['↑', 'Swap'], ['P', 'Pick'], ['X', 'Reject'], ['K', 'Keep only the Select'], ['Esc', 'Grid']]} />
+        <Hints items={[['← →', 'Next candidate'], ['↑', 'Swap'], ['Z', 'Pick'], ['X', 'Reject'], ['K', 'Keep only the Select'], ['Esc', 'Grid']]} />
       </footer>
     </div>
   );
@@ -150,7 +150,7 @@ function Cell({ p, role, onOpen }: { p: Photo; role: 'select' | 'candidate'; onO
   const v = verdictOf(state, p.id);
   const rating = starsOf(state, p.id);
   return (
-    <figure className={`compare-cell ${role} ${v === 'reject' ? 'faded' : ''}`} data-testid={`compare-${role}`}>
+    <figure className={`compare-cell ${role} ${v === 'reject' ? 'faded' : ''}`} data-testid={`compare-${role}`} style={{ '--ar': photoRatio(p) } as CSSProperties}>
       <div className="well" onDoubleClick={onOpen}>
         <PhotoView photo={p} size="full" recipe={state.recipes[p.id]} look={state.look} edits>
           <span className="lbl">{role === 'select' ? 'Select' : 'Candidate'}</span>

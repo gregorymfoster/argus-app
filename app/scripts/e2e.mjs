@@ -42,7 +42,11 @@ import sys
 from PIL import Image
 for i in range(8):
     im = Image.new('RGB', (900, 600), (40 + i * 30, 90, 200 - i * 25))
-    im.save(f"{sys.argv[1]}/IMG_{i:04d}.jpg", quality=90)
+    # IMG_0003 was shot in portrait: landscape pixels the camera tags to turn upright (EXIF 6).
+    exif = Image.Exif()
+    if i == 3:
+        exif[0x0112] = 6
+    im.save(f"{sys.argv[1]}/IMG_{i:04d}.jpg", quality=90, exif=exif)
 `, folder]);
 
 // A stand-in for Ollama on :7879 for the Agent's AI cull: answers the model load, then
@@ -256,6 +260,8 @@ try {
   check(shoots.some((s) => /^\d{4}-\d{2}-\d{2}_Pickleball$/.test(s.name) && s.photos === 6), `the new Shoot is named <date>_Pickleball (${shoots.map((s) => `${s.name}:${s.photos}`).join(', ')})`);
   check(imgs.every(([s, w]) => s.startsWith('argus://') && w > 0), 'tiles load engine previews over argus://');
   await shot('cull');
+  const tileFit = await js(`return [...document.querySelectorAll('.tile .ph img')].map((i) => getComputedStyle(i).objectFit)`);
+  check(tileFit.length > 0 && tileFit.every((f) => f === 'contain'), `grid tiles show whole photos (${[...new Set(tileFit)].join(', ')})`);
 
   const photos = await invoke('photos', {});
   const first = photos[0].id;
@@ -263,10 +269,10 @@ try {
     const el = await find(`[data-testid="tile-${first}"]`);
     await wd('POST', `/session/${sid}/element/${Object.values(el)[0]}/click`, {});
   })();
-  await press('p');
+  await press('z');
   await sleep(600);
   const after = (await invoke('photos', {})).find((p) => p.id === first);
-  check(after.verdict === 'pick' && after.verdict_by === 'person', `P wrote a Pick to the Library (got ${after.verdict} by ${after.verdict_by})`);
+  check(after.verdict === 'pick' && after.verdict_by === 'person', `Z wrote a Pick to the Library (got ${after.verdict} by ${after.verdict_by})`);
   if (process.env.E2E_QUICK) throw QUICK_DONE;
 
   await js(`location.hash = '#/loupe/${first}'`);
@@ -279,6 +285,20 @@ try {
   // after a cull") is not one.
   check(!/Claude/.test(side0) && !/AI read/.test(side0), `before any cull the loupe claims no AI suggestion ("${side0.slice(0, 40)}")`);
   await shot('loupe');
+
+  // A portrait stands upright in the Loupe, whole: the stage box takes the preview's shape
+  // instead of cutting it to 3:2 (Greg, 2026-11-01: heads cut off on DSC08034).
+  const portrait = photos.find((p) => p.file_name === 'IMG_0003.jpg');
+  check(portrait && portrait.height > portrait.width, `the portrait is stored upright (${portrait?.width}×${portrait?.height})`);
+  if (portrait) {
+    await js(`location.hash = '#/loupe/${portrait.id}'`);
+    await sleep(1200);
+    const box = await js(`const el = document.querySelector('.stage-fit > .photo'); const img = el?.querySelector('img'); const r = el?.getBoundingClientRect(); return r && img ? [r.width, r.height, img.naturalWidth, img.naturalHeight] : null`);
+    check(box && box[1] > box[0] && Math.abs(box[0] / box[1] - box[2] / box[3]) < 0.02, `the Loupe shows the portrait upright and uncut (box ${box?.slice(0, 2).map(Math.round).join('×')}, image ${box?.slice(2).join('×')})`);
+    await shot('loupe-portrait');
+    const fits = await js(`return [...document.querySelectorAll('.filmstrip .photo img')].map((i) => getComputedStyle(i).objectFit)`);
+    check(fits.length > 0 && fits.every((f) => f === 'contain'), `the filmstrip shows whole photos (${[...new Set(fits)].join(', ')})`);
+  }
 
   // Flagging jumps to the next Photo: X right after P lands on the second Photo.
   await js(`location.hash = '#/cull'`);

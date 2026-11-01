@@ -1,7 +1,8 @@
 // Lightroom's zoom and pan for the Loupe and Edit stages: trackpad pinch (ctrl+wheel in
 // Chromium, gesture events in WebKit) zooms around the pointer, two-finger scroll pans,
-// Space-drag is the hand tool, drag pans when zoomed, click or Z toggles Fit and 100% at
-// the clicked point, ⌘+ / ⌘− step and ⌘0 fits. 100% is one image pixel per screen pixel.
+// Space-drag is the hand tool, drag pans when zoomed, a click toggles Fit and 100% at the
+// clicked point and a tap of Space toggles it at the centre (Lightroom; Z is Pick in Argus,
+// next to X for Reject), ⌘+ / ⌘− step and ⌘0 fits. 100% is one image pixel per screen pixel.
 //
 // The view is applied straight to the photo element's transform, so a gesture never
 // re-renders the screen; components that show it (Navigator, readout) subscribe.
@@ -67,8 +68,9 @@ export class ZoomPan {
 
   /** The scale (against Fit) that shows the photo at `pct` percent. */
   scaleFor(pct: number) {
-    const { fw } = this.fit();
-    return (this.natural * (pct / 100)) / (fw * (window.devicePixelRatio || 1));
+    // `natural` is the long edge, so compare it with the fitted long edge (a portrait's is its height).
+    const { fw, fh } = this.fit();
+    return (this.natural * (pct / 100)) / (Math.max(fw, fh) * (window.devicePixelRatio || 1));
   }
 
   percent() {
@@ -260,7 +262,7 @@ interface Options {
 
 /**
  * Wire a stage element for zoom and pan. Spread `stageProps` on the `.stage` and give it
- * `ref`; hotkeys (Z, Space, ⌘+ / ⌘− / ⌘0) are global while the stage is mounted.
+ * `ref`; hotkeys (Space, ⌘+ / ⌘− / ⌘0) are global while the stage is mounted.
  */
 export function useZoomPan({ click = true, photoKey, natural }: Options) {
   const z = useMemo(() => new ZoomPan(), []);
@@ -269,6 +271,8 @@ export function useZoomPan({ click = true, photoKey, natural }: Options) {
   if (natural) z.natural = natural;
 
   const ref = useRef<HTMLDivElement | null>(null);
+  // A Space press with no drag in it is a tap: it toggles Fit and 100%.
+  const spaceTap = useRef(false);
 
   useEffect(() => {
     const el = ref.current;
@@ -305,16 +309,26 @@ export function useZoomPan({ click = true, photoKey, natural }: Options) {
       z.zoomAt(start * g.scale, cx, cy);
     };
     // Space is the hand tool, as everywhere in Adobe's apps; it never reaches a button.
+    // Tapped without a drag, it toggles Fit and 100%, as in Lightroom's Loupe.
     const typing = (t: EventTarget | null) =>
       t instanceof HTMLElement &&
       (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
     const keydown = (e: KeyboardEvent) => {
       if (e.code !== "Space" || typing(e.target)) return;
       e.preventDefault();
+      if (!e.repeat && !z.hand) spaceTap.current = true;
       z.setHand(true);
     };
-    const keyup = (e: KeyboardEvent) => e.code === "Space" && z.setHand(false);
-    const blur = () => z.setHand(false);
+    const keyup = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || !z.hand) return;
+      z.setHand(false);
+      if (spaceTap.current) z.toggle();
+      spaceTap.current = false;
+    };
+    const blur = () => {
+      spaceTap.current = false;
+      z.setHand(false);
+    };
     const ro = new ResizeObserver(() => z.refresh());
     ro.observe(el);
     el.addEventListener("wheel", wheel, { passive: false });
@@ -341,7 +355,6 @@ export function useZoomPan({ click = true, photoKey, natural }: Options) {
     return () => cancelAnimationFrame(id);
   }, [z, photoKey]);
 
-  useHotkeys("z", () => z.toggle(), [z]);
   useHotkeys(
     ["mod+equal", "mod+shift+equal"],
     () => z.step("in"),
@@ -361,6 +374,8 @@ export function useZoomPan({ click = true, photoKey, natural }: Options) {
     )
       return;
     const el = ref.current!;
+    // A drag while Space is held makes that press a pan, not a tap.
+    if (z.hand) spaceTap.current = false;
     const panning = z.hand || e.button === 1 || z.zoomed();
     const r = el.getBoundingClientRect();
     const k = el.offsetWidth ? r.width / el.offsetWidth : 1;

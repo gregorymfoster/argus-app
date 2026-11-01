@@ -13,7 +13,9 @@ export const ESC_OUTSIDE_DIALOGS = { ignoreEventWhen: escClosedDialog };
 
 export const VERDICT_LABEL: Record<Verdict, string> = { pick: 'Pick', reject: 'Reject', unflagged: 'Unflagged' };
 /** Lightroom's flag keys: P pick, X reject, U unflag. */
-export const VERDICT_KEYS: Record<string, Verdict> = { p: 'pick', x: 'reject', u: 'unflagged' };
+// Z and X sit side by side for Pick and Reject (Greg, 2026-11-01); P still Picks, as in Lightroom.
+export const VERDICT_KEYS: Record<string, Verdict> = { z: 'pick', p: 'pick', x: 'reject', u: 'unflagged' };
+export const VERDICT_HOTKEYS = Object.keys(VERDICT_KEYS);
 
 /** A key hint. Keycaps belong in menus, the ⌘K palette and tooltips; in bars, headers and hint lines use
  * `quiet`, a plain letter with no cap (docs/design.md, Controls). */

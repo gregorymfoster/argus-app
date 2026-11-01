@@ -384,9 +384,12 @@ await check('smoke-flag-keys-advance', async () => {
   await p.locator('.tile').first().click();
   await p.keyboard.press('x');
   if ((await verdict(p, 0)) !== 'reject') throw new Error(`X: expected reject, got ${await verdict(p, 0)}`);
-  // Flagging jumped to the next Photo, so P lands on tile 1.
+  // Flagging jumped to the next Photo, so Z lands on tile 1, and P still Picks on tile 2.
+  await p.keyboard.press('z');
+  if ((await verdict(p, 1)) !== 'pick') throw new Error(`Z after X: expected tile 1 pick, got ${await verdict(p, 1)}`);
   await p.keyboard.press('p');
-  if ((await verdict(p, 1)) !== 'pick') throw new Error(`P after X: expected tile 1 pick, got ${await verdict(p, 1)}`);
+  if ((await verdict(p, 2)) !== 'pick') throw new Error(`P: expected tile 2 pick, got ${await verdict(p, 2)}`);
+  await p.keyboard.press('ArrowLeft');
   await p.keyboard.press('ArrowLeft');
   await p.keyboard.press('ArrowLeft');
   await p.keyboard.press('u');
@@ -1088,7 +1091,7 @@ await check('smoke-zoom-pan', async () => {
   r = await rect();
   if (Math.abs(before.x - 60 - r.x) > 1 || Math.abs(before.y - 40 - r.y) > 1) throw new Error(`scroll panned ${before.x - r.x},${before.y - r.y}, wanted 60,40`);
   // WebKit's pinch.
-  await p.keyboard.press('z');
+  await p.keyboard.press('Space');
   await settle();
   await fire('gesturestart', { scale: 1, clientX: cx, clientY: cy });
   await fire('gesturechange', { scale: 3, clientX: cx, clientY: cy });
@@ -1096,13 +1099,16 @@ await check('smoke-zoom-pan', async () => {
   await settle();
   r = await rect();
   if (Math.abs(r.w / fit.w - 3) > 0.05) throw new Error(`gesture scale 3 zoomed ${r.w / fit.w}`);
-  // Z toggles Fit and 100%; ⌘0 fits, ⌘+ steps in.
+  // A tap of Space toggles Fit and 100% (Z is Pick); ⌘0 fits, ⌘+ steps in.
+  await p.keyboard.press('Space');
+  await settle();
+  if ((await readout()) !== 'Fit') throw new Error(`Space from zoomed left ${await readout()}`);
+  await p.keyboard.press('Space');
+  await settle();
+  if ((await readout()) !== '100%') throw new Error(`Space from Fit went to ${await readout()}`);
   await p.keyboard.press('z');
   await settle();
-  if ((await readout()) !== 'Fit') throw new Error(`Z from zoomed left ${await readout()}`);
-  await p.keyboard.press('z');
-  await settle();
-  if ((await readout()) !== '100%') throw new Error(`Z from Fit went to ${await readout()}`);
+  if ((await readout()) !== '100%') throw new Error(`Z still zooms (${await readout()})`);
   await p.keyboard.press('ControlOrMeta+0');
   await settle();
   if ((await readout()) !== 'Fit') throw new Error(`⌘0 left ${await readout()}`);
@@ -1144,7 +1150,7 @@ await check('smoke-zoom-pan', async () => {
   await p.getByRole('radio', { name: '4:5' }).click();
   await p.getByTestId('zoom-fit').click();
   await settle();
-  await p.keyboard.press('z');
+  await p.keyboard.press('Space');
   await settle();
   const shade = p.locator('.crop-shade');
   const s0 = await shade.boundingBox();
