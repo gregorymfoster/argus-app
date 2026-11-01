@@ -376,6 +376,27 @@ Mean AUC 0.578 against 0.556, worse on two of five Shoots, and 36-46 min per 100
 
 **Verdict: not worth it.** A 0.02 edge that flips sign by Shoot, at about 200 times the time, sits well inside the 0.66 ceiling C1 found for any label of Greg's. The default stays. A stronger or newer VLM might change this; it would be a download for Greg to approve.
 
+### N10. AI heroes: the AI edits 3 frames, the Shoot match carries the rest (2026-11-01)
+
+**Question** (thread "Speed up the AI import pass", Greg: "let's experiment with all this to see if we can improve efficiency/speed without compromising quality"). A model take per frame is about 95% of a card's AI time. If the AI edits only the three frames `suggest_heroes` picks and the Shoot match carries them, is the rest as good as the head alone, and as good as a take on every frame?
+
+**Setup.** `bench/lab_ai_heroes.py`. On the Mac, for 10 test-fold days (gf-storage RAWs): a scratch Library per day, `suggest_heroes` 3, one Natural take (claude-code, as a first proxy for Qwen) on the heroes and on 3 random probe frames, 17 min for all 60 takes. In the cloud: the GP Shoot model trained on folds 1-4 predicts every non-hero frame, with the heroes' sliders taken from Greg's own edits or from the AI's takes. Linearised dE of the Basic sliders against Greg's edits.
+
+**Result.**
+
+| | non-hero frames (292) | probe frames (30) |
+|---|---|---|
+| Edit head alone | 10.16 | 9.51 |
+| Shoot match, no heroes | 10.21 | 9.43 |
+| AI heroes, k = 1 | 10.29 | 9.55 |
+| AI heroes, k = 3 | 10.17 | 9.44 |
+| head's own sliders as heroes, k = 3 | 10.13 | 9.50 |
+| AI take on every frame | | 9.75 |
+| Greg's edits of the same heroes, k = 1 | 8.86 | 7.99 |
+| Greg's edits of the same heroes, k = 3 | **7.94** | **7.51** |
+
+**Verdict: holds for speed, adds nothing for quality.** Carrying three AI heroes scores the same as the head alone (10.17 vs 10.16) and a little better than a take on every frame on the probes (9.44 vs 9.75, only 30 frames). So per-frame takes can go without a loss on this measure. But the AI's heroes carry none of Greg's Shoot style: they land exactly where the head's own sliders do. The head with no model call is as good, and Greg's own three edits are worth 2.2 dE. Caveat: this scores Basic sliders only. A Natural take also brings Masks, curves and colour that this doesn't see, so it can't say whether Greg would prefer per-frame takes by eye.
+
 ### Net D (cull) is blocked on clean data
 
 A cull fine-tune needs keeps and rejects rendered the same way. Favorites are Greg's edits (the edited-look leak), and the drive's rejects exist only as 768 px features, not images. The pairs' unedited renders give keepers as shot; rejects need `drive_bench.py` to save its renders. And per C1, the within-burst label ceiling is about 0.6, so a cull net can only help whole-Shoot ranking. Left for after the edit nets.

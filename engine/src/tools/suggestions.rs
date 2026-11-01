@@ -8,10 +8,11 @@ pub(super) fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "suggest_edits",
-            description: "Queue Suggestions: 2-3 complete edits (sliders, crop, straighten) the AI works out in the background for each Photo, for the person to tab through and accept. Nothing changes until they accept one. One Photo, a list, or a whole Shoot (rejects skipped, Picks first; Photos that already have Suggestions skipped).",
+            description: "Queue Suggestions: 2-3 complete edits (sliders, crop, straighten) the AI works out in the background for each Photo, for the person to tab through and accept. Nothing changes until they accept one. One Photo, a list, or a whole Shoot (rejects skipped, Picks first; Photos that already have Suggestions skipped). For a whole Shoot only the likely keepers (Picks, Best Photos, 3 stars and up, the first frame of a burst) get them now and the rest when the person opens them, unless all is true.",
             input_schema: json!({ "type": "object", "properties": {
                 "photo_ids": ids, "shoot_id": id,
                 "count": { "type": "integer", "minimum": 1, "maximum": 5 },
+                "all": { "type": "boolean", "description": "a whole Shoot: every Photo that isn't a Reject now, not only the likely keepers" },
                 "provider": { "type": "string", "description": "ollama, claude-code or claude-api; default ARGUS_PROVIDER, else ollama" } } }),
             read_only: false,
         },
@@ -91,6 +92,9 @@ impl Tools {
                 }
                 if let Some(p) = &a.provider {
                     args["provider"] = json!(p);
+                }
+                if a.all == Some(true) {
+                    args["all"] = json!(true);
                 }
                 let (kind, args) = match (a.photo_ids, a.shoot_id) {
                     (Some(ids), _) if ids.len() == 1 => {
@@ -243,6 +247,7 @@ struct SuggestEdits {
     photo_ids: Option<Vec<PhotoId>>,
     shoot_id: Option<ShootId>,
     count: Option<usize>,
+    all: Option<bool>,
     provider: Option<String>,
 }
 

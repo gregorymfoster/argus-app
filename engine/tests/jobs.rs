@@ -1393,3 +1393,83 @@ fn suggest_heroes_names_photos_to_edit_first_and_skips_hand_edited_ones() {
     assert_eq!(next.len(), 2, "only the unedited ones are left: {next:?}");
     assert!(!next.contains(&ids[0]));
 }
+
+#[test]
+fn a_shoots_pass_edits_likely_keepers_and_the_rest_wait_until_opened() {
+    let (_t, tools, ids, seen) = library(5, false);
+    let shoot = json1(&tools, "list_photos", json!({}))[0]["shoot_id"].clone();
+    json1(
+        &tools,
+        "set_rating",
+        json!({ "photo_ids": [ids[0]], "stars": 2 }),
+    );
+    json1(
+        &tools,
+        "set_rating",
+        json!({ "photo_ids": [ids[1]], "stars": 4 }),
+    );
+    json1(
+        &tools,
+        "set_rating",
+        json!({ "photo_ids": [ids[2], ids[3]], "stars": 3 }),
+    );
+    // ids[3] is the second frame of a burst; ids[4] has no rating (no cull ran on it).
+    json1(
+        &tools,
+        "set_stacks",
+        json!({ "shoot_id": shoot, "stacks": [[ids[2], ids[3]]] }),
+    );
+
+    json1(&tools, "suggest_edits", json!({}));
+    let fan = jobs::run_next(&tools, Compute::Full).unwrap().unwrap();
+    assert_eq!(fan.kind, "suggest_shoot");
+    let r = fan.result.unwrap();
+    let mut queued: Vec<i64> = r["queued"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| {
+            json1(&tools, "list_jobs", json!({}))
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["id"] == *j)
+                .unwrap()["args"]["photo_id"]
+                .as_i64()
+                .unwrap()
+        })
+        .collect();
+    queued.sort();
+    assert_eq!(
+        queued,
+        [ids[1], ids[2], ids[4]],
+        "4 stars, a burst's first frame and an unrated frame get model takes now"
+    );
+    assert_eq!(
+        r["on_open"], 2,
+        "a 2-star frame and a burst's second frame wait"
+    );
+    assert_eq!(jobs::drain(&tools, Compute::Full).unwrap(), 3);
+    let calls = proposals(&seen);
+
+    // Opening a held-back frame queues its takes, once, ahead of everything.
+    let open = |id: i64| {
+        argus_engine::commands::dispatch(&tools, "focus_photo", json!({ "photo_id": id })).unwrap()
+            ["raised"]
+            .clone()
+    };
+    assert_eq!(open(ids[3]), 1);
+    let job = jobs::run_next(&tools, Compute::Gentle).unwrap().unwrap();
+    assert_eq!(job.args["photo_id"], ids[3]);
+    assert_eq!(proposals(&seen), calls + 1);
+    assert_eq!(open(ids[3]), 0, "its takes are in; nothing more to queue");
+    assert_eq!(open(ids[1]), 0, "a keeper's takes came with the pass");
+    assert_eq!(
+        json1(&tools, "list_suggestions", json!({ "photo_id": ids[0] }))
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "the unopened 2-star frame still has none"
+    );
+}

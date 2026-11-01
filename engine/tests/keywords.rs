@@ -426,3 +426,22 @@ fn search_finds_photos_by_keywords_captions_and_names_and_albums_keep_up() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn a_burst_is_tagged_once_and_its_frames_share_the_keywords() {
+    let (_tmp, tools, ids, asked) = setup();
+    let shoot = json1(&tools, "list_photos", json!({}))[0]["shoot_id"].clone();
+    json1(
+        &tools,
+        "set_stacks",
+        json!({ "shoot_id": shoot, "stacks": [[ids[0], ids[1]]] }),
+    );
+    let q = json1(&tools, "tag_photos", json!({ "wait": true }));
+    assert_eq!(q["tagged"], 3);
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        2,
+        "one model call for the burst, one for the other frame"
+    );
+    assert_eq!(keywords(&tools, ids[1]), keywords(&tools, ids[0]));
+}

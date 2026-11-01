@@ -266,7 +266,10 @@ impl Tools {
                         args["provider"] = json!(p);
                     }
                     for (kind, _) in kinds.iter().filter(|(_, on)| *on) {
-                        jobs::enqueue(&mut lib, kind, &args, None, None)?;
+                        // Keywords wait behind the keepers' Suggestions: those are what the
+                        // person comes back to edit.
+                        let priority = (*kind == "tag_photos").then_some(jobs::PRIORITY_KEYWORDS);
+                        jobs::enqueue(&mut lib, kind, &args, priority, None)?;
                     }
                 }
                 one(report)

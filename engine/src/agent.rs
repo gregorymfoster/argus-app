@@ -89,6 +89,9 @@ pub enum Role {
 /// reply (a JSON step) out. `system` is the same on every turn.
 pub trait Chat {
     fn next(&self, system: &str, convo: &[Msg]) -> Result<String>;
+    /// Hold each reply to at most `tokens` output tokens, for a caller that knows how long
+    /// a good reply runs. Providers without a per-request cap ignore it.
+    fn cap_output(&mut self, _tokens: u32) {}
 }
 
 /// What the person asked, with where they asked it.
@@ -650,6 +653,7 @@ pub fn chat_with_format(
                 format,
                 think: std::env::var("ARGUS_OLLAMA_THINK").is_ok_and(|v| v == "1")
                     || crate::variant::current().is_ok_and(|v| v.think == Some(true)),
+                max_tokens: None,
                 throttle: Mutex::new(None),
             }))
         }
@@ -675,6 +679,8 @@ struct OllamaChat {
     /// ARGUS_OLLAMA_THINK=1: an edit or an Agent step is short JSON, and a thinking trace
     /// is thousands of tokens that multiplied Suggestions' time per Photo.
     think: bool,
+    /// The caller's cap on output tokens ([`Chat::cap_output`]); else [`max_output_tokens`].
+    max_tokens: Option<u32>,
     throttle: Mutex<Option<Throttle>>,
 }
 
@@ -693,7 +699,9 @@ impl OllamaChat {
             messages.push(msg);
         }
         let mut options = self.o.options();
-        options["num_predict"] = json!(max_output_tokens());
+        options["num_predict"] = json!(self
+            .max_tokens
+            .map_or(max_output_tokens(), |n| n.min(max_output_tokens())));
         json!({
             "model": self.o.model,
             "stream": false,
@@ -779,6 +787,10 @@ pub(crate) fn log_claude(model: &str, out: &std::process::Output, wall: Duration
 }
 
 impl Chat for OllamaChat {
+    fn cap_output(&mut self, tokens: u32) {
+        self.max_tokens = Some(tokens);
+    }
+
     fn next(&self, system: &str, convo: &[Msg]) -> Result<String> {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(3 * 3600))
@@ -796,6 +808,7 @@ impl Chat for OllamaChat {
         drop(throttle);
         let start = std::time::Instant::now();
         let mut body = self.body(system, convo);
+        let cap = body["options"]["num_predict"].clone();
         let resp = match self.o.post(&agent, body.clone()) {
             // A model that can't think rejects even think: false on some Ollama versions.
             Err(e) if e.0.contains("does not support thinking") => {
@@ -808,8 +821,7 @@ impl Chat for OllamaChat {
         if resp["done_reason"] == "length" {
             return Err(Error(format!(
                 "{} ran past {} output tokens without finishing its answer",
-                self.o.model,
-                max_output_tokens()
+                self.o.model, cap
             )));
         }
         Ok(resp["message"]["content"]
@@ -999,6 +1011,7 @@ mod tests {
             format: step_schema(),
             o: Ollama::from_env(),
             think: false,
+            max_tokens: None,
             throttle: Mutex::new(None),
         };
         let b = c.body(
@@ -1027,6 +1040,19 @@ mod tests {
         assert!(
             b["options"]["num_predict"].as_u64().is_some_and(|n| n > 0),
             "a looping model can't hold the model lock for long"
+        );
+        let mut capped = OllamaChat {
+            o: Ollama::from_env(),
+            format: json!({}),
+            think: false,
+            max_tokens: None,
+            throttle: Mutex::new(None),
+        };
+        capped.cap_output(1500);
+        assert_eq!(
+            capped.body("sys", &[])["options"]["num_predict"],
+            1500,
+            "a caller that knows its reply's length caps it lower"
         );
         assert!(
             Ollama::from_env().load_body()["options"]

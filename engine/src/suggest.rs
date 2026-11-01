@@ -23,6 +23,16 @@ use std::collections::BTreeMap;
 
 /// Long edge of what the model sees, and of the saved Suggestion previews.
 const SEE_EDGE: u32 = 768;
+
+/// Most output tokens one Suggestions reply may run to. Three takes are about 700 tokens
+/// (median on the Mac, qwen3.8:27b, 2026-11-01); the mean was 1,390 because a few replies
+/// looped to the 8,192 cap, and those few made the average call 2.7 times the median.
+/// A reply cut here is broken JSON either way, so the cap costs no good takes.
+pub const MAX_REPLY_TOKENS: u32 = 2048;
+
+/// How much of a broken reply goes back to the model with the request to fix it: enough to
+/// show what went wrong, not a looped reply's thousands of tokens read again.
+const ECHO_CHARS: usize = 1200;
 const PREVIEW_EDGE: u32 = 1024;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -638,14 +648,33 @@ pub fn stage(done: i64, total: i64) -> String {
 /// One model request, with one retry when the reply isn't the JSON asked for.
 fn ask(chat: &dyn Chat, system: &str, msg: Msg) -> Result<Proposals> {
     let mut convo = vec![msg];
-    for _ in 0..2 {
-        let raw = chat.next(system, &convo)?;
+    for attempt in 0..2 {
+        // A reply cut off at the length cap gets one more try, told to keep it short.
+        let raw = match chat.next(system, &convo) {
+            Err(e) if attempt == 0 && e.0.contains("output tokens without finishing") => {
+                eprintln!("argus suggest: {e}; asking again for a shorter reply");
+                convo.push(Msg {
+                    role: Role::Agent,
+                    text: "(reply cut off at the length limit)".into(),
+                    images: vec![],
+                });
+                convo.push(Msg {
+                    role: Role::User,
+                    text: "Your reply ran too long and was cut off. Reply with only the JSON \
+                           object, one short line for each see and why."
+                        .into(),
+                    images: vec![],
+                });
+                continue;
+            }
+            r => r?,
+        };
         match parse(&raw) {
             Ok(p) => return Ok(p),
             Err(e) => {
                 convo.push(Msg {
                     role: Role::Agent,
-                    text: raw,
+                    text: raw.chars().take(ECHO_CHARS).collect(),
                     images: vec![],
                 });
                 convo.push(Msg {
@@ -1018,7 +1047,8 @@ fn parse(text: &str) -> Result<Proposals> {
 
 /// Render a Photo (with `recipe`, else its own) for the model: the JPEG and the tool's JSON.
 fn render(tools: &Tools, id: PhotoId, recipe: Option<&Recipe>) -> Result<(Vec<u8>, Value)> {
-    let mut args = json!({ "photo_id": id, "long_edge": SEE_EDGE });
+    let edge = tools.variant()?.see_edge.unwrap_or(SEE_EDGE);
+    let mut args = json!({ "photo_id": id, "long_edge": edge });
     if let Some(r) = recipe {
         args["recipe"] = r.to_value();
     }
@@ -1070,6 +1100,64 @@ fn save_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Loops once, then answers; remembers what it was sent.
+    struct Looper(std::sync::Mutex<Vec<Vec<Msg>>>);
+    impl Chat for Looper {
+        fn next(&self, _system: &str, convo: &[Msg]) -> Result<String> {
+            let mut seen = self.0.lock().unwrap();
+            seen.push(convo.to_vec());
+            Ok(if seen.len() == 1 {
+                "{\"suggestions\": [{\"see\": \"".to_string() + &"a".repeat(30_000)
+            } else {
+                r#"{"suggestions": [{"see": "flat", "title": "Natural", "why": "lift", "set": {"exposure": 0.3}, "done": false}]}"#.into()
+            })
+        }
+    }
+
+    /// Runs into the length cap once, then answers.
+    struct Cut(std::sync::Mutex<usize>);
+    impl Chat for Cut {
+        fn next(&self, _system: &str, convo: &[Msg]) -> Result<String> {
+            let mut n = self.0.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                return Err(Error(
+                    "m ran past 2048 output tokens without finishing its answer".into(),
+                ));
+            }
+            assert!(convo.last().unwrap().text.contains("too long"));
+            Ok(r#"{"suggestions": [{"see": "", "title": "Natural", "why": "", "set": {}, "done": false}]}"#.into())
+        }
+    }
+
+    #[test]
+    fn a_reply_cut_at_the_cap_is_asked_again_shorter() {
+        let chat = Cut(Default::default());
+        let msg = Msg {
+            role: Role::User,
+            text: "edit".into(),
+            images: vec![],
+        };
+        assert_eq!(ask(&chat, "sys", msg).unwrap().suggestions.len(), 1);
+        assert_eq!(*chat.0.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_looped_reply_is_retried_without_reading_it_all_back() {
+        let chat = Looper(Default::default());
+        let msg = Msg {
+            role: Role::User,
+            text: "edit".into(),
+            images: vec![],
+        };
+        let p = ask(&chat, "sys", msg).unwrap();
+        assert_eq!(p.suggestions.len(), 1);
+        let seen = chat.0.lock().unwrap();
+        let echoed = &seen[1][1];
+        assert_eq!(echoed.role, Role::Agent);
+        assert!(echoed.text.chars().count() <= ECHO_CHARS);
+    }
 
     #[test]
     fn local_settings_make_one_ai_mask_per_kind() {

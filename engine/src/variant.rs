@@ -35,6 +35,9 @@ pub struct Variant {
     /// How many of the person's own edits of similar scenes a fresh Suggestion shows the
     /// model (`exemplars::DEFAULT` unless set; 0 turns them off).
     pub exemplars: Option<usize>,
+    /// Long edge in pixels of the images a Suggestion shows the model (768 unless set):
+    /// smaller images are fewer prompt tokens to read.
+    pub see_edge: Option<u32>,
     /// Replaces the cull system prompt.
     pub cull: Option<String>,
     /// Who rates taste in a cull: "signals" (the model checks technical failures only) or

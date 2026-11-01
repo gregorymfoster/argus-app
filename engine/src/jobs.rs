@@ -66,6 +66,8 @@ pub const KINDS: &[&str] = &[
 pub const PRIORITY_MATCH: i64 = 40;
 pub const PRIORITY_PICK: i64 = 20;
 pub const PRIORITY_OTHER: i64 = 10;
+/// An Import's Keywords and captions: after the Shoot's Suggestions.
+pub const PRIORITY_KEYWORDS: i64 = 5;
 /// A whole-Shoot fan-out runs before the per-Photo jobs it makes are queued.
 pub const PRIORITY_SHOOT: i64 = 50;
 /// The specialist models' Facts, right after previews: the cull and Suggestions read them.
@@ -88,11 +90,47 @@ pub fn focus(lib: &mut Library, photo_id: PhotoId, next: &[PhotoId]) -> Result<u
     let targets = std::iter::once((photo_id, PRIORITY_FOCUS))
         .chain(next.iter().take(5).map(|&p| (p, PRIORITY_PREFETCH)));
     for (p, priority) in targets {
+        let mut raised = 0;
         for flavour in ["fresh", "match"] {
-            n += lib.raise_job(&format!("suggest:{p}:{flavour}"), priority)? as usize;
+            raised += lib.raise_job(&format!("suggest:{p}:{flavour}"), priority)? as usize;
         }
+        if raised == 0 && take_on_open(lib, p)? {
+            enqueue(
+                lib,
+                "suggest",
+                &json!({ "photo_id": p }),
+                Some(priority),
+                None,
+            )?;
+            raised = 1;
+        }
+        n += raised;
     }
     Ok(n)
+}
+
+/// The Shoot's Photos whose model takes wait until the person opens them.
+fn on_open_key(shoot: ShootId) -> String {
+    format!("suggest_on_open:{shoot}")
+}
+
+/// `photo` was held back from its Shoot's Suggestions pass: take it off the list, so
+/// opening it queues its takes once.
+fn take_on_open(lib: &mut Library, photo: PhotoId) -> Result<bool> {
+    let Some(shoot) = lib.photo(photo)?.map(|p| p.shoot_id) else {
+        return Ok(false);
+    };
+    let key = on_open_key(shoot);
+    let mut ids: Vec<PhotoId> = lib
+        .setting(&key)?
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let Some(at) = ids.iter().position(|&i| i == photo) else {
+        return Ok(false);
+    };
+    ids.remove(at);
+    lib.set_setting(&key, &json!(ids))?;
+    Ok(true)
 }
 
 /// How a Photo's Suggestions are coming along, for the Edit strip: the queued or running
@@ -481,7 +519,8 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             if a.count.is_none() && a.reference_id.is_none() {
                 a.count = Some(config(&Library::open(tools.library())?)?.takes as usize);
             }
-            let chat = tools.chat(a.provider.as_deref(), Some(compute), suggest::schema())?;
+            let mut chat = tools.chat(a.provider.as_deref(), Some(compute), suggest::schema())?;
+            chat.cap_output(suggest::MAX_REPLY_TOKENS);
             let ids = suggest::suggest_photo(
                 tools,
                 chat.as_ref(),
@@ -724,10 +763,29 @@ struct ShootArgs {
     provider: Option<String>,
     #[serde(default)]
     redo: bool,
+    /// Model takes for every Photo that isn't a Reject, not only the likely keepers.
+    #[serde(default)]
+    all: bool,
 }
 
 /// The Photos of a Shoot worth editing, best first: the AI's Best Photos in rank order,
 /// then Picks, then by stars, then capture order. Rejects are left out.
+/// Stars from which a frame counts as a likely keeper. The cull's Taste gives kept frames
+/// 3 to 5 stars for the top 70% of the Shoot and 2 for the rest.
+pub const KEEPER_STARS: u8 = 3;
+
+/// Whether a Shoot's Suggestions pass gives `p` model takes now. The rest keep Auto and the
+/// Edit head from Import, which Greg's blind taps rate level with the model's Natural take
+/// (29 to 28, 2026-10-22), and get model takes when he opens them ([`focus`]). A model
+/// call is about 200 s a Photo on his Mac, so this roughly halves a card's AI pass.
+/// An unrated frame (no cull yet) has nothing to go on, so it counts as one; a burst's
+/// later frames wait for the person unless picked.
+fn likely_keeper(p: &crate::library::Photo) -> bool {
+    p.verdict == Verdict::Pick
+        || p.best.is_some()
+        || ((p.stars == 0 || p.stars >= KEEPER_STARS) && p.stack_rank.unwrap_or(0) == 0)
+}
+
 fn worth_editing(lib: &Library, shoot: ShootId) -> Result<Vec<(PhotoId, bool)>> {
     let mut photos: Vec<_> = lib
         .list_photos(&crate::library::PhotoFilter {
@@ -763,6 +821,7 @@ fn newest_shoot(lib: &Library) -> Result<ShootId> {
 fn suggest_shoot(tools: &Tools, job: &Job) -> Result<Value> {
     let a: ShootArgs = args(job)?;
     let mut lib = Library::open(tools.library())?;
+    let mut on_open = 0;
     let targets: Vec<(PhotoId, bool)> = match a.photo_ids {
         Some(ids) => ids.into_iter().map(|id| (id, false)).collect(),
         None => {
@@ -770,7 +829,27 @@ fn suggest_shoot(tools: &Tools, job: &Job) -> Result<Value> {
                 Some(s) => s,
                 None => newest_shoot(&lib)?,
             };
-            worth_editing(&lib, shoot)?
+            let all = worth_editing(&lib, shoot)?;
+            if a.all {
+                lib.set_setting(&on_open_key(shoot), &json!([]))?;
+                all
+            } else {
+                let photos: std::collections::HashMap<PhotoId, crate::library::Photo> = lib
+                    .list_photos(&crate::library::PhotoFilter {
+                        shoot: Some(shoot),
+                        verdict: None,
+                    })?
+                    .into_iter()
+                    .map(|p| (p.id, p))
+                    .collect();
+                let (now, later): (Vec<_>, Vec<_>) = all
+                    .into_iter()
+                    .partition(|(id, _)| photos.get(id).is_some_and(likely_keeper));
+                let later: Vec<PhotoId> = later.into_iter().map(|(id, _)| id).collect();
+                lib.set_setting(&on_open_key(shoot), &json!(later))?;
+                on_open = later.len();
+                now
+            }
         }
     };
     let mut queued = Vec::new();
@@ -797,7 +876,7 @@ fn suggest_shoot(tools: &Tools, job: &Job) -> Result<Value> {
         queued.push(id);
         lib.job_progress(job.id, i as i64 + 1, total)?;
     }
-    Ok(json!({ "queued": queued, "skipped": skipped }))
+    Ok(json!({ "queued": queued, "skipped": skipped, "on_open": on_open }))
 }
 
 #[derive(Deserialize)]

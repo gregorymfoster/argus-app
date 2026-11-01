@@ -97,11 +97,20 @@ pub fn tag(
     progress: &dyn Fn(usize, usize),
 ) -> Result<usize> {
     let mut tagged = 0;
+    // A burst's frames show one scene: the first one read is tagged, the rest copy it.
+    let mut stacks: std::collections::HashMap<i64, (String, Vec<Keyword>)> = Default::default();
     progress(0, photos.len());
     for (i, &id) in photos.iter().enumerate() {
         // Opened per Photo so the person's edits in between are never held up.
         let lib = Library::open(library)?;
         let photo = crate::tools::find_photo(&lib, id)?;
+        if let Some((caption, keywords)) = photo.stack.and_then(|s| stacks.get(&s)) {
+            let mut lib = lib;
+            lib.suggest_tags(id, Some(caption), keywords)?;
+            tagged += 1;
+            progress(i + 1, photos.len());
+            continue;
+        }
         let img = crate::tools::open_preview(&photo)?
             .thumbnail(EDGE, EDGE)
             .to_rgb8();
@@ -120,6 +129,9 @@ pub fn tag(
             let mut lib = Library::open(library)?;
             lib.suggest_tags(id, Some(&caption), &keywords)?;
             tagged += 1;
+            if let Some(s) = photo.stack {
+                stacks.insert(s, (caption, keywords));
+            }
         }
         progress(i + 1, photos.len());
     }
