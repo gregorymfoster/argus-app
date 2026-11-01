@@ -16,6 +16,7 @@ Each row is `(id, photo_id, kind, data, at)`, oldest first. `data` by kind:
 | `agent` | `prompt`, `answer`, `batch_id`, `provider`, `model`, `argus`, `seconds`. Logged after the Recipes it wrote; they share `batch_id` |
 | `verdict` | `verdict`, `author`, `reason`, `batch_id` |
 | `stars` | `stars`, `author`, `batch_id` |
+| `moment` | Cull mode's ↵ (one row on every frame shown, same data): `moment_id`, `kind` (stack, stacks, singles), `shown`, `stacks`, `kept`, `rejected`, `ai_best` (each Stack's best frame), `zoomed` (opened in the Loupe first), `looked` (frames that had focus, in order), `seconds`, `rest` (what a Stack's other frames became), `ai_best_shown` (the Best chip was on screen, so the keep isn't blind), `outcome` (some, none, all), `merged_from` (Stacks merged before choosing). Written by the `log_moment` command |
 | `export` | `recipe` (Look folded in), `path`, `format`, `long_edge`, `quality`, `naming`, `verdict`, `stars` |
 
 Auto has no event of its own: it is a `recipe` event by `ai` whose label starts with "Auto".
@@ -38,5 +39,7 @@ Every export with recording on queues one `learn_edits` job ("Learning from your
 
 - `edit/cases.json`: one case per exported Photo still in the Library. The usual fields (`id` is `<Shoot>_<stem>`, `raw` is the original's absolute path, `greg` is the exported Recipe rendered at 640 px, `camera` is the starting Recipe rendered the same way) plus `start_recipe`, `final_recipe`, `takes`, `kept`, `moved`, `moved_total` and `export`.
 - `cull/<Shoot>/labels.json` and `photos/`: every Shoot where the person flagged or starred something, all its Photos (exported at 640 px with their edits). `flag` is pick or null as in the Lightroom bench, plus `verdict` (real rejects here), `verdict_by`, `rating`, `ai_verdict` and `ai_stars`.
+
+- `cull/<Shoot>/choices.json`: Cull mode's choice sets, one row per `moment` (above) with its time `at`, `first_focus`, and `frames` ({photo_id, pos shown, file stem, wall-clock captured_at}) for keying by day: the person's own head-to-head picks among frames shown side by side.
 
 Then `python3 bench/score.py --bench out/usage-bench` runs the usual benches on it, and `--only edit --logged` scores the logged takes themselves: the first, the best and the kept take against what Greg exported. `"images": false` writes only the JSON.

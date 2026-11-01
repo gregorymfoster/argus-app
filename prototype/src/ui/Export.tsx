@@ -5,8 +5,9 @@
 // Live, it calls the engine's `export_photos` one Photo at a time, so progress, the ETA
 // and Stop are exact. With dummy data it pretends.
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { toast } from 'sonner';
+import { useHotkeys } from 'react-hotkeys-hook';
 import { Download, FolderOpen, Layers, Plus, X } from 'lucide-react';
 import { PHOTOS, SHOOT } from '../data/dummy';
 import { LIVE } from '../data/live';
@@ -289,9 +290,28 @@ async function startExport(photos: Photo[], s: Settings) {
 }
 
 /** `ids`: the Photos to export (a selection); the Shoot's Picks when omitted. */
-export function ExportDialog({ open, onOpenChange, ids }: { open: boolean; onOpenChange: (o: boolean) => void; ids?: string[] }) {
+export function ExportDialog(props: { open: boolean; onOpenChange: (o: boolean) => void; ids?: string[] }) {
+  return <Export {...props} />;
+}
+
+/** What Export mode (⌘4) puts around the same presets and settings. */
+export interface ExportMode {
+  /** Between the presets and the settings: the Photos that will go out. */
+  middle: ReactNode;
+  /** The screen's header, given the count, a one-line estimate and the export action. */
+  head: (a: { n: number; facts: string; start: () => void; running: boolean }) => ReactNode;
+  /** The Photos to export (the mode's Picks, less any left out). */
+  photos: Photo[];
+}
+
+/** Export mode's body: the dialog's presets and settings laid out on a screen. */
+export function ExportModeBody({ mode }: { mode: ExportMode }) {
+  return <Export open onOpenChange={() => {}} mode={mode} />;
+}
+
+function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange: (o: boolean) => void; ids?: string[]; mode?: ExportMode }) {
   const { state } = useLibrary();
-  const photos = ids ? PHOTOS.filter((p) => ids.includes(p.id)) : PHOTOS.slice(0, state.imported).filter((p) => verdictOf(state, p.id) === 'pick');
+  const photos = mode ? mode.photos : ids ? PHOTOS.filter((p) => ids.includes(p.id)) : PHOTOS.slice(0, state.imported).filter((p) => verdictOf(state, p.id) === 'pick');
   const [s, setS] = useState<Settings>(load);
   const [mine, setMine] = useState<Preset[]>(() => read<Preset[]>(PRESETS_KEY, []));
   const [naming, setNaming] = useState<string | null>(null);
@@ -340,22 +360,7 @@ export function ExportDialog({ open, onOpenChange, ids }: { open: boolean; onOpe
     void startExport(photos, s);
   };
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="export-v2" data-testid="export-dialog" onOpenAutoFocus={(e) => {
-        // Focus lands on Export (↵ runs it), not the first preset, which drew a focus ring on open.
-        e.preventDefault();
-        (e.currentTarget as HTMLElement).querySelector<HTMLElement>('[data-testid="export-start"]')?.focus();
-      }} onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || !(e.target instanceof HTMLInputElement)) && (e.preventDefault(), go())}>
-        <div className="ex-head">
-          <DialogTitle asChild>
-            <h2>Export</h2>
-          </DialogTitle>
-          <span className="mono faint" style={{ fontSize: 11 }}>
-            {n} {ids ? 'selected' : n === 1 ? 'Pick' : 'Picks'} · {shootFolder()}
-          </span>
-        </div>
-        <div className="ex-body">
+  const presetsNav = (
           <nav className="ex-presets" aria-label="Presets">
             <span className="cap">Presets</span>
             {presets.map((p) => (
@@ -394,6 +399,8 @@ export function ExportDialog({ open, onOpenChange, ids }: { open: boolean; onOpe
               </button>
             )}
           </nav>
+  );
+  const settingsForm = (
 
           <fieldset className="ex-form">
             <section className="ex-sec">
@@ -531,6 +538,38 @@ export function ExportDialog({ open, onOpenChange, ids }: { open: boolean; onOpe
               </label>
             </section>
           </fieldset>
+  );
+  useHotkeys('mod+enter', () => go(), { enabled: !!mode, preventDefault: true, enableOnFormTags: true }, [n, running, s, photos]);
+  const facts = `${n} ${n === 1 ? 'photo' : 'photos'}${total != null ? ` · about ${bytes(total)}` : ''} · about ${duration(est.secs * n)}${free != null ? ` · ${bytes(free)} free` : ''}`;
+  if (mode)
+    return (
+      <div className="export-v2 export-mode" data-testid="export-mode">
+        {mode.head({ n, facts, start: go, running })}
+        <div className="ex-body">
+          {presetsNav}
+          {mode.middle}
+          {settingsForm}
+        </div>
+      </div>
+    );
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="export-v2" data-testid="export-dialog" onOpenAutoFocus={(e) => {
+        // Focus lands on Export (↵ runs it), not the first preset, which drew a focus ring on open.
+        e.preventDefault();
+        (e.currentTarget as HTMLElement).querySelector<HTMLElement>('[data-testid="export-start"]')?.focus();
+      }} onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || !(e.target instanceof HTMLInputElement)) && (e.preventDefault(), go())}>
+        <div className="ex-head">
+          <DialogTitle asChild>
+            <h2>Export</h2>
+          </DialogTitle>
+          <span className="mono faint" style={{ fontSize: 11 }}>
+            {n} {ids ? 'selected' : n === 1 ? 'Pick' : 'Picks'} · {shootFolder()}
+          </span>
+        </div>
+        <div className="ex-body">
+          {presetsNav}
+          {settingsForm}
         </div>
         <div className="ex-foot">
           <span className="facts mono">

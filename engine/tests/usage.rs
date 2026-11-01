@@ -167,3 +167,59 @@ fn records_takes_choices_and_exports_as_bench_cases() {
         (Some(0), Some(true))
     );
 }
+
+#[test]
+fn cull_mode_moments_export_as_choice_sets() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("2026-11-01_harbour");
+    for (i, n) in ["a", "b", "c"].iter().enumerate() {
+        write_jpeg(&src.join(format!("{n}.jpg")), 160, 120, 3 + i as u8);
+    }
+    let tools = Tools::new(dir.path().join("lib"));
+    dispatch(&tools, "import_folder", json!({ "folder": src })).unwrap();
+    let ids: Vec<i64> = dispatch(&tools, "photos", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_i64().unwrap())
+        .collect();
+    dispatch(
+        &tools,
+        "flag",
+        json!({ "ids": [ids[1]], "verdict": "pick" }),
+    )
+    .unwrap();
+    let r = dispatch(
+        &tools,
+        "log_moment",
+        json!({ "moment_id": "m1", "kind": "stack", "shown": ids, "stacks": [ids],
+                "kept": [ids[1]], "ai_best": [ids[0]], "zoomed": [ids[1]], "seconds": 4.2,
+                "rest": "unflagged" }),
+    )
+    .unwrap();
+    assert_eq!(r["logged"], 3, "one row per shown frame");
+    // Unknown fields are refused, so a typo in the UI shows up in tests.
+    assert!(dispatch(&tools, "log_moment", json!({ "moment_id": "x", "kind": "stack", "shown": [], "kept": [], "seconds": 1, "bogus": 1 })).is_err());
+
+    let bench = dir.path().join("bench");
+    let r = call(
+        &tools,
+        "export_usage_bench",
+        json!({ "folder": bench, "images": false }),
+    );
+    assert_eq!(r["cull_moments"], 1, "{r}");
+    let c: Value = serde_json::from_slice(
+        &std::fs::read(bench.join("cull/2026-11-01_harbour/choices.json")).unwrap(),
+    )
+    .unwrap();
+    let row = &c["choices"][0];
+    assert_eq!(
+        (row["kept"].clone(), row["ai_best"].clone()),
+        (json!([ids[1]]), json!([ids[0]]))
+    );
+    assert_eq!(row["shown"].as_array().unwrap().len(), 3);
+    assert_eq!(row["frames"][1]["stem"], "b");
+    assert_eq!(row["frames"][1]["pos"], 1);
+    assert!(row["frames"][0]["captured_at"].is_string());
+}

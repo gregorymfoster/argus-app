@@ -25,7 +25,7 @@ const results = [];
 async function page(path, variants = '', zoom = 1) {
   const ctx = await browser.newContext({ viewport: { width: Math.round(1440 / zoom), height: Math.round(900 / zoom) }, deviceScaleFactor: zoom });
   const p = await ctx.newPage();
-  p.on('pageerror', (e) => errors.push(`${path}: ${e.message}`));
+  p.on('pageerror', (e) => errors.push(`${path}: ${e.message} ${(e.stack||'').split('\n').slice(1,6).join(' | ')}`));
   p.on('console', (m) => m.type() === 'error' && !/fonts\.g/.test(m.text()) && errors.push(`${path}: ${m.text()}`));
   const q = variants ? `?v=${variants}` : '';
   await p.goto(`${base}${q}${path}`);
@@ -165,6 +165,40 @@ await shot('05d-bursts-kept-two', '#/cull', {
     await p.keyboard.press('ArrowRight');
     await p.keyboard.press('p');
     await p.waitForTimeout(600);
+  },
+});
+// Modes (⌘1 Library, ⌘2 Cull, ⌘3 Edit, ⌘4 Export; mocked as MO-*).
+await shot('05e-cull-together', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('n');
+    await p.waitForTimeout(400);
+    await p.keyboard.press('Shift+ArrowDown');
+    await p.keyboard.press('Shift+ArrowDown');
+    await p.waitForTimeout(700);
+  },
+});
+await shot('05f-edit-mode', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('ControlOrMeta+2');
+    await p.waitForTimeout(300);
+    for (let i = 0; i < 4; i++) {
+      await p.keyboard.press('Enter');
+      await p.waitForTimeout(120);
+    }
+    await p.keyboard.press('ControlOrMeta+3');
+    await p.waitForTimeout(1200);
+  },
+});
+await shot('05g-export-mode', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('ControlOrMeta+2');
+    await p.waitForTimeout(300);
+    for (let i = 0; i < 4; i++) {
+      await p.keyboard.press('Enter');
+      await p.waitForTimeout(120);
+    }
+    await p.keyboard.press('ControlOrMeta+4');
+    await p.waitForTimeout(900);
   },
 });
 await shot('06-look-empty', '#/look');
@@ -567,10 +601,81 @@ await check('smoke-stack-toggle', async () => {
   await ctx.close();
 });
 
+await check('smoke-modes', async () => {
+  const { p, ctx } = await page('#/cull');
+  const mode = async () => p.locator('[data-testid=mode-switch] button.on').textContent();
+  if (!(await mode())?.startsWith('Library')) throw new Error(`grid is not the Library: ${await mode()}`);
+  await p.keyboard.press('ControlOrMeta+2');
+  await p.waitForTimeout(300);
+  if (!(await mode())?.startsWith('Cull')) throw new Error('⌘2 did not open Cull');
+  const rows = await p.locator('.moment-row').count();
+  if (rows < 10) throw new Error(`expected every moment in the rail, got ${rows}`);
+  // Every Photo is in exactly one moment: the rail's frame counts add up to the Shoot.
+  const counts = await p.locator('.moment-row .moment-state').allTextContents();
+  const total = counts.reduce((a, c) => a + Number(c), 0);
+  if (total !== 112) throw new Error(`moments cover ${total} of 112 Photos`);
+  // Z keeps, ↵ moves on and counts the moment done.
+  const before = await p.getByTestId('bursts-progress-count').textContent();
+  await p.keyboard.press('z');
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(200);
+  if ((await p.getByTestId('bursts-progress-count').textContent()) === before) throw new Error('↵ did not finish the moment');
+  // Space opens the Loupe; Esc comes back to the same moment.
+  const where = await p.locator('.view-file').textContent();
+  await p.keyboard.press('Space');
+  await p.waitForTimeout(300);
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(300);
+  if ((await p.locator('.view-file').textContent()) !== where) throw new Error(`Esc from the Loupe went to ${await p.locator('.view-file').textContent()}, not back to ${where}`);
+  // ⇧↓ shows the next moment too, as rows; ⇧↑ takes it away.
+  await p.keyboard.press('Shift+ArrowDown');
+  await p.waitForTimeout(200);
+  if ((await p.locator('.moment-band').count()) !== 2) throw new Error('⇧↓ did not add a row');
+  await p.keyboard.press('Shift+ArrowUp');
+  await p.waitForTimeout(200);
+  if (await p.locator('.moment-band').count()) throw new Error('⇧↑ did not drop the row');
+  // Edit mode lists the Picks; Export mode shows what goes out.
+  await p.keyboard.press('ControlOrMeta+3');
+  await p.waitForTimeout(500);
+  if (!(await p.getByTestId('picks-rail').count())) throw new Error('⌘3 did not open Edit on a Pick');
+  await p.keyboard.press('ControlOrMeta+4');
+  await p.waitForTimeout(400);
+  const tiles = await p.locator('.export-tile').count();
+  if (tiles < 1) throw new Error('Export mode shows no Picks');
+  await p.keyboard.press('Backspace');
+  await p.locator('.export-tile').first().click();
+  await p.keyboard.press('Backspace');
+  await p.waitForTimeout(150);
+  if (!(await p.getByTestId('export-start').textContent())?.includes(`Export ${tiles - 1}`)) throw new Error('⌫ did not leave a Photo out');
+  await ctx.close();
+});
+
+await check('smoke-cull-merge', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.keyboard.press('n');
+  await p.waitForTimeout(300);
+  // From a Stack, show moments together until a second Stack is in view, then merge them.
+  for (let i = 0; i < 40 && !(await p.locator('.view-file').textContent())?.startsWith('Stack'); i++) await p.keyboard.press('Tab');
+  for (let i = 0; i < 6 && !(await p.getByTestId('merge-stacks').count()); i++) {
+    await p.keyboard.press('Shift+ArrowDown');
+    await p.waitForTimeout(80);
+  }
+  const stackFrames = await p.locator('.moment-band').evaluateAll((els) => els.filter((e) => e.textContent.startsWith('Stack')).reduce((a, e) => a + e.querySelectorAll('.burst-cell').length, 0));
+  if (!(await p.getByTestId('merge-stacks').count())) throw new Error('no two Stacks to merge');
+  const n = stackFrames;
+  await p.keyboard.press('Shift+M');
+  await p.waitForTimeout(300);
+  if (await p.locator('.moment-band').count()) throw new Error('merge should leave one Stack');
+  if ((await p.locator('.burst-cell').count()) !== n) throw new Error(`merged Stack has ${await p.locator('.burst-cell').count()} frames, want ${n}`);
+  await ctx.close();
+});
+
 await check('smoke-bursts-keep-and-next', async () => {
   const { p, ctx } = await page('#/cull');
   await p.keyboard.press('n');
   await p.waitForTimeout(400);
+  // Cull mode opens on the first moment; go to the first Stack.
+  for (let i = 0; i < 40 && !(await p.locator('.view-file').textContent())?.startsWith('Stack'); i++) await p.keyboard.press('Tab');
   const first = await p.locator('.view-file').textContent();
   const cells = p.locator('.burst-cell');
   const n = await cells.count();
@@ -587,7 +692,8 @@ await check('smoke-bursts-keep-and-next', async () => {
   if ((await p.getByTestId('bursts-progress').getAttribute('title'))?.startsWith('0 ')) throw new Error('progress did not move');
   // Rejected as the Rest: two Picks of your own, Enter rejects the others.
   await p.getByRole('radio', { name: /Reject the frames/ }).click();
-  await p.keyboard.press('ArrowDown');
+  await p.keyboard.press('Tab');
+  for (let i = 0; i < 40 && !(await p.locator('.view-file').textContent())?.startsWith('Stack'); i++) await p.keyboard.press('Tab');
   await p.waitForTimeout(200);
   const ids2 = await p.locator('.burst-cell').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
   await p.keyboard.press('p');
@@ -1062,7 +1168,9 @@ await check('smoke-zoom-pan', async () => {
     }, [type, init]);
   const fit = await rect();
   const cx = fit.x + fit.w * 0.3;
-  const cy = fit.y + fit.h * 0.4;
+  // Mid-height: until the zoomed photo is taller than the stage it stays centred vertically
+  // (Lightroom), so an off-centre row would drift by design when Edit's Picks rail narrows the stage.
+  const cy = fit.y + fit.h * 0.5;
   // Pinch around a point: the photo spot under the fingers stays put.
   for (let i = 0; i < 10; i++) await fire('wheel', { deltaY: -30, ctrlKey: true, clientX: cx, clientY: cy });
   await settle();

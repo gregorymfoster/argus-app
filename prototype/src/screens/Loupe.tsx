@@ -5,7 +5,7 @@ import { Award, Flag, Sparkles, X } from 'lucide-react';
 import { PHOTOS, PHOTO_BY_ID, SHOOT, stackOf } from '../data/dummy';
 import type { Photo, Verdict } from '../domain/types';
 import { starsOf, useLibrary, verdictOf } from '../store/library';
-import { go } from '../router';
+import { go, takeBack } from '../router';
 import type { Suggestion } from '../domain/types';
 import { PhotoView, usePreview } from '../ui/PhotoView';
 import { Filmstrip } from '../ui/Filmstrip';
@@ -142,7 +142,8 @@ export function LoupeScreen({ id }: { id: string }) {
   );
   useHotkeys('right', () => move(1), [pos]);
   useHotkeys('left', () => move(-1), [pos]);
-  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
+  useHotkeys('escape', () => go(takeBack() ?? { name: 'cull' }), ESC_OUTSIDE_DIALOGS);
+  useHotkeys('g', () => (takeBack(), go({ name: 'cull' })));
   useHotkeys(VERDICT_HOTKEYS, (e) => set(VERDICT_KEYS[e.key.toLowerCase()]), [p.id, pos]);
   useHotkeys(STAR_KEYS, (e) => rate(Number(e.key)), [p.id, pos]);
   useHotkeys('f', () => setFaces((f) => !f));

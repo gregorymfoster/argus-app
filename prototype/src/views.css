@@ -188,6 +188,76 @@
 .burst-cell.kept > .photo { box-shadow: 0 0 0 1.5px var(--pick); }
 .burst-cell.focus > .photo { box-shadow: 0 0 0 2px rgb(255 255 255 / 0.9); }
 .burst-cell.faded > .photo { opacity: 0.4; }
-.burst-cell figcaption { display: flex; align-items: center; gap: 6px; height: 20px; font-size: 11px; color: var(--text-3); min-width: 0; }
+.burst-cell figcaption { display: flex; align-items: center; gap: 6px; height: 20px; overflow: hidden; font-size: 11px; color: var(--text-3); min-width: 0; }
 .burst-cell figcaption .grow { flex: 1 1 0; }
 .burst-empty { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-size: 12px; color: var(--text-2); background: var(--canvas); padding: 0 24px; text-align: center; }
+
+/* Modes (Library ⌘1, Cull ⌘2, Edit ⌘3, Export ⌘4; mocked as MO-*, Greg 2026-11-01): a quiet
+   group at the start of every header, one chip on the mode you're in, each pass's progress. */
+.mode-switch { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.mode-switch button { height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: none; border-radius: 6px; background: transparent; color: var(--text-2); font-size: 12.5px; cursor: default; white-space: nowrap; transition: background var(--fast), color var(--fast); }
+.mode-switch button:hover { background: var(--hover); color: var(--text); }
+.mode-switch button.on { background: var(--chip); color: var(--text); }
+.mode-switch .count { font-size: 10.5px; color: var(--text-3); }
+/* Tight bars drop the counts first, then the Library grid's Shoot name (the sidebar shows it). */
+@container (max-width: 1200px) { .mode-switch .count { display: none; } }
+.mode-switch .mode-icon { display: none; flex: none; }
+/* Tighter still: the other modes fold to icons (the tip names them), the open one keeps its name. */
+@container (max-width: 1300px) { .mode-switch .mode-icon { display: block; } .mode-switch button:not(.on) .mode-label { display: none; } .mode-switch button:not(.on) { padding: 0 7px; } }
+@container (max-width: 860px) { .mode-switch .mode-label { display: none; } .mode-switch button { padding: 0 7px; } }
+@container (max-width: 1100px) { .cull-head h1 { display: none; } }
+
+/* Cull mode: the moments rail, then the Survey or rows of moments. */
+.cull-mode { flex: 1 1 auto; min-width: 0; display: flex; height: 100%; min-height: 0; }
+.cull-mode > .panel { flex: 1 1 auto; min-width: 0; }
+.moment-rail { width: 232px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--border); }
+.rail-head { height: 40px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-size: 12px; color: var(--text-2); }
+.rail-head .mono { font-size: 10.5px; }
+.rail-bar { width: auto; margin: 0 14px 8px; }
+.rail-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 6px 6px; display: flex; flex-direction: column; gap: 1px; }
+.moment-row { height: 40px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 6px; border: none; border-radius: 5px; background: transparent; color: var(--text-2); font-size: 12px; text-align: left; cursor: default; }
+.moment-row:hover { background: var(--hover); }
+.moment-row.on { background: var(--chip); color: var(--text); }
+.moment-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.moment-text .faint { font-size: 10.5px; }
+.moment-state { font-size: 10.5px; flex: none; }
+.moment-state.done { color: var(--done); }
+.rail-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--border); font-size: 11px; white-space: nowrap; }
+.moment-rows { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.moment-band { flex: 1 1 0; min-height: 150px; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 7px; transition: background var(--fast); }
+.moment-band.on { background: var(--hover); }
+.moment-band-head { display: flex; align-items: center; gap: 8px; height: 16px; font-size: 11.5px; color: var(--text-2); }
+.moment-band-head .mono { font-size: 10.5px; }
+.moment-band-frames { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(var(--cols, 6), minmax(0, 1fr)); gap: 8px; container-type: size; }
+.moment-band-frames .burst-cell { width: min(100%, calc((100cqh - 26px) * 1.5)); }
+
+/* Export mode: the Export dialog's presets and settings on a screen, the Photos between them. */
+.export-v2.export-mode { width: auto !important; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.export-v2.export-mode .ex-body { flex: 1 1 auto; max-height: none; min-height: 0; }
+.export-v2.export-mode .ex-form { width: 360px; flex: none; overflow-y: auto; border-left: 1px solid var(--border); }
+.export-photos { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
+.export-warn { height: 34px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+.export-warn > svg { color: var(--accent); flex: none; }
+.export-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 12px 14px; align-content: start; }
+.export-tile { margin: 0; position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; cursor: default; }
+.export-tile > .photo { width: 100%; aspect-ratio: 3/2; border-radius: 4px; overflow: hidden; box-shadow: 0 0 0 1px var(--border); }
+.export-tile.focus > .photo { box-shadow: 0 0 0 2px var(--ring); }
+.export-tile.left-out > .photo { opacity: 0.35; }
+.export-tile .corner { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 4px; display: flex; align-items: center; justify-content: center; background: var(--depth-out); color: var(--pick); }
+.export-tile.left-out .corner { color: var(--text-2); }
+.export-note { position: absolute; top: 5px; right: 5px; height: 16px; padding: 0 5px; border-radius: 4px; background: var(--depth-out); font-size: 10px; color: var(--text-2); display: flex; align-items: center; }
+.export-note.warn { color: var(--accent); }
+.export-tile figcaption { font-size: 10.5px; color: var(--text-3); }
+.rail-group { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 26px; padding: 6px 8px 0; font-size: 10.5px; color: var(--text-3); }
+.rail-group .mono { margin-left: 2px; }
+.rail-act { height: 20px; font-size: 11px; }
+.pick-row { height: 30px; }
+.pick-dot { width: 6px; height: 6px; border-radius: 999px; flex: none; background: var(--text-3); }
+.pick-dot.ready { background: var(--pick); }
+.pick-dot.todo { background: var(--accent); }
+.pick-dot.done { background: var(--done); }
+.pick-note { font-size: 10.5px; flex: none; }
+.rail-empty { padding: 10px 8px; font-size: 12px; }
+
+/* A narrow window gives Edit's stage the room; ⌘← ⌘→ still walk the Picks. */
+@media (max-width: 1180px) { .picks-rail { display: none; } }

@@ -17,6 +17,7 @@
 //! | `flag`   | {ids, verdict, author = "person", reason?, label?, batch_id?} | {flagged, batch_id, photos: [CullState]} |
 //! | `rate`   | {ids, stars (0-5), author = "person", label?, batch_id?} | {rated, batch_id, photos: [CullState]} |
 //! | `photo_states` | {ids}                                | [CullState]                   |
+//! | `log_moment` | [`crate::library::MomentLog`]          | {logged}: a Cull mode choice for the Usage log |
 //! | `denoise_status` | {photo_id}                         | {raw, ready, job: {status, done, total, eta_s} or null}: AI Denoise's base for the Edit panel |
 //! | `as_person` | {tool, args, label}                     | the tool's result plus `batch_id` |
 //! | `edit`   | {photo_id, recipe, label?}                   | {version, batch_id}           |
@@ -740,6 +741,11 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             lib.set_verdict(&ids, a.verdict, a.author, a.reason.as_deref(), batch)?;
             let photos = lib.cull_states(&ids)?;
             Ok(json!({ "flagged": ids.len(), "batch_id": batch, "photos": photos }))
+        }
+        "log_moment" => {
+            let m: crate::library::MomentLog = args(command, a)?;
+            let lib = Library::open(tools.library())?;
+            Ok(json!({ "logged": lib.log_moment(&m)? }))
         }
         "rate" => {
             let a: RateArgs = args(command, a)?;

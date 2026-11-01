@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { ArrowLeft, Bandage, Copy, Crop as CropIcon, GalleryHorizontal, History, Layers, SlidersHorizontal, SquareDashedMousePointer } from 'lucide-react';
+import { Bandage, Copy, Crop as CropIcon, GalleryHorizontal, History, Layers, SlidersHorizontal, SquareDashedMousePointer } from 'lucide-react';
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
 import type { Crop, LocalAdjust, NumKey, Recipe, Spot, Version } from '../domain/types';
 import { fmt, recipeOf, useLibrary } from '../store/library';
@@ -12,6 +12,9 @@ import { listVersions } from '../data/liveAgent';
 import { PhotoView } from '../ui/PhotoView';
 import { TakesPanel } from '../ui/Suggestions';
 import { Filmstrip } from '../ui/Filmstrip';
+import { PicksRail } from '../ui/PicksRail';
+import { ModeSwitch } from '../ui/ViewBar';
+import { picksOf } from '../data/modes';
 import { ShootLookStrip } from '../ui/ShootLookStrip';
 import { usePref } from '../store/variants';
 import { acceptSuggestion, applyToRest, cancelTakes, dismissSuggestion, requestSuggestions, useQueue, useSuggestionImage, useSuggestions, useTakesProgress } from '../data/suggestions';
@@ -104,7 +107,11 @@ function useVersions(photoId: string, tab: string, local: Version[]): Version[] 
 export function EditScreen({ id }: { id: string }) {
   const { state, dispatch } = useLibrary();
   const p = PHOTO_BY_ID[id] ?? PHOTOS[0];
-  const order = PHOTOS.slice(0, state.imported).map((x) => x.id);
+  // Edit mode works on the Picks (Greg, 2026-11-01): on a Pick, ⌘← ⌘→ and the filmstrip
+  // follow the Picks and the rail lists them; any other Photo edits as before, in Shoot order.
+  const picks = picksOf(state).map((x) => x.id);
+  const onPick = picks.includes(p.id);
+  const order = onPick ? picks : PHOTOS.slice(0, state.imported).map((x) => x.id);
   const pos = order.indexOf(p.id);
   const nextKey = order.slice(pos + 1, pos + 4).join(',');
   useEffect(() => focusPhoto(p.id, nextKey ? nextKey.split(',') : []), [p.id, nextKey]);
@@ -506,11 +513,11 @@ export function EditScreen({ id }: { id: string }) {
 
   return (
     <>
+      {onPick && <PicksRail open={p.id} />}
       <main className="panel main" style={{ flexDirection: 'column' }}>
         <header className="panel-head toolbar" data-testid="edit-head">
-          <Button variant="ghost" size="sm" onClick={back}>
-            <ArrowLeft size={13} /> {state.look ? 'Look' : 'Grid'} <Kbd quiet>Esc</Kbd>
-          </Button>
+          <ModeSwitch mode="edit" current={p.id} />
+          <span className="vsep" />
           <span className="mono" style={{ fontSize: 12 }}>{p.file}</span>
           <span className="faint mono head-meta" title={p.exif}>{p.exif}</span>
           <span className="grow" />

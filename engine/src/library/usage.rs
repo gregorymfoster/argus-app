@@ -21,6 +21,46 @@ pub struct UsageEvent {
     pub at: String,
 }
 
+/// A Cull mode choice (docs/usage-log.md, `moment`).
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MomentLog {
+    /// Ties the rows of one choice together.
+    pub moment_id: String,
+    /// "stack" (one Stack), "stacks" (several shown together) or "singles".
+    pub kind: String,
+    /// Every frame shown, in the order shown (each Stack best first).
+    pub shown: Vec<PhotoId>,
+    /// The Stacks shown, each a list of Photo ids, when kind is not singles.
+    #[serde(default)]
+    pub stacks: Vec<Vec<PhotoId>>,
+    pub kept: Vec<PhotoId>,
+    #[serde(default)]
+    pub rejected: Vec<PhotoId>,
+    /// The AI's best frame of each shown Stack.
+    #[serde(default)]
+    pub ai_best: Vec<PhotoId>,
+    /// Frames the person opened big (Loupe or zoom) before choosing.
+    #[serde(default)]
+    pub zoomed: Vec<PhotoId>,
+    /// Frames that had focus at some point, in order.
+    #[serde(default)]
+    pub looked: Vec<PhotoId>,
+    pub seconds: f64,
+    /// What happened to the frames not kept: "unflagged" or "reject".
+    #[serde(default)]
+    pub rest: String,
+    /// Whether the AI's best was marked on screen when the person chose (then the keep is not blind).
+    #[serde(default)]
+    pub ai_best_shown: bool,
+    /// "some", "none" (kept nothing) or "all" (kept every frame shown).
+    #[serde(default)]
+    pub outcome: String,
+    /// The Stacks merged into one before choosing, as they were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merged_from: Vec<Vec<PhotoId>>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageSummary {
     pub recording: bool,
@@ -99,6 +139,24 @@ impl Library {
             )
             .map_err(db_err)?;
         Ok(())
+    }
+
+    /// One moment of Cull mode: the frames shown side by side (a Stack, several Stacks
+    /// together, or a run of single frames) and what the person kept. Logged as a `moment`
+    /// event on every shown Photo, so benches can rebuild each choice set. Returns the rows
+    /// written (0 with recording off).
+    pub fn log_moment(&self, m: &MomentLog) -> Result<usize> {
+        if !self.recording_usage() {
+            return Ok(0);
+        }
+        let data = serde_json::to_value(m).map_err(|e| crate::Error(e.to_string()))?;
+        let mut n = 0;
+        for &id in &m.shown {
+            self.try_start(id)?;
+            self.insert_event(id, "moment", &data)?;
+            n += 1;
+        }
+        Ok(n)
     }
 
     /// A Recipe Version was written: log it with who wrote it and the batch's label, which

@@ -59,7 +59,7 @@ pub use storage::{
 };
 pub use suggestions::Suggestion;
 pub use undo::UndoReport;
-pub use usage::{UsageEvent, UsageSummary, RECORD_KEY as RECORD_USAGE_KEY};
+pub use usage::{MomentLog, UsageEvent, UsageSummary, RECORD_KEY as RECORD_USAGE_KEY};
 
 pub const DB_FILE: &str = "library.db";
 /// Where Import copies originals to, inside the Library folder.

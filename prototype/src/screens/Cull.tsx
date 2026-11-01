@@ -29,7 +29,7 @@ import { FlagButtons, VerdictChip } from '../ui/Flags';
 import { Tick } from '../ui/motion';
 import { EmptyState } from '../ui/Empty';
 import { STAR_KEYS, Stars } from '../ui/Stars';
-import { ViewSwitch } from '../ui/ViewBar';
+import { ModeSwitch, ViewSwitch } from '../ui/ViewBar';
 import { SortMenu, toggleKeepers, toggleStars, useSort } from '../ui/Sort';
 import { sortPhotos } from '../domain/sort';
 import { aiName } from '../data/live';
@@ -660,7 +660,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   useHotkeys('shift+s', () => changeSort(toggleStars(sort)), [sort]);
   useHotkeys('shift+k', () => changeSort(toggleKeepers(sort)), [sort]);
   // N (Lightroom's Survey key) culls the Shoot's bursts one Stack at a time, from the current Photo's.
-  const openBursts = () => (stackCount ? go({ name: 'bursts', id: current?.stackId }) : dispatch({ type: 'toast', text: 'No Stacks yet: bursts stack once Import has looked at the Photos, or after an AI cull' }));
+  const openBursts = () => (stackCount ? go({ name: 'moments', id: current?.stackId }) : dispatch({ type: 'toast', text: 'No Stacks yet: bursts stack once Import has looked at the Photos, or after an AI cull' }));
   useHotkeys('n', openBursts, [current, stackCount]);
   useHotkeys('j', () => {
     const next = TILE_INFO[(TILE_INFO.indexOf(tileInfo) + 1) % TILE_INFO.length];
@@ -771,6 +771,8 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     <>
       <main className="panel main">
         <header className="panel-head toolbar cull-head">
+          <ModeSwitch mode="library" current={current?.id} />
+          <span className="vsep" />
           <h1 title={SHOOT.name}>{SHOOT.name}</h1>
           <FoundLine />
           <ViewSwitch view="grid" id={current?.id} compareIds={sel.size > 1 ? [...sel] : current?.stackId ? STACK_BY_ID[current.stackId].photoIds : undefined} />
@@ -1126,6 +1128,9 @@ function NextStep({ shootId, rejects, fourUp, best, onPick, onReview }: { shootI
           <Award size={12} /> Pick Best Photos · {best.length}
         </Button>
       )}
+      <Button variant="ghost" size="sm" onClick={() => go({ name: 'moments' })} data-testid="next-cull-mode">
+        Cull moment by moment <Kbd quiet>⌘2</Kbd>
+      </Button>
       <Button variant="ghost" size="sm" onClick={onReview} data-testid="next-review">
         Review one by one
       </Button>

@@ -9,7 +9,7 @@ import { LIVE } from './live';
 import { PHOTOS } from './dummy';
 import { acceptMany, acceptSuggestion, useShootTakes } from './suggestions';
 import { undoBatch } from './liveAgent';
-import { starsOf, verdictOf, type Action, type State } from '../store/library';
+import { recipeOf, starsOf, verdictOf, type Action, type State } from '../store/library';
 import type { Suggestion } from '../domain/types';
 
 /** The engine's title for the take (`suggest::SHOOT_MATCH`). */
@@ -53,7 +53,7 @@ export function usePreEdits(state: State): PreEdits {
     const heroes = all.filter((p) => handEdited(state, p.id));
     if (!heroes.length) return { ready: [], heroes: 0, byPhoto: {} };
     const hero = heroes[heroes.length - 1];
-    const style = state.recipes[hero.id];
+    const style = recipeOf(state, hero.id);
     const ready: Suggestion[] = all
       .filter((p) => !handEdited(state, p.id) && !answered.has(p.id))
       .filter((p) => verdictOf(state, p.id) !== 'reject' && (verdictOf(state, p.id) === 'pick' || starsOf(state, p.id).stars >= MIN_STARS))

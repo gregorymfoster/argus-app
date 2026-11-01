@@ -26,7 +26,10 @@ import { CullScreen } from './screens/Cull';
 import { LoupeScreen } from './screens/Loupe';
 import { CompareScreen } from './screens/Compare';
 import { PeopleScreen } from './screens/People';
-import { BurstsScreen } from './screens/Bursts';
+import { CullModeScreen } from './screens/CullMode';
+import { ExportScreen } from './screens/ExportMode';
+import { goMode } from './ui/ViewBar';
+import type { Mode } from './data/modes';
 import { LookScreen } from './screens/Look';
 import { EditScreen } from './screens/Edit';
 import { SettingsDialog, openSettings } from './settings/Settings';
@@ -197,6 +200,10 @@ export function App() {
   useHotkeys('mod+comma', () => openSettings(), { preventDefault: true, enableOnFormTags: true });
   // ⌘/ lists every shortcut, as Lightroom's Help › Keyboard Shortcuts does; ? as in Linear and Gmail.
   useHotkeys(['mod+slash', 'shift+slash'], () => openSettings('keys'), { preventDefault: true });
+  // Modes, as Lightroom Classic's ⌥⌘1 Library, ⌥⌘2 Develop: ⌘1 Library, ⌘2 Cull, ⌘3 Edit, ⌘4 Export.
+  const MODES: Mode[] = ['library', 'cull', 'edit', 'export'];
+  const inHand = route.name === 'loupe' || route.name === 'edit' ? route.id : undefined;
+  useHotkeys(['mod+1', 'mod+2', 'mod+3', 'mod+4'], (e) => goMode(MODES[Number(e.key) - 1], state, dispatch, inHand), { preventDefault: true }, [state, inHand]);
   const screen: Screen = route.name;
   const sidebar = route.name === 'import' || route.name === 'cull' || route.name === 'people';
 
@@ -220,8 +227,11 @@ export function App() {
     case 'compare':
       body = <CompareScreen ids={route.ids} />;
       break;
-    case 'bursts':
-      body = <BurstsScreen start={route.id} />;
+    case 'moments':
+      body = <CullModeScreen key={route.id ?? ''} start={route.id} />;
+      break;
+    case 'export':
+      body = <ExportScreen />;
       break;
     case 'look':
       body = <LookScreen onExport={() => setExporting(true)} />;

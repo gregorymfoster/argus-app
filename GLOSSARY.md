@@ -167,8 +167,16 @@ Cheap measurements of each Photo (sharpness within its Shoot, brightness, clippi
 _Avoid_: Scores, metrics
 
 **Stack**:
-A group of near-identical Photos (a burst or repeated shot) that get culled together, so only the best ones survive. Argus stacks bursts by itself (look-alike frames shot seconds apart, `engine::bursts`), and the AI cull joins its own Stacks to them. The Stacks view (N) shows one Stack at a time to keep its best frame or two.
+A group of near-identical Photos (a burst or repeated shot) that get culled together, so only the best ones survive. Argus stacks bursts by itself (look-alike frames shot seconds apart, `engine::bursts`), and the AI cull joins its own Stacks to them. Cull mode (⌘2, or N on a Stack) shows one Stack at a time to keep its best frame or two, or several side by side (⇧↓), and merges Stacks the AI split (⇧M).
 _Avoid_: Group, burst, cluster
+
+**Mode**:
+One of the four places the work happens, in the order of the flow (Greg, 2026-11-01: cull, then edit everything, then export), as Lightroom Classic has Library and Develop: Library (⌘1, browse freely: grid, Loupe, Compare), Cull (⌘2), Edit (⌘3, the Picks) and Export (⌘4). Every header starts with the mode switch.
+_Avoid_: Module, tab, step
+
+**Moment**:
+What Cull mode shows at once: one Stack (best frame first), or a short run of single frames between Stacks (up to six), so every Photo of a Shoot comes up exactly once. ↵ ends a moment and logs it to the Usage log as a choice set.
+_Avoid_: Group, page, batch
 
 **Contact sheet**:
 Small previews of every Photo in a Shoot, in time order, with their Stacks and signals. The Agent reads it so it judges each Photo against the whole Shoot.

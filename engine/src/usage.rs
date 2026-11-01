@@ -206,6 +206,8 @@ pub struct BenchReport {
     pub edit_cases: usize,
     pub cull_shoots: usize,
     pub cull_photos: usize,
+    /// Cull mode choice sets written to cull/<Shoot>/choices.json.
+    pub cull_moments: usize,
     pub skipped: Vec<Value>,
 }
 
@@ -361,6 +363,56 @@ pub fn export_bench(tools: &Tools, folder: &Path, images: bool, edge: u32) -> Re
                 "labels": labels,
             }),
         )?;
+        // Cull mode's choice sets: one row per moment, oldest first (the person's own
+        // head-to-head picks, the richest cull labels we get).
+        let in_shoot: std::collections::BTreeSet<PhotoId> = list.iter().map(|p| p.id).collect();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut choices: Vec<Value> = Vec::new();
+        for id in &in_shoot {
+            for e in events
+                .get(id)
+                .into_iter()
+                .flatten()
+                .filter(|e| e.kind == "moment")
+            {
+                let key = e.data["moment_id"].as_str().unwrap_or_default().to_string();
+                if seen.insert(key) {
+                    let mut row = e.data.clone();
+                    row["at"] = json!(e.at);
+                    // Each frame as benches key them (bench/cull_pairs.py, splits.fold by day):
+                    // position shown, file stem and wall-clock capture time.
+                    let frames: Vec<Value> = row["shown"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                        .map(|(pos, id)| {
+                            let p = id.as_i64().and_then(|i| photos.get(&i));
+                            json!({
+                                "photo_id": id, "pos": pos,
+                                "stem": p.and_then(|p| Path::new(&p.file_name).file_stem().and_then(|s| s.to_str())),
+                                "captured_at": p.map(|p| &p.captured_at),
+                            })
+                        })
+                        .collect();
+                    row["frames"] = json!(frames);
+                    row["first_focus"] = row["looked"].get(0).cloned().unwrap_or(Value::Null);
+                    choices.push(row);
+                }
+            }
+        }
+        if !choices.is_empty() {
+            choices.sort_by(|a, b| a["at"].as_str().cmp(&b["at"].as_str()));
+            report.cull_moments += choices.len();
+            write_json(
+                &dir.join("choices.json"),
+                &json!({
+                    "shoot": name,
+                    "note": "Cull mode choice sets from Argus's usage log (docs/usage-log.md, moment): the frames shown side by side, what the person kept and what the AI ranked best.",
+                    "choices": choices,
+                }),
+            )?;
+        }
         report.cull_shoots += 1;
         report.cull_photos += labels.len();
     }
