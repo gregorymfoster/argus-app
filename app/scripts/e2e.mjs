@@ -298,6 +298,12 @@ try {
     await shot('loupe-portrait');
     const fits = await js(`return [...document.querySelectorAll('.filmstrip .photo img')].map((i) => getComputedStyle(i).objectFit)`);
     check(fits.length > 0 && fits.every((f) => f === 'contain'), `the filmstrip shows whole photos (${[...new Set(fits)].join(', ')})`);
+    // Cull mode's frames too (Greg, 2026-11-01: DSC08034 cut off again in 0.1.15's Cull).
+    await js(`location.hash = '#/moments'`);
+    await sleep(1500);
+    const cell = await js(`const el = document.querySelector('[data-testid="burst-${portrait.id}"] > .photo'); const img = el?.querySelector('img'); const r = el?.getBoundingClientRect(); return r && img ? [r.width, r.height, img.naturalWidth, img.naturalHeight, getComputedStyle(img).objectFit] : null`);
+    check(cell && (cell[4] === 'contain' || Math.abs(cell[0] / cell[1] - cell[2] / cell[3]) < 0.02), `Cull mode shows the portrait whole, never cut to its frame (${JSON.stringify(cell)})`);
+    await shot('cull-mode-portrait');
   }
 
   // Flagging jumps to the next Photo: X right after P lands on the second Photo.
@@ -336,7 +342,8 @@ try {
   let culled = [];
   for (const t0 = Date.now(); Date.now() - t0 < 30000; await sleep(300)) {
     culled = await invoke('photos', {});
-    if (culled.some((p) => p.verdict_by === 'ai')) break;
+    // Verdicts and Stacks land in separate writes: wait for both, or the check races the second.
+    if (culled.filter((p) => p.verdict_by === 'ai').length >= 4 && culled.some((p) => p.stack != null)) break;
   }
   check(modelCalls === 1, `the Agent sent one Shoot-wide request to the model (${modelCalls})`);
   const ai = culled.filter((p) => p.verdict_by === 'ai');

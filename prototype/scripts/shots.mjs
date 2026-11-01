@@ -681,17 +681,16 @@ await check('smoke-bursts-keep-and-next', async () => {
   const n = await cells.count();
   if (n < 2) throw new Error(`expected a Stack, got ${n} frames`);
   const ids = await cells.evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
-  // Enter keeps the focused (AI best) frame and moves on; the rest stay Unflagged by default.
+  // Enter keeps the focused (AI best) frame, rejects the rest (Cull flags every Photo) and moves on.
   await p.keyboard.press('Enter');
   await p.waitForTimeout(200);
   if ((await p.locator('.view-file').textContent()) === first) throw new Error('Enter did not move to the next Stack');
   await p.keyboard.press('ArrowUp');
   await p.waitForTimeout(200);
   const vs = await Promise.all(ids.map((id) => p.getByTestId(id).getAttribute('data-verdict')));
-  if (vs[0] !== 'pick' || vs.slice(1).some((v) => v === 'pick')) throw new Error(`expected only the best frame kept, got ${vs}`);
+  if (vs[0] !== 'pick' || vs.slice(1).some((v) => v !== 'reject')) throw new Error(`expected the best frame kept and the rest rejected, got ${vs}`);
   if ((await p.getByTestId('bursts-progress').getAttribute('title'))?.startsWith('0 ')) throw new Error('progress did not move');
-  // Rejected as the Rest: two Picks of your own, Enter rejects the others.
-  await p.getByRole('radio', { name: /Reject the frames/ }).click();
+  // Two Picks of your own: Enter rejects the others.
   await p.keyboard.press('Tab');
   for (let i = 0; i < 40 && !(await p.locator('.view-file').textContent())?.startsWith('Stack'); i++) await p.keyboard.press('Tab');
   await p.waitForTimeout(200);
@@ -705,6 +704,28 @@ await check('smoke-bursts-keep-and-next', async () => {
   await p.waitForTimeout(200);
   const vs2 = await Promise.all(ids2.map((id) => p.getByTestId(id).getAttribute('data-verdict')));
   if (vs2.filter((v) => v === 'pick').length !== 2 || vs2.filter((v) => v === 'reject').length !== ids2.length - 2) throw new Error(`got ${vs2}`);
+  await ctx.close();
+});
+
+await check('smoke-cull-flags-every-photo', async () => {
+  const { p, ctx } = await page('#/moments');
+  const count = async () => Number((await p.getByTestId('unflagged').textContent()).match(/\d+/)?.[0] ?? 0);
+  const before = await count();
+  if (!before) throw new Error('no unflagged count in the rail');
+  // A run of singles with nothing picked: Enter rejects them all, so none stays Unflagged.
+  for (let i = 0; i < 40 && !(await p.locator('.view-file').textContent())?.startsWith('Singles'); i++) await p.keyboard.press('Tab');
+  const n = await p.locator('.burst-cell').count();
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(200);
+  if ((await count()) !== before - n) throw new Error(`unflagged went ${before} -> ${await count()} after Enter on ${n} singles`);
+  // Skipped moments come back: Go to next lands on the first moment still unflagged.
+  await p.getByTestId('next-unflagged').click();
+  await p.waitForTimeout(200);
+  if (!/^(Single|Stack) 1 of/.test(await p.locator('.view-file').textContent())) throw new Error(`Go to next opened ${await p.locator('.view-file').textContent()}`);
+  // Leaving with Photos unflagged says how many.
+  await p.keyboard.press('Escape');
+  const toast = await p.locator('[data-sonner-toast]').first().textContent({ timeout: 3000 }).catch(() => '');
+  if (!/still unflagged/.test(toast ?? '')) throw new Error(`no unflagged warning on leaving: ${toast}`);
   await ctx.close();
 });
 

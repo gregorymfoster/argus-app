@@ -10,6 +10,8 @@ Greg wants the best benchmark there is for AI culling and editing of one photogr
 
 On 2026-10-23 the page got 577 same-scene pairs from 62 of these days (`drive_pairs.py`, ex period left out), as `<day>_Backup` Shoots on the Blind cull tab.
 
+Cull mode in the app (2026-11-01) logs every keep as a `moment` in the Usage log: the frames shown side by side, which he kept, and whether the AI's Best chip was on screen. `argus tool export_usage_bench` writes them to `cull/<Shoot>/choices.json`, and `python3 bench/cull_pairs.py moments <choices.json>...` turns each into head-to-head rows (kept beats every unkept frame in the same Stack) in `fixtures/bench/usage/<Shoot>.pairwise.json`. Rows with `blind: false` saw the AI's pick, so they count for less than the review page's blind taps.
+
 **Cull, Greg's blind choices** (the review page's `cull_blind` rows, imported by `bench/cull_pairs.py import` into `fixtures/bench/cull/<shoot>/pairwise.json` and `fixtures/bench/drive/<shoot>.pairwise.json`). "If you could keep only one, which?" between two same-scene frames, with "Can't tell" as the tie (`same`). Greg found the old keep both / one / neither wording confusing (2026-10-24), so the page now asks the forced choice; older `both` and `neither` rows are ties too. This is the cleanest cull label we have: same moment, both unedited, chosen today. `bench/burst_keeper.py` reads faces on every tapped frame and scores head-to-head keeper rules on these taps beside the card and drive bursts (docs/research/burst-keeper.md, 2026-10-24).
 
 **Edit, bench cases** (`fixtures/bench/edit/cases.json`). 140 RAWs with Greg's finished edit as a 640 px Lightroom preview. dE to his edit rewards timid edits, so read it beside his taps.

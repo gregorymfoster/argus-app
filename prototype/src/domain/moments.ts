@@ -61,3 +61,18 @@ export function keptOnEnter(shown: Moment[], picked: Set<string>, focus: string 
   const inStack = focus && shown.some((m) => m.kind === 'stack' && m.photoIds.includes(focus));
   return new Set(inStack ? [focus] : []);
 }
+
+/** The grid that shows `n` frames biggest in a W x H box: columns, rows and each frame's width.
+ *  Every column count is tried; a frame is limited by its column's width or by its row's height
+ *  less the caption (Greg, 2026-11-01: "use as much of the screen space as possible"). */
+export function fitGrid(n: number, W: number, H: number, gap = 8, caption = 25, aspect = 1.5) {
+  let best = { cols: 1, rows: n, width: 0 };
+  for (let cols = 1; cols <= Math.max(1, n); cols++) {
+    const rows = Math.ceil(n / cols);
+    const byW = (W - gap * (cols - 1)) / cols;
+    const byH = ((H - gap * (rows - 1)) / rows - caption) * aspect;
+    const width = Math.floor(Math.max(0, Math.min(byW, byH)));
+    if (width > best.width) best = { cols, rows, width };
+  }
+  return best;
+}

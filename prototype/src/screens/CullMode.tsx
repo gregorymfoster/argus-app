@@ -9,37 +9,36 @@ import { useHotkeys } from 'react-hotkeys-hook';
 import { Flag, Layers, Merge, Sparkles, X } from 'lucide-react';
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
 import type { Photo, Verdict } from '../domain/types';
-import { keptOnEnter, moments, type Moment } from '../domain/moments';
+import { fitGrid, keptOnEnter, moments, type Moment } from '../domain/moments';
 import { logMoment, mergeStacks } from '../data/moments';
 import { starsOf, useLibrary, verdictOf, type Action } from '../store/library';
 import { go, openFrom } from '../router';
-import { PhotoView } from '../ui/PhotoView';
+import { PhotoView, photoRatio } from '../ui/PhotoView';
 import { Stars } from '../ui/Stars';
 import { EmptyState } from '../ui/Empty';
 import { Button } from '@/components/ui/button';
-import { Kbd, Seg, Tip, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
+import { Kbd, Tip, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { Hints, ModeSwitch, QueueMeter } from '../ui/ViewBar';
 import { aiName } from '../data/live';
 
 /** What ↵ does with the frames of a Stack you didn't keep. Single frames you pass stay Unflagged. */
-type Rest = 'unflagged' | 'reject';
-const REST_KEY = 'argus.burstRest';
-const readRest = (): Rest => {
-  try {
-    return localStorage.getItem(REST_KEY) === 'reject' ? 'reject' : 'unflagged';
-  } catch {
-    return 'unflagged';
-  }
-};
-
-/** Survey layout: columns and rows that keep every frame as big as the view allows. */
-function layout(n: number) {
-  const cols = n <= 4 ? n : n <= 6 ? 3 : n <= 8 ? 4 : n <= 10 ? 5 : 6;
-  return { '--cols': cols, '--rows': Math.ceil(n / cols) } as React.CSSProperties;
+/** Survey layout: the column count that shows every frame biggest in the space there is. */
+function useFit(n: number, aspect: number) {
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => setBox({ w: e.contentRect.width, h: e.contentRect.height }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [el]);
+  const g = fitGrid(n, box.w, box.h, 8, 25, aspect);
+  const style = { '--cols': g.cols, '--rows': g.rows, ...(g.width ? { '--cell-w': `${g.width}px`, '--cell-h': `${Math.floor(g.width / aspect)}px` } : {}) } as React.CSSProperties;
+  return { ref: setEl, style, width: g.width };
 }
 
-/** Moments decided in this view this session (the dummy store forgets a Verdict that matches the AI's). */
-const decided = new Set<string>();
+/** Frames you flagged here this session (the dummy store forgets a Verdict that matches the AI's). */
+const flaggedHere = new Set<string>();
 /** Frames you picked here (same reason). */
 const pickedHere = new Set<string>();
 
@@ -57,8 +56,15 @@ export function CullModeScreen({ start }: { start?: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [state.imported, rev],
   );
-  const isDone = (m: Moment) => decided.has(m.id) || m.photoIds.some((id) => id in state.overrides);
+  // Cull makes you flag every Photo (Greg, 2026-11-01): one is settled once you Picked or Rejected
+  // it yourself, and a moment is done only when all its frames are. An AI Verdict alone isn't yours.
+  const settled = (id: string) => {
+    const o = state.overrides[id];
+    return o === 'pick' || o === 'reject' || (flaggedHere.has(id) && (verdictOf(state, id) ?? 'unflagged') !== 'unflagged');
+  };
+  const isDone = (m: Moment) => m.photoIds.every(settled);
   const doneCount = list.filter(isDone).length;
+  const unflagged = list.reduce((n, m) => n + m.photoIds.filter((id) => !settled(id)).length, 0);
   const [at, setAt] = useState(() => {
     const i = list.findIndex((m) => m.id === start || m.photoIds.includes(start ?? ''));
     if (i >= 0) return i;
@@ -68,6 +74,8 @@ export function CullModeScreen({ start }: { start?: string }) {
   const [span, setSpan] = useState(1);
   const shown = list.slice(at, at + span);
   const frames = shown.flatMap((m) => m.photoIds.map((id) => PHOTO_BY_ID[id])).filter(Boolean) as Photo[];
+  // Frames share one box, shaped for the widest Photo; a portrait among landscapes letterboxes.
+  const fit = useFit(frames.length, Math.max(0.5, ...frames.map(photoRatio)));
   const [focusId, setFocusId] = useState<string | undefined>();
   const cur = frames.find((p) => p.id === focusId) ?? frames[0];
   const rowOf = (id: string) => shown.findIndex((m) => m.photoIds.includes(id));
@@ -85,33 +93,29 @@ export function CullModeScreen({ start }: { start?: string }) {
     if (cur && track && track.looked.at(-1) !== cur.id) track.looked.push(cur.id);
   }, [cur?.id]);
 
-  const [rest, setRestState] = useState<Rest>(readRest);
-  const setRest = (r: Rest) => {
-    setRestState(r);
-    (document.activeElement as HTMLElement | null)?.blur(); // hand the arrow keys back to the frames
-    try {
-      localStorage.setItem(REST_KEY, r);
-    } catch {
-      /* private window: the choice lasts this session */
-    }
-  };
-
   const set = (id: string, v: Verdict) => {
     if (v === 'pick') pickedHere.add(id);
     else pickedHere.delete(id);
+    if (v === 'unflagged') flaggedHere.delete(id);
+    else flaggedHere.add(id);
     dispatch({ type: 'verdict/set', id, verdict: v, by: 'you' });
   };
   const yourPick = (id: string) => verdictOf(state, id) === 'pick' && (state.overrides[id] === 'pick' || pickedHere.has(id));
   const toggleKeep = (id: string) => set(id, yourPick(id) ? 'unflagged' : 'pick');
   const stars = (id: string, n: number) => dispatch({ type: 'stars/set', id, stars: n, by: 'you' });
 
-  const next = (from: number) => {
-    const i = list.findIndex((m, j) => j >= from && !isDone(m));
-    return i >= 0 ? i : Math.min(from, list.length);
+  // The next moment with an unflagged frame, wrapping round to any you skipped; past the end
+  // (the done screen) only once every Photo is flagged.
+  const next = (from: number, skip = new Set<string>()) => {
+    const open = (m: Moment, j: number) => !skip.has(m.id) && !isDone(m) && j >= 0;
+    const i = list.findIndex((m, j) => j >= from && open(m, j));
+    if (i >= 0) return i;
+    const w = list.findIndex(open);
+    return w >= 0 ? w : list.length;
   };
 
-  // ↵: keep the frames you picked here (none yet, in a Stack: the focused one). The rest of a
-  // Stack get the Rest verdict; single frames you passed stay Unflagged. Then the next moment.
+  // ↵: keep the frames you picked here (none yet, in a Stack: the focused one) and reject the
+  // rest, so no frame is left Unflagged. Then the next moment that still has one.
   const keep = () => {
     if (!shown.length) return;
     const picked = new Set(frames.filter((p) => yourPick(p.id)).map((p) => p.id));
@@ -121,11 +125,13 @@ export function CullModeScreen({ start }: { start?: string }) {
     for (const m of shown)
       for (const id of m.photoIds) {
         const v = verdictOf(state, id) ?? 'unflagged';
-        const target: Verdict = kept.has(id) ? 'pick' : v === 'reject' ? 'reject' : m.kind === 'stack' ? rest : 'unflagged';
+        const target: Verdict = kept.has(id) ? 'pick' : 'reject';
         if (target === 'reject') rejected.push(id);
-        if (!(id in state.overrides && v === target)) actions.push({ type: 'verdict/set', id, verdict: target, by: 'you' });
+        flaggedHere.add(id);
+        if (target === 'pick') pickedHere.add(id);
+        if (!(state.overrides[id] === target && v === target)) actions.push({ type: 'verdict/set', id, verdict: target, by: 'you' });
       }
-    dispatch({ type: 'batch', label: `Kept ${kept.size} of ${frames.length}`, actions });
+    dispatch({ type: 'batch', label: `Kept ${kept.size}, rejected ${frames.length - kept.size}`, actions });
     const stacks = shown.filter((m) => m.kind === 'stack');
     logMoment({
       moment_id: `${shown[0].id}@${Date.now().toString(36)}`,
@@ -138,16 +144,16 @@ export function CullModeScreen({ start }: { start?: string }) {
       zoomed: [...(track?.zoomed ?? [])],
       looked: track?.looked.slice() ?? [],
       seconds: Math.round((performance.now() - (track?.opened ?? performance.now())) / 100) / 10,
-      rest,
+      rest: 'reject',
       ai_best_shown: stacks.length > 0,
       outcome: kept.size === 0 ? 'none' : kept.size === frames.length ? 'all' : 'some',
       merged_from: track?.mergedFrom,
     });
-    for (const m of shown) decided.add(m.id);
     track = null;
     const after = at + span;
     setSpan(1);
-    setAt(next(after));
+    // `state` is this render's, so the moments just flagged still read as open: skip them.
+    setAt(next(after, new Set(shown.map((m) => m.id))));
   };
 
   const step = (d: number) => {
@@ -205,13 +211,22 @@ export function CullModeScreen({ start }: { start?: string }) {
   useHotkeys('x', () => cur && set(cur.id, verdictOf(state, cur.id) === 'reject' && cur.id in state.overrides ? 'unflagged' : 'reject'), [cur, state]);
   useHotkeys('u', () => cur && set(cur.id, 'unflagged'), [cur]);
   useHotkeys(['0', '1', '2', '3', '4', '5'], (e) => cur && stars(cur.id, Number(e.key)), [cur]);
-  useHotkeys('enter', keep, { preventDefault: true }, [key, cur, state, rest, at, span]);
+  useHotkeys('enter', keep, { preventDefault: true }, [key, cur, state, at, span]);
   useHotkeys('space', () => zoom(), { preventDefault: true }, [cur, at, list]);
   useHotkeys('d', () => cur && go({ name: 'edit', id: cur.id }), [cur]);
-  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
+  const leave = () => {
+    if (unflagged) dispatch({ type: 'toast', text: `${unflagged} ${unflagged === 1 ? 'Photo is' : 'Photos are'} still unflagged. ⌘2 brings you back to them.` });
+    go({ name: 'cull' });
+  };
+  useHotkeys(['escape', 'g'], leave, ESC_OUTSIDE_DIALOGS, [unflagged]);
 
   const total = list.length;
-  const finished = at >= total;
+  const finished = at >= total && unflagged === 0;
+  // An Undo after the last moment reopens one: go back to it rather than show an empty view.
+  useEffect(() => {
+    if (at >= total && unflagged > 0) setAt(next(0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [at, total, unflagged]);
   const first = shown[0];
   const title = finished || !total ? 'Cull' : span > 1 ? `Moments ${at + 1} to ${at + span} together` : `${label(first, at + 1)} of ${total}`;
   const best = first?.kind === 'stack' ? PHOTO_BY_ID[first.photoIds[0]] : undefined;
@@ -224,6 +239,7 @@ export function CullModeScreen({ start }: { start?: string }) {
       <figure
         key={p.id}
         className={`burst-cell ${p.id === cur?.id ? 'focus' : ''} ${v === 'reject' ? 'faded' : ''} ${v === 'pick' ? 'kept' : ''}`}
+        style={{ '--ar': photoRatio(p) } as React.CSSProperties}
         onClick={() => setFocusId(p.id)}
         onDoubleClick={() => zoom(p.id)}
         data-testid={`burst-${p.id}`}
@@ -231,10 +247,11 @@ export function CullModeScreen({ start }: { start?: string }) {
       >
         <PhotoView photo={p} size={size} recipe={state.recipes[p.id]} look={state.look} edits />
         <figcaption>
-          <span className={`v-chip ${v === 'pick' || v === 'reject' ? v : ''}`}>
+          {/* Until you flag it, the AI's Verdict is only a suggestion and reads as one. */}
+          <span className={`v-chip ${settled(p.id) && (v === 'pick' || v === 'reject') ? v : ''}`} title={settled(p.id) ? undefined : 'Not flagged by you yet'}>
             {v === 'pick' && <Flag size={10} strokeWidth={2.2} />}
             {v === 'reject' && <X size={10} strokeWidth={2.6} />}
-            {VERDICT_LABEL[v ?? 'unflagged']}
+            {settled(p.id) || !v || v === 'unflagged' ? VERDICT_LABEL[v ?? 'unflagged'] : `AI ${VERDICT_LABEL[v].toLowerCase()}`}
           </span>
           {m.kind === 'stack' && i === 0 && (
             <span className="v-chip accent" title="Best frame of this Stack: the AI cull's pick, else the sharpest frame with eyes open">
@@ -265,6 +282,7 @@ export function CullModeScreen({ start }: { start?: string }) {
           {list.map((m, i) => {
             const cover = PHOTO_BY_ID[m.photoIds[0]];
             const kept = m.photoIds.filter((id) => verdictOf(state, id) === 'pick').length;
+            const left = m.photoIds.filter((id) => !settled(id)).length;
             const on = i >= at && i < at + span;
             return (
               <button key={m.id} className={`moment-row ${on ? 'on' : ''}`} onClick={() => (setSpan(1), setAt(i))} ref={on && i === at ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}>
@@ -273,23 +291,27 @@ export function CullModeScreen({ start }: { start?: string }) {
                   <span className="trunc">{label(m, i + 1)}</span>
                   <span className="faint">{m.kind === 'stack' ? `${m.photoIds.length} frames` : m.photoIds.length === 1 ? '1 frame' : `${m.photoIds.length} frames, no burst`}</span>
                 </span>
-                <span className={`mono moment-state ${isDone(m) ? 'done' : 'faint'}`}>{isDone(m) ? (kept ? `kept ${kept}` : 'none') : m.photoIds.length}</span>
+                <span className={`mono moment-state ${!left ? 'done' : left < m.photoIds.length ? 'warn' : 'faint'}`} title={left ? `${left} unflagged` : undefined}>
+                  {!left ? (kept ? `kept ${kept}` : 'none') : left < m.photoIds.length ? `${left} left` : m.photoIds.length}
+                </span>
               </button>
             );
           })}
         </div>
-        <div className="rail-foot">
-          <span className="faint">Rest</span>
-          <Seg
-            quiet
-            label="What ↵ does with the frames of a Stack you don't keep"
-            value={rest}
-            onChange={setRest}
-            items={[
-              { value: 'unflagged', label: 'Unflagged', title: 'Leave the frames you don’t keep Unflagged' },
-              { value: 'reject', label: 'Rejected', title: 'Reject the frames you don’t keep' },
-            ]}
-          />
+        <div className="rail-foot" data-testid="unflagged">
+          {unflagged ? (
+            <>
+              <span className="warn-dot" />
+              <span className="grow">
+                <span className="mono">{unflagged}</span> {unflagged === 1 ? 'Photo' : 'Photos'} unflagged
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => (setSpan(1), setAt(next(0)))} data-testid="next-unflagged">
+                Go to next
+              </Button>
+            </>
+          ) : (
+            <span className="faint">Every Photo is flagged</span>
+          )}
         </div>
       </nav>
       <div className="panel main view" style={{ flexDirection: 'column', borderRadius: 0, border: 'none', background: 'var(--bg)' }}>
@@ -329,8 +351,8 @@ export function CullModeScreen({ start }: { start?: string }) {
         ) : (
           <div className="burst-body">
             {span === 1 ? (
-              <div className="burst-grid" style={layout(frames.length)}>
-                {first.photoIds.map((id, i) => PHOTO_BY_ID[id] && cell(PHOTO_BY_ID[id], first, i, frames.length <= 4 ? 'full' : 'thumb'))}
+              <div className="burst-grid" ref={fit.ref} style={fit.style} data-testid="survey-grid">
+                {first.photoIds.map((id, i) => PHOTO_BY_ID[id] && cell(PHOTO_BY_ID[id], first, i, fit.width > 420 ? 'full' : 'thumb'))}
               </div>
             ) : (
               <div className="moment-rows" data-testid="moment-rows" style={{ '--cols': Math.min(6, Math.max(3, ...shown.map((m) => m.photoIds.length))) } as React.CSSProperties}>
@@ -353,16 +375,16 @@ export function CullModeScreen({ start }: { start?: string }) {
                 </span>
                 <span className="grow" />
                 <Button size="sm" onClick={keep}>
-                  Keep {frames.some((p) => yourPick(p.id)) ? 'my Picks' : 'this frame'} <Kbd>↵</Kbd>
+                  Keep {frames.some((p) => yourPick(p.id)) ? 'my Picks' : 'this frame'}, reject the rest <Kbd>↵</Kbd>
                 </Button>
               </div>
             )}
           </div>
         )}
         <footer className="view-foot">
-          <span>{frames.length ? `${frames.length} frames · ${pickedCount} kept` : ''}</span>
+          <span>{frames.length ? `${frames.length} frames · ${pickedCount} kept · ${unflagged} unflagged in the Shoot` : ''}</span>
           <span className="grow" />
-          <Hints items={[['← →', 'Frame'], ['Z', 'Keep'], ['X', 'Reject'], ['↵', 'Keep & next'], ['⇧↓', 'Show next too'], [span > 1 ? '↑ ↓' : 'Tab', span > 1 ? 'Row' : 'Moment'], ['Space', 'Loupe'], ['Esc', 'Library']]} />
+          <Hints items={[['← →', 'Frame'], ['Z', 'Keep'], ['X', 'Reject'], ['↵', 'Keep, reject rest'], ['⇧↓', 'Show next too'], [span > 1 ? '↑ ↓' : 'Tab', span > 1 ? 'Row' : 'Moment'], ['Space', 'Loupe'], ['Esc', 'Library']]} />
         </footer>
       </div>
     </div>
