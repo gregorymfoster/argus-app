@@ -2,14 +2,14 @@
 // edit, each frame matched to its own light (engine `shoot_look_preview`, no model call). The
 // first pass reads each frame's light in small batches, so the strip fills in with a real
 // progress bar; after that a slider drag re-matches and redraws every tile, latest wins.
-// Lock look is `pre_edit_shoot` with `every`: a Shoot match ready to accept on every frame.
+// Edit's Apply look popover (ui/ApplyLook.tsx) draws it and applies it.
 
 import { useEffect, useRef, useState } from 'react';
 import { call } from './backend';
-import { LIVE, liveShootId } from './live';
+import { LIVE } from './live';
 import type { Recipe } from '../domain/types';
 
-export interface LookFrame {
+interface LookFrame {
   photo_id: number;
   /** Edited by hand (the hero among them): it shows its own edit. */
   anchor: boolean;
@@ -114,17 +114,4 @@ export function useShootLook(heroId: string, recipe: Recipe, ids: string[], on: 
   }, [heroId, json, key, on]);
 
   return out;
-}
-
-/** The frames worth editing by hand first, so the match learns the most (engine `suggest_heroes`). */
-export async function suggestHeroes(count = 3): Promise<string[]> {
-  if (!LIVE) return [];
-  const r = await call<{ heroes: { photo_id: number }[] }>('suggest_heroes', { shoot_id: liveShootId(), count });
-  return r.heroes.map((h) => String(h.photo_id));
-}
-
-/** Lock look: a Shoot match, ready to accept, for every frame of the Shoot that isn't a Reject. */
-export async function lockShootLook(): Promise<void> {
-  if (!LIVE) return;
-  await call('pre_edit_shoot', { shoot_id: liveShootId(), every: true });
 }

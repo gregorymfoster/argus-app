@@ -20,6 +20,8 @@ pub struct UndoReport {
     pub verdicts: Vec<PhotoId>,
     /// Photos whose star Rating went back.
     pub ratings: Vec<PhotoId>,
+    /// Photos whose Cull Round marks went back.
+    pub passes: Vec<PhotoId>,
     pub looks: usize,
 }
 
@@ -256,6 +258,7 @@ impl Library {
                 .map_err(db_err)?;
             ratings.push(photo);
         }
+        let passes = self.undo_pass_marks(batch, new_batch, author)?;
         let looks = self.undo_looks(batch, new_batch)?;
         Ok(UndoReport {
             undone: batch,
@@ -264,6 +267,7 @@ impl Library {
             recipes,
             verdicts,
             ratings,
+            passes,
             looks,
         })
     }

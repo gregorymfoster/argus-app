@@ -21,6 +21,8 @@ export interface MomentLog {
   ai_best_shown: boolean;
   outcome: 'some' | 'none' | 'all';
   merged_from?: string[][];
+  /** 1 the flag pass, 2 and on a Round over the Picks (GLOSSARY: Round). */
+  pass?: number;
 }
 
 /** Choices logged this session, newest last (the dummy Shoot keeps them here; tests read it). */

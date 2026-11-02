@@ -1,5 +1,5 @@
 // The Resource meter (engine/src/meter.rs): what the AI is taking from the Mac, as one
-// quiet line under Background work, and a panel with each group's CPU, memory, CPU power and
+// quiet item at the left of the Status bar, and a panel with each group's CPU, memory, CPU power and
 // GPU over the last 10 minutes and since launch (Greg, 2026-10-20).
 
 import { useState } from 'react';
@@ -99,7 +99,7 @@ function Spark({ values, max, w = 64, h = 14 }: { values: number[]; max: number;
 /** What a sparkline shows: GPU where the Mac reports it (a local model runs there), else CPU. */
 const metric = (m: Meter) => (m.energy ? (r: Rates) => r.gpu_pct ?? 0 : (r: Rates) => r.cpu_pct);
 
-/** One quiet line at the foot of the sidebar; opens the panel. */
+/** One quiet item at the left of the Status bar; opens the panel. */
 export function MeterLine() {
   const [open, setOpen] = useState(false);
   const m = useMeter(open);

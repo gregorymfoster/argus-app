@@ -53,7 +53,7 @@ impl Crop {
 
 /// Scale of the largest upright rectangle with the image's aspect ratio that fits inside
 /// the image turned by `angle` degrees.
-fn inscribed_scale(w: f64, h: f64, angle: f64) -> f64 {
+pub fn inscribed_scale(w: f64, h: f64, angle: f64) -> f64 {
     let (s, c) = angle.to_radians().abs().sin_cos();
     (w / (w * c + h * s)).min(h / (w * s + h * c))
 }

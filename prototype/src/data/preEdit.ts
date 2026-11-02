@@ -13,7 +13,7 @@ import { recipeOf, starsOf, verdictOf, type Action, type State } from '../store/
 import type { Suggestion } from '../domain/types';
 
 /** The engine's title for the take (`suggest::SHOOT_MATCH`). */
-export const SHOOT_MATCH = 'Shoot match';
+const SHOOT_MATCH = 'Shoot match';
 /** Unflagged frames rated this high count as likely keepers (`pre_edit::MIN_STARS`). */
 const MIN_STARS = 4;
 
@@ -82,10 +82,17 @@ export function acceptPreEdits(list: Suggestion[], dispatch: (a: Action) => void
     dispatch({ type: 'batch', label: what, actions: list.map((s) => ({ type: 'recipe/set', id: s.photoId, recipe: s.recipe, label: `Suggestion: ${s.title}`, by: 'ai' })) });
     return;
   }
-  void (list.length === 1 ? acceptSuggestion(list[0]) : acceptMany(list)).then(({ batch }) =>
-    toast(what, {
-      id: 'argus',
-      action: batch == null ? undefined : { label: 'Undo', onClick: () => void undoBatch(batch).then(() => window.dispatchEvent(new Event('argus:suggestions'))) },
-    }),
+  const refresh = () => window.dispatchEvent(new Event('argus:suggestions'));
+  const failed = (e: unknown) => {
+    toast(`Couldn't apply: ${String(e).replace(/^Error: /, '')}`, { id: 'argus' });
+    refresh();
+  };
+  void (list.length === 1 ? acceptSuggestion(list[0]) : acceptMany(list)).then(
+    ({ batch }) =>
+      toast(what, {
+        id: 'argus',
+        action: batch == null ? undefined : { label: 'Undo', onClick: () => void undoBatch(batch).then(refresh, failed) },
+      }),
+    failed,
   );
 }

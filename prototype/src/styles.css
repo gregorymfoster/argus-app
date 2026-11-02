@@ -155,7 +155,33 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* App frame */
-.app { display: flex; height: 100%; }
+.app { display: flex; flex-direction: column; height: 100%; }
+.app-main { flex: 1 1 auto; min-height: 0; display: flex; }
+/* The Status bar (ui/StatusBar.tsx): one 24px bar under every mode, like Cursor's. The AI meter
+   and running work on the left, the screen's footer in the middle, the update on the right. */
+.status-bar { height: 24px; flex: none; display: flex; align-items: center; padding: 0 4px; border-top: 1px solid var(--border); background: var(--bg); font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; }
+.sb-item { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: var(--text-3); font-size: 11px; flex: none; cursor: pointer; transition: background var(--fast), color var(--fast); }
+.sb-item:hover { background: var(--hover); color: var(--text); }
+.sb-item.live { color: var(--text-2); }
+.sb-icon { flex: none; color: var(--text-3); }
+.sb-icon.on { color: var(--accent); }
+.sb-label { overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 240px; }
+.sb-count, .sb-eta, .sb-more, .sb-version { flex: none; }
+.sb-eta, .sb-more, .sb-version { color: var(--text-3); }
+.sb-bar { width: 44px; flex: none; }
+.sb-sep { width: 1px; height: 12px; background: var(--border-strong); flex: none; margin: 0 3px; }
+.sb-update { color: var(--accent); flex: none; }
+.sb-update .sb-label { color: var(--text); }
+.status-bar .meter-line { width: auto; flex: none; margin: 0; padding: 0 6px; height: 20px; border-radius: 4px; color: var(--text-2); }
+.status-mid { flex: 1 1 auto; min-width: 0; height: 100%; display: flex; container-type: inline-size; }
+.status-foot { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 0 8px; height: 100%; overflow: hidden; white-space: nowrap; font-size: 11px; color: var(--text-3); }
+.status-mid > .status-foot { flex: 1 1 auto; min-width: 0; height: 100%; border-top: 0; padding: 0 8px; background: none; }
+/* Narrow windows: a footer's hints drop from the end (they wrap onto a hidden second line) and
+   its info line ellipsizes, so nothing spills past the bar. */
+.status-foot .hints, .status-foot .foot-keys { flex: 0 20 auto; min-width: 72px; flex-wrap: wrap; height: 24px; overflow: hidden; align-items: center; align-content: flex-start; row-gap: 0; }
+.status-foot .hints > *, .status-foot .foot-keys > * { height: 24px; }
+.status-foot > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1300px) { .sb-label { max-width: 150px; } .status-bar .sb-eta { display: none; } }
 .workspace { flex: 1 1 auto; min-width: 0; display: flex; gap: 0; padding: 0; }
 /* One flat surface split by hairlines (Cursor, Claude), not floating cards. */
 .workspace > .panel + .panel, .workspace > * + .panel { border-left: 1px solid var(--border); }
@@ -240,6 +266,9 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
    marks wait for the footer and the Loupe. Photo only also drops the caption row. */
 .grid-v.tiles-compact .cap-text:not(:only-child), .grid-v.tiles-compact .takes-badge, .grid-v.tiles-compact .ai-mark, .grid-v.tiles-compact .eye-badges, .grid-v.tiles-compact .best-badge { display: none; }
 .grid-v.tiles-photo figcaption, .grid-v.tiles-photo .takes-badge, .grid-v.tiles-photo .ai-mark, .grid-v.tiles-photo .eye-badges, .grid-v.tiles-photo .best-badge { display: none; }
+/* Cull Rounds: how far a Pick got stays visible on compact tiles, like its flag. */
+.grid-v.tiles-compact .best-badge.round-badge { display: inline-flex; }
+.best-badge.round-badge { color: var(--pick); }
 .best-badge { position: absolute; top: 8px; right: 8px; z-index: 2; display: inline-flex; align-items: center; gap: 2px; font-family: var(--mono); font-size: 10.5px; padding: 2px 5px; border-radius: 6px; background: rgba(13, 13, 14, 0.72); color: var(--shoot); backdrop-filter: blur(6px); }
 /* In the grid the corner marks are icons, like Lightroom's flags: the photo is the content. */
 .tile .chip, .tile .badge, .tile .best-badge, .tile .takes-badge { height: 18px; padding: 0 5px; border-radius: 4px; font-size: 10.5px; top: 5px; }
@@ -1109,21 +1138,31 @@ button.people-tile:hover { background: var(--hover); }
 .people-photo img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .people-foot { flex: none; }
 
-/* The Shoot look under the hero in Edit (canvas board SL-Look): the whole Shoot matched to it. */
-.look-strip { flex: none; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--panel); }
-.look-strip-head { display: flex; align-items: center; gap: 8px; height: var(--row-h); padding: 0 10px; font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; }
-.look-strip-head .faint { overflow: hidden; text-overflow: ellipsis; }
-.look-strip-title { color: var(--text); font-size: 11.5px; }
-.look-strip-bar { width: 240px; flex: none; }
-.look-check-count { color: var(--shoot); background: var(--chip); border-radius: 4px; padding: 1px 6px; }
-.look-strip-grid { display: grid; grid-template-rows: repeat(2, auto); grid-auto-flow: column; grid-auto-columns: 88px; gap: 4px; padding: 0 10px 8px; overflow-x: auto; scrollbar-width: none; }
-.look-tile { position: relative; aspect-ratio: 3/2; padding: 0; border: none; border-radius: 4px; overflow: hidden; background: var(--photo-well); cursor: default; }
-.look-tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.look-tile.hero { box-shadow: 0 0 0 1.5px var(--shoot); }
-.look-tile:hover:not(.hero) { box-shadow: 0 0 0 1px var(--border-hover); }
+/* Apply look to Shoot (ui/ApplyLook.tsx, canvas boards AL-Offer, AL-Popover, AL-Applied). */
+.apply-look-body { display: flex; flex-direction: column; max-height: min(640px, calc(100vh - 120px)); }
+.apply-look-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-bottom: 1px solid var(--border); white-space: nowrap; flex: none; }
+.apply-look-title { font-weight: 500; color: var(--text); }
+.apply-look-note { display: flex; align-items: center; gap: 8px; padding: 8px 12px 0; font-size: 11.5px; color: var(--text-3); white-space: nowrap; flex: none; }
+.apply-look-bar { width: 240px; flex: none; }
+.apply-look-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; padding: 10px 12px; overflow-y: auto; min-height: 0; }
+.apply-look-foot { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--text-3); white-space: nowrap; flex: none; }
+.apply-tile { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 0; border: none; background: none; text-align: left; cursor: pointer; }
+.apply-tile:disabled { cursor: default; }
+.apply-well { position: relative; display: block; aspect-ratio: 3/2; border-radius: 4px; overflow: hidden; background: var(--photo-well); transition: opacity var(--fast); }
+.apply-well img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.apply-tile.hero .apply-well { box-shadow: 0 0 0 1.5px var(--shoot); }
+.apply-tile:hover:not(:disabled) .apply-well { box-shadow: 0 0 0 1px var(--border-hover); }
+.apply-tile.off .apply-well { opacity: 0.35; }
+.apply-cap { font-size: 10px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apply-tick { position: absolute; top: 4px; left: 4px; width: 13px; height: 13px; border-radius: 4px; border: 1px solid var(--border-hover); background: var(--depth-out); display: flex; align-items: center; justify-content: center; color: var(--on-accent); }
+.apply-tick.on { background: var(--accent); border-color: var(--accent); }
+.apply-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.apply-offer { flex: none; margin: 8px 10px 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--accent); border-radius: 8px; background: var(--chip); font-size: 11.5px; animation: offer-in 220ms var(--ease-out) both; }
+.apply-offer-title { display: flex; align-items: center; gap: 6px; font-weight: 500; color: var(--text); font-size: 12px; }
+@keyframes offer-in { from { opacity: 0; transform: translateY(6px); } }
 .look-badge { position: absolute; left: 3px; bottom: 3px; display: inline-flex; align-items: center; gap: 3px; font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 4px; background: var(--depth-out); color: var(--text-2); }
 .look-badge.hero, .look-badge.check { color: var(--shoot); }
-.look-badge.next { color: var(--text); }
+.look-check-count { display: inline-flex; align-items: center; gap: 3px; color: var(--shoot); background: var(--chip); border-radius: 4px; padding: 1px 6px; }
 
 /* Motion that answers the person (ui/motion.tsx; docs/design.md, Feedback and motion). Each plays on a
    change the person just caused, never on mount, and the reduced-motion rule near the top stops it all. */

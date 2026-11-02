@@ -71,6 +71,28 @@ pub(super) fn specs() -> Vec<ToolSpec> {
             read_only: false,
         },
         ToolSpec {
+            name: "apply_shoot_look",
+            description: "Apply one Photo's edit (the hero, as saved) to other Photos of its Shoot, each matched to its own light and scene the way Greg's edits move within a Shoot (the Shoot match; no model call), as one undoable batch. Photos edited by hand and the hero itself are skipped, and every Photo keeps its own crop and spots. See shoot_look_preview (HTTP command) for how each will look first. Returns the batch, the Photos changed and the ones skipped with why.",
+            input_schema: json!({ "type": "object", "required": ["photo_id", "photo_ids"], "properties": {
+                "photo_id": { "type": "integer", "description": "The hero: the hand-edited RAW whose look to spread" },
+                "photo_ids": ids } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "propose_framing",
+            description: "Crop & straighten: what the AI would straighten and crop on each Photo, changing nothing. A straighten (0.7 to 3.5 degrees) only where the scene has a horizon over water or architecture to level by; with crop: true, also a punch-in at the Photo's own shape where the people sit loose in the frame, holding everyone whole (off by default: Greg rarely crops, and the AI's crops didn't match his). Photos already cropped or straightened are left alone. Returns each Photo's crop (as edit_recipe's crop: angle, x, y, w, h) and reasons, or why it was kept.",
+            input_schema: json!({ "type": "object", "required": ["photo_ids"], "properties": { "photo_ids": ids,
+                "crop": { "type": "boolean", "description": "Also propose punch-ins (default false: straighten only)" } } }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "apply_framing",
+            description: "Write propose_framing's crop and straighten on Photos, as one undoable batch, changing nothing else. Photos already cropped, and ones with nothing to propose, are skipped with why.",
+            input_schema: json!({ "type": "object", "required": ["photo_ids"], "properties": { "photo_ids": ids,
+                "crop": { "type": "boolean", "description": "Also apply punch-ins (default false: straighten only)" } } }),
+            read_only: false,
+        },
+        ToolSpec {
             name: "paste_settings",
             description: "Lightroom's Copy and Paste settings, and Sync settings: put groups of one Photo's settings on other Photos as one undoable batch, leaving their other settings as they are. A slider the source never moved is reset in a pasted group. Groups: wb, light, color, effects, detail, optics, calibration, retouch, masks, spots, crop; by default all but masks, spots and crop. When the source is under a different Look than a target, the target gets the settings as they render (Look included) and leaves its Look.",
             input_schema: json!({ "type": "object", "required": ["from", "photo_ids"], "properties": {
@@ -133,6 +155,39 @@ impl Tools {
             "sync_to_look" => {
                 let a: SyncToLook = parse(args)?;
                 sync_to_look(&mut lib, a, batch)
+            }
+            "apply_shoot_look" => {
+                let a: ApplyShootLook = parse(args)?;
+                let hero = find_photo(&lib, a.photo_id)?;
+                let batch = batch_or(&mut lib, batch, "Apply look to Shoot")?;
+                one(crate::shoot_look::apply(
+                    &mut lib,
+                    &hero,
+                    &a.photo_ids,
+                    batch,
+                )?)
+            }
+            "propose_framing" => {
+                let a: Framing = parse(args)?;
+                one(crate::framing::propose(&lib, &a.photo_ids, a.crop, None)?)
+            }
+            "apply_framing" => {
+                let a: Framing = parse(args)?;
+                let mut items = Vec::new();
+                let mut kept = Vec::new();
+                for f in crate::framing::propose(&lib, &a.photo_ids, a.crop, None)? {
+                    match f.crop {
+                        Some(c) => items.push((f.photo_id, c)),
+                        None => kept.push(crate::shoot_look::Skipped {
+                            photo_id: f.photo_id,
+                            why: f.kept.or(f.error).unwrap_or_default(),
+                        }),
+                    }
+                }
+                let batch = batch_or(&mut lib, batch, "Crop & straighten")?;
+                let mut done = crate::framing::apply(&mut lib, &items, batch)?;
+                done.skipped.extend(kept);
+                one(done)
             }
             "paste_settings" => paste_settings(&mut lib, parse(args)?, batch),
             other => Err(unknown_tool(other)),
@@ -456,4 +511,19 @@ struct PasteSettings {
 struct RemoveLook {
     shoot_id: ShootId,
     look_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Framing {
+    photo_ids: Vec<PhotoId>,
+    #[serde(default)]
+    crop: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplyShootLook {
+    photo_id: PhotoId,
+    photo_ids: Vec<PhotoId>,
 }

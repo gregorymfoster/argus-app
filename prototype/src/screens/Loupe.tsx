@@ -13,7 +13,7 @@ import { STAR_KEYS, Stars } from '../ui/Stars';
 import { LIVE, aiName, focusPhoto } from '../data/live';
 import { useSuggestionImage, useSuggestions } from '../data/suggestions';
 import { Kbd, Seg, VERDICT_KEYS, VERDICT_HOTKEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
-import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
+import { BackToGrid, Hints, ViewSwitch } from '../ui/ViewBar';
 import { Histogram } from '../ui/Histogram';
 import { toggleKeepers, useSort } from '../ui/Sort';
 import { useLearnAsYouCull } from '../data/learn';
@@ -69,6 +69,8 @@ export function LoupeScreen({ id }: { id: string }) {
     setSort(next);
   };
   const pos = order.indexOf(p.id);
+  // Keepers first re-orders the frames ahead while pos stays put, so the keys below follow the order itself.
+  const orderKey = order.join(',');
   // Edit as you cull: this frame's Shoot match, if one is waiting. \ previews it, A accepts.
   const pre = usePreEdits(state);
   const match = pre.byPhoto[p.id] ?? null;
@@ -77,7 +79,7 @@ export function LoupeScreen({ id }: { id: string }) {
   const matchUrl = useSuggestionImage(showMatch ? match : null, 1536);
   const nextKey = order.slice(pos + 1, pos + 4).join(',');
   useEffect(() => focusPhoto(p.id, nextKey ? nextKey.split(',') : []), [p.id, nextKey]);
-  // Lightroom's zoom: pinch, Z, click, Space-drag, ⌘+ / ⌘−; it stays on for the next photo.
+  // Lightroom's zoom: pinch, tap Space, click, Space-drag, ⌘+ / ⌘−; it stays on for the next photo.
   const zp = useZoomPan({ photoKey: p.id, natural: longEdge(p) });
   const zoomed = useZoomed(zp.z);
   const need = useNeed(zp.z);
@@ -138,14 +140,14 @@ export function LoupeScreen({ id }: { id: string }) {
       askRemove({ photos: [p.id], after: () => go(next ? { name: 'loupe', id: next } : { name: 'cull' }) });
     },
     { preventDefault: true },
-    [p.id, pos],
+    [p.id, pos, orderKey],
   );
-  useHotkeys('right', () => move(1), [pos]);
-  useHotkeys('left', () => move(-1), [pos]);
+  useHotkeys('right', () => move(1), [pos, orderKey]);
+  useHotkeys('left', () => move(-1), [pos, orderKey]);
   useHotkeys('escape', () => go(takeBack() ?? { name: 'cull' }), ESC_OUTSIDE_DIALOGS);
   useHotkeys('g', () => (takeBack(), go({ name: 'cull' })));
-  useHotkeys(VERDICT_HOTKEYS, (e) => set(VERDICT_KEYS[e.key.toLowerCase()]), [p.id, pos]);
-  useHotkeys(STAR_KEYS, (e) => rate(Number(e.key)), [p.id, pos]);
+  useHotkeys(VERDICT_HOTKEYS, (e) => set(VERDICT_KEYS[e.key.toLowerCase()]), [p.id, pos, orderKey]);
+  useHotkeys(STAR_KEYS, (e) => rate(Number(e.key)), [p.id, pos, orderKey]);
   useHotkeys('f', () => setFaces((f) => !f));
   // On a frame with a Shoot match waiting, \ swaps between it and the frame as it is.
   useHotkeys('backslash', () => (match ? setShowMatch((b) => !b) : setBefore((b) => !b)), [match]);
@@ -171,7 +173,6 @@ export function LoupeScreen({ id }: { id: string }) {
           </Button>
         </Tip>
         <ViewSwitch view="loupe" id={p.id} compareIds={stackIds} />
-        <QueueMeter />
       </header>
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -292,13 +293,13 @@ export function LoupeScreen({ id }: { id: string }) {
 function FlagSeg({ v, onSet }: { v: Verdict | null; onSet: (v: Verdict) => void }) {
   return (
     <span className="flag-seg" role="group" aria-label="Flag">
-      <button className={v === 'pick' ? 'on pick' : 'pick'} aria-pressed={v === 'pick'} onClick={() => onSet(v === 'pick' ? 'unflagged' : 'pick')}>
+      <button className={v === 'pick' ? 'on pick' : 'pick'} aria-pressed={v === 'pick'} onClick={() => onSet('pick')}>
         <Flag size={11} strokeWidth={2} fill={v === 'pick' ? 'currentColor' : 'none'} /> Pick <Kbd>Z</Kbd>
       </button>
       <button className={!v || v === 'unflagged' ? 'on' : ''} aria-pressed={!v || v === 'unflagged'} onClick={() => onSet('unflagged')}>
         Clear <Kbd>U</Kbd>
       </button>
-      <button className={v === 'reject' ? 'on reject' : 'reject'} aria-pressed={v === 'reject'} onClick={() => onSet(v === 'reject' ? 'unflagged' : 'reject')}>
+      <button className={v === 'reject' ? 'on reject' : 'reject'} aria-pressed={v === 'reject'} onClick={() => onSet('reject')}>
         <X size={11} strokeWidth={2.4} /> Reject <Kbd>X</Kbd>
       </button>
     </span>

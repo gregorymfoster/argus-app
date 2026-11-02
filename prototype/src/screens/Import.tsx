@@ -322,6 +322,7 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
       <DialogContent
         className="import-v2 top-[6vh] h-[min(830px,88vh)] w-[min(1200px,calc(100%-48px))] gap-0 p-0"
         closable={false}
+        ownKeys
         data-testid="import-dialog"
         onPointerDownOutside={(e) => e.preventDefault()}
         onInteractOutside={(e) => e.preventDefault()}

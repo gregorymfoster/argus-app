@@ -696,11 +696,26 @@ fn a_silent_request_still_sends_a_heartbeat() {
     assert_eq!(seen[0].stage(), "Reading the photos");
 }
 
-/// Reads like a local model: silent for a while, at a known pace per Photo.
-struct Reader;
+/// Reads like a local model: silent, at a known pace per Photo, until the bar has moved
+/// (or 20 s pass). Waiting on the bar rather than a fixed sleep keeps the test true on a
+/// loaded machine whose 50 ms heartbeat runs late, or after another cull in this process
+/// measured a slower pace.
+struct Reader(std::sync::Mutex<bool>, std::sync::Condvar);
 impl Provider for Reader {
     fn cull(&self, sheet: &ContactSheet) -> argus_engine::Result<CullResult> {
-        Slow.cull(sheet)
+        let moved = self.0.lock().unwrap();
+        let _ = self
+            .1
+            .wait_timeout_while(moved, std::time::Duration::from_secs(20), |m| !*m)
+            .unwrap();
+        Ok(CullResult {
+            summary: String::new(),
+            photos: sheet
+                .photos
+                .iter()
+                .map(|p| photo(p.n, Verdict::Pick, "", None, None))
+                .collect(),
+        })
     }
     fn read_pace(&self) -> Option<f64> {
         Some(0.02)
@@ -712,7 +727,12 @@ fn the_bar_moves_while_the_model_reads_the_sheet() {
     std::env::set_var("ARGUS_CULL_HEARTBEAT_MS", "50");
     let (_tmp, mut lib, shoot) = library_with(10);
     let seen = std::sync::Mutex::new(vec![]);
-    cull_shoot_with(&mut lib, shoot, &Reader, 100, &|p| {
+    let reader = Reader(Default::default(), Default::default());
+    cull_shoot_with(&mut lib, shoot, &reader, 100, &|p| {
+        if p.done == 0 && p.tokens == 0 && p.bar().0 > 0 {
+            *reader.0.lock().unwrap() = true;
+            reader.1.notify_all();
+        }
         seen.lock().unwrap().push(p)
     })
     .unwrap();

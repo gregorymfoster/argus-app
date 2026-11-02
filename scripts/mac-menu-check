@@ -12,7 +12,7 @@
 # Privacy & Security › Accessibility, once. Without it every check fails with error -1719
 # or -25211 and the script says so. Nothing touches Greg's own Library or settings.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 2
 [ "$(uname)" = Darwin ] || { echo "mac-menu-check: macOS only"; exit 2; }
 
 app="${1:-}"
@@ -22,20 +22,21 @@ done
 [ -x "$app/Contents/MacOS/argus-app" ] || { echo "mac-menu-check: no Argus.app found (pass one)"; exit 2; }
 raws="${2:-}"
 [ -n "$raws" ] || for d in fixtures/raw-a7rv fixtures/raw; do ls "$d"/*.ARW >/dev/null 2>&1 && { raws=$d; break; }; done
+ls "$raws"/*.ARW >/dev/null 2>&1 || { echo "mac-menu-check: no .ARW files in ${raws:-fixtures/raw-a7rv or fixtures/raw} (pass a raw-folder)"; exit 2; }
 argus=${ARGUS_BIN:-target/fast/argus}
 [ -x "$argus" ] || { echo "mac-menu-check: build the CLI first (cargo build --profile fast -p argus-cli)"; exit 2; }
 
 tmp=$(mktemp -d /tmp/argus-menu-XXXX)
 lib="$tmp/lib"
 mkdir -p "$tmp/card"
-for f in $(ls "$raws"/*.ARW | head -2); do cp "$f" "$tmp/card/"; done
+for f in $(ls "$raws"/*.ARW | head -2); do cp "$f" "$tmp/card/"; done # ls: RAW names never hold spaces
 scripts/timeout 300 "$argus" import "$tmp/card" --library "$lib" --camera-previews >/dev/null || { echo "mac-menu-check: import failed"; exit 1; }
 
 fails=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fails=$((fails + 1)); }
 as() { scripts/timeout 30 osascript -e "$1" 2>&1; }
-verdicts() { "$argus" list --library "$lib" --photos | python3 -c 'import json,sys; print(",".join(str(p.get("verdict")) for p in json.load(sys.stdin)))'; }
+verdicts() { scripts/timeout 30 "$argus" list --library "$lib" --photos | python3 -c 'import json,sys; print(",".join(str(p.get("verdict")) for p in json.load(sys.stdin)))'; }
 
 # Its own config and Library, idle Queue, so nothing it does lands anywhere real.
 ARGUS_CONFIG="$tmp/config" ARGUS_LIBRARY="$lib" ARGUS_QUEUE=off "$app/Contents/MacOS/argus-app" >"$tmp/app.log" 2>&1 &

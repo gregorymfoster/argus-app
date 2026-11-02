@@ -28,6 +28,12 @@ export function eta(seconds: number | null | undefined): string | null {
   return m ? `~${h} h ${m} min` : `~${h} h`;
 }
 
+/** "~3 min left", "a few seconds left": `eta` as the end of a status line. */
+export function etaLeft(seconds: number | null | undefined): string | null {
+  const t = eta(seconds);
+  return t && `${t} left`;
+}
+
 /**
  * One progress row, the same everywhere the app waits (Greg, 2026-10-21): what it's doing on
  * the left (one line, ellipsized), "3 of 266 · ~2 h 34 min" on the right in tabular figures,
@@ -39,8 +45,7 @@ export function eta(seconds: number | null | undefined): string | null {
 export function ProgressBar({ label, done, total, eta: left, testId, count = true, onCancel }: { label: string; done?: number; total?: number; eta?: number | null; testId?: string; count?: boolean; onCancel?: () => void }) {
   const known = total != null && total > 0 && done != null;
   const pct = known ? Math.min(100, (done! / total!) * 100) : 0;
-  const leftText = eta(left);
-  const meta = [known && count ? `${done} of ${total}` : '', leftText ? `${leftText}${leftText === 'a few seconds' ? '' : ' left'}` : ''].filter(Boolean).join(' · ');
+  const meta = [known && count ? `${done} of ${total}` : '', eta(left) === 'a few seconds' ? 'a few seconds' : (etaLeft(left) ?? '')].filter(Boolean).join(' · ');
   return (
     <div className="progress" role="progressbar" aria-label={label} aria-valuenow={known ? Math.round(pct) : undefined} aria-valuemin={0} aria-valuemax={100} data-testid={testId}>
       <div className="progress-head">

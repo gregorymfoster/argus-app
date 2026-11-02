@@ -4,7 +4,7 @@
 // screenshots.
 
 import { useEffect, useState } from 'react';
-import { IN_APP } from './backend';
+import { IN_APP, onAppEvent } from './backend';
 
 export interface UpdateStatus {
   state: 'off' | 'idle' | 'checking' | 'downloading' | 'ready' | 'current' | 'error';
@@ -19,7 +19,7 @@ export interface UpdateStatus {
 
 const fake = new URLSearchParams(location.search).get('update') as UpdateStatus['state'] | null;
 const FAKE: UpdateStatus | null = fake
-  ? { state: fake, current: '0.1.1', version: fake === 'ready' || fake === 'downloading' ? '0.1.2' : null, notes: 'Design pass v2: Import, Cull grid and background work.\nRestart to update from the sidebar.', done: 18e6, total: 41e6, checked_at: Date.now() / 1000 - 120, error: null }
+  ? { state: fake, current: '0.1.1', version: fake === 'ready' || fake === 'downloading' ? '0.1.2' : null, notes: 'Design pass v2: Import, Cull grid and background work.\nRestart to update from the Status bar.', done: 18e6, total: 41e6, checked_at: Date.now() / 1000 - 120, error: null }
   : null;
 
 let status: UpdateStatus | null = FAKE;
@@ -38,10 +38,12 @@ let started = false;
 function start() {
   if (started || !IN_APP || FAKE) return;
   started = true;
-  void tauri().then(async ({ invoke, listen }) => {
-    await listen<UpdateStatus>('update', (e) => publish(e.payload));
-    publish(await invoke<UpdateStatus>('update_status'));
-  });
+  void tauri()
+    .then(async ({ invoke, listen }) => {
+      await listen<UpdateStatus>('update', (e) => publish(e.payload));
+      publish(await invoke<UpdateStatus>('update_status'));
+    })
+    .catch((e) => console.warn('update status:', e));
 }
 
 /** Where updates stand; null in a browser. */
@@ -76,19 +78,7 @@ export async function restartToUpdate(): Promise<void> {
 
 /** Run `f` when the app menu's Check for Updates… is chosen. */
 export function onMenuCheck(f: () => void): () => void {
-  if (!IN_APP) return () => {};
-  let off = () => {};
-  let gone = false;
-  void tauri().then(({ listen }) =>
-    listen('check-updates', f).then((u) => {
-      if (gone) u();
-      else off = u;
-    }),
-  );
-  return () => {
-    gone = true;
-    off();
-  };
+  return onAppEvent('check-updates', () => f());
 }
 
 /** "2 min ago" for a Unix time in seconds. */

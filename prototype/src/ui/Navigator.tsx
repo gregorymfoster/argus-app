@@ -1,7 +1,7 @@
 // Lightroom's Navigator (a mini-map of the photo with the visible area boxed, Fit / Fill /
 // 50 / 100 / 200 across its head) and the zoom readout on the stage.
 
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   DropdownMenu,
@@ -49,8 +49,24 @@ export function Navigator({
   };
   const at = current(z, v.s);
   const box = useRef<HTMLDivElement>(null);
+  // The photo inside the map: a portrait is narrower than the map and centred in it, so the
+  // view box and a seek go by the photo's own rectangle, not the map's.
+  const shown = () => box.current?.querySelector<HTMLElement>(".photo") ?? box.current;
+  const [frame, setFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const ph = box.current?.querySelector<HTMLElement>(".photo") ?? box.current;
+    if (!open || !ph) return setFrame(null);
+    const measure = () => {
+      const own = ph !== box.current;
+      setFrame({ x: own ? ph.offsetLeft : 0, y: own ? ph.offsetTop : 0, w: ph.offsetWidth, h: ph.offsetHeight });
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(ph);
+    measure();
+    return () => ro.disconnect();
+  }, [open]);
   const seek = (e: React.PointerEvent) => {
-    const b = box.current!.getBoundingClientRect();
+    const b = shown()!.getBoundingClientRect();
     z.centerOn(
       Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)),
       Math.min(1, Math.max(0, (e.clientY - b.top) / b.height)),
@@ -86,15 +102,15 @@ export function Navigator({
           onPointerMove={(e) => e.buttons === 1 && seek(e)}
         >
           {children}
-          {v.s > 1.001 && (
+          {v.s > 1.001 && frame && (
             <span
               className="nav-view"
               data-testid="nav-view"
               style={{
-                left: `${v.rel.x * 100}%`,
-                top: `${v.rel.y * 100}%`,
-                width: `${v.rel.w * 100}%`,
-                height: `${v.rel.h * 100}%`,
+                left: frame.x + v.rel.x * frame.w,
+                top: frame.y + v.rel.y * frame.h,
+                width: v.rel.w * frame.w,
+                height: v.rel.h * frame.h,
               }}
             />
           )}
@@ -116,7 +132,7 @@ export function ZoomReadout({ z, loading }: { z: ZoomPan; loading?: boolean }) {
         <button
           className={`zoom-readout ${v.s > 1.001 ? "in" : ""}`}
           data-testid="zoom-readout"
-          title="Zoom (Z, ⌘+ / ⌘−, pinch)"
+          title="Zoom (Space, click, ⌘+ / ⌘−, pinch)"
         >
           <span className="mono">{text}</span>
           {loading && (

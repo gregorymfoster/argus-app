@@ -482,6 +482,23 @@ await check('smoke-loupe-flag-then-esc-and-fast-keys', async () => {
   await ctx.close();
 });
 
+await check('smoke-keys-stay-in-dialogs', async () => {
+  // X pressed while ⌘E Export is open over Cull mode must not Reject the frame behind it.
+  const { p, ctx } = await page('#/cull');
+  await p.keyboard.press('ControlOrMeta+2');
+  await p.getByTestId('bursts').waitFor();
+  const verdicts = () => p.locator('[data-testid^="burst-"][data-verdict]').evaluateAll((els) => els.map((e) => e.dataset.verdict).join());
+  const before = await verdicts();
+  await p.keyboard.press('Meta+e');
+  await p.getByRole('dialog').waitFor();
+  await p.keyboard.press('x');
+  await p.waitForTimeout(300);
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(300);
+  if ((await verdicts()) !== before) throw new Error('X behind the Export dialog flagged a frame');
+  await ctx.close();
+});
+
 const stars = (p, i) => p.locator('.tile').nth(i).locator('.stars').first();
 
 await check('smoke-star-keys-confirm-and-advance', async () => {
@@ -537,14 +554,18 @@ await check('smoke-sort-by-stars', async () => {
   await ctx.close();
 });
 
-await check('smoke-flag-click-toggle', async () => {
+// Flags stick (Greg, 2026-11-01): Pick on a Pick keeps it; only U clears.
+await check('smoke-flag-click-sticks', async () => {
   const { p, ctx } = await page('#/cull');
   const tile = p.locator('.tile').nth(3);
   await tile.hover();
   await tile.getByRole('button', { name: 'Pick' }).click();
   if ((await tile.getAttribute('data-verdict')) !== 'pick') throw new Error('click Pick did not pick');
   await tile.getByRole('button', { name: 'Pick' }).click();
-  if ((await tile.getAttribute('data-verdict')) !== 'unflagged') throw new Error('second click did not clear');
+  if ((await tile.getAttribute('data-verdict')) !== 'pick') throw new Error('a second click on Pick cleared it');
+  await tile.click();
+  await p.keyboard.press('u');
+  if ((await tile.getAttribute('data-verdict')) !== 'unflagged') throw new Error('U did not clear');
   await ctx.close();
 });
 
@@ -666,7 +687,9 @@ await check('smoke-cull-merge', async () => {
   await p.keyboard.press('Shift+M');
   await p.waitForTimeout(300);
   if (await p.locator('.moment-band').count()) throw new Error('merge should leave one Stack');
-  if ((await p.locator('.burst-cell').count()) !== n) throw new Error(`merged Stack has ${await p.locator('.burst-cell').count()} frames, want ${n}`);
+  // A big merged Stack may come in pages: count its frames from the footer.
+  const merged = Number(((await p.locator('.view-foot').textContent()) ?? '').match(/(\d+) frames/)?.[1]);
+  if (merged !== n) throw new Error(`merged Stack has ${merged} frames, want ${n}`);
   await ctx.close();
 });
 
@@ -724,8 +747,122 @@ await check('smoke-cull-flags-every-photo', async () => {
   if (!/^(Single|Stack) 1 of/.test(await p.locator('.view-file').textContent())) throw new Error(`Go to next opened ${await p.locator('.view-file').textContent()}`);
   // Leaving with Photos unflagged says how many.
   await p.keyboard.press('Escape');
-  const toast = await p.locator('[data-sonner-toast]').first().textContent({ timeout: 3000 }).catch(() => '');
-  if (!/still unflagged/.test(toast ?? '')) throw new Error(`no unflagged warning on leaving: ${toast}`);
+  // Enter's own "Kept 0, rejected 3" toast may still be up, so look for the warning among them all.
+  const warned = await p.locator('[data-sonner-toast]', { hasText: 'still unflagged' }).first().waitFor({ timeout: 3000 }).then(() => true, () => false);
+  if (!warned) throw new Error(`no unflagged warning on leaving: ${await p.locator('[data-sonner-toast]').allTextContents()}`);
+  await ctx.close();
+});
+
+// Big Stacks come in pages sized to the screen, then a final look at the Picks (Greg, 2026-11-01).
+await check('smoke-cull-big-stack-pages', async () => {
+  const { p, ctx } = await page('#/moments', '', 1.7);
+  const grid = p.getByTestId('survey-grid');
+  for (let i = 0; i < 40 && !((await p.locator('.view-file').textContent()) ?? '').includes('page 1 of'); i++) await p.keyboard.press('Tab');
+  const title = (await p.locator('.view-file').textContent()) ?? '';
+  const pagesN = Number(await grid.getAttribute('data-pages'));
+  if (!(pagesN > 1)) throw new Error(`no Stack was paged on a small window (${title})`);
+  // Keep the first frame of every page; each ↵ settles a page and turns to the next.
+  for (let k = 0; k < pagesN; k++) {
+    await p.keyboard.press('z');
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(150);
+  }
+  if ((await grid.getAttribute('data-page')) !== 'finals') throw new Error(`no final look after the last page (${await p.locator('.view-file').textContent()})`);
+  if ((await p.locator('.burst-cell').count()) !== pagesN) throw new Error(`final look shows ${await p.locator('.burst-cell').count()} frames, wanted ${pagesN}`);
+  // Drop one in the final look; ↵ ends the moment.
+  await p.keyboard.press('x');
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(200);
+  if ((await p.locator('.view-file').textContent()) === title) throw new Error('the moment did not end');
+  const name = title.split(' of ')[0];
+  const row = p.getByTestId('moment-rail').locator('.moment-row').filter({ has: p.locator('.trunc', { hasText: new RegExp(`^${name}$`) }) }).first();
+  const state = (await row.locator('.moment-state').textContent())?.trim();
+  if (state !== `kept ${pagesN - 1}`) throw new Error(`${name} reads "${state}" in the rail, wanted kept ${pagesN - 1} and every other frame rejected`);
+  await ctx.close();
+});
+
+// Repeat Cull passes (Greg, 2026-11-01: "I like recursive culling passes"): once every Photo is
+// flagged, Round 2 restacks the Picks; Z keeps, X cuts, and the Library shows how far each got.
+await check('smoke-cull-round-two', async () => {
+  const { p, ctx } = await page('#/moments');
+  const done = p.getByTestId('bursts-done');
+  // Pass 1: ↵ on every moment keeps its best frame (a Stack) or cuts a run of singles.
+  for (let i = 0; i < 300 && !(await done.count()); i++) {
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(40);
+  }
+  if (!(await done.count())) throw new Error('pass 1 never finished');
+  await p.getByTestId('next-round').click();
+  await p.waitForTimeout(300);
+  const title = async () => (await p.locator('.view-file').textContent()) ?? '';
+  if (!(await title()).startsWith('Round 2 · ')) throw new Error(`Round 2 did not open: "${await title()}"`);
+  if (!(await p.evaluate(() => location.hash)).startsWith('#/round/2')) throw new Error(`Round 2 is not in the URL: ${await p.evaluate(() => location.hash)}`);
+  const pool = (await p.locator('.moment-row .moment-state').allTextContents()).reduce((a, c) => a + Number(c), 0);
+  if (!(pool >= 2)) throw new Error(`Round 2 holds ${pool} Photos`);
+  // Keep the first frame; cut everything else.
+  await p.keyboard.press('z');
+  await p.keyboard.press('Enter');
+  await p.waitForTimeout(80);
+  let enters = 2; // Undo steps: the Z, then its ↵
+  for (let i = 0; i < 200 && !(await done.count()); i++) {
+    await p.keyboard.press('x');
+    await p.keyboard.press('Enter');
+    await p.waitForTimeout(40);
+    enters += 2; // the X and its ↵
+  }
+  const said = (await done.textContent()) ?? '';
+  if (!said.includes('Round 2 done: 1 of')) throw new Error(`done screen reads "${said}"`);
+  // A cut stays a Pick: the Library still counts every Pick, and one Photo wears R2.
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(400);
+  const badges = async () => p.getByTestId('round-badge').count();
+  if ((await badges()) !== 1) throw new Error(`${await badges()} R2 badges in the Library, wanted 1`);
+  await p.getByTestId('stars-filter').click();
+  await p.getByTestId('round-filter-2').click();
+  await p.waitForTimeout(200);
+  if ((await p.locator('.grid-v figure.tile').count()) !== 1) throw new Error(`Round 2 filter shows ${await p.locator('.grid-v figure.tile').count()} Photos`);
+  await p.getByTestId('stars-filter').click();
+  await p.getByTestId('round-filter-0').click();
+  // Undo every Round 2 ↵: no Photo is past Round 1 again.
+  await p.waitForTimeout(200);
+  const trail = [];
+  for (let i = 0; i < enters; i++) {
+    await p.keyboard.press('Control+z');
+    await p.waitForTimeout(30);
+    trail.push(`${await badges()}:${(await p.locator('[data-sonner-toast]').last().textContent().catch(() => ''))?.slice(0, 40)}`);
+  }
+  await p.waitForTimeout(300);
+  if (await badges()) throw new Error(`Undo left ${await badges()} R2 badges after ${enters}: ${trail.slice(-4).join(' | ')}`);
+  await ctx.close();
+});
+
+// ← → move through the Photos in Edit, also right after dragging a slider or clicking the rail
+// (Greg, 2026-11-01: "its not letting me arrow key through the photos").
+await check('smoke-edit-arrow-keys', async () => {
+  const { p, ctx } = await page('#/edit/p15');
+  await p.getByTestId('edit-stage').waitFor();
+  const at = () => p.evaluate(() => location.hash);
+  const start = await at();
+  await p.keyboard.press('ArrowRight');
+  await p.waitForTimeout(300);
+  const second = await at();
+  if (second === start) throw new Error('→ did not move to the next Photo');
+  const slider = p.getByRole('slider', { name: 'Exposure' }).first();
+  const box = await slider.locator('xpath=ancestor::*[contains(@class, "slider-root")][1]').boundingBox();
+  await p.mouse.click(box.x + box.width * 0.8, box.y + box.height / 2);
+  const before = await slider.getAttribute('aria-valuenow');
+  await p.keyboard.press('ArrowRight');
+  await p.waitForTimeout(300);
+  if ((await at()) === second) throw new Error('→ after dragging a slider did not move on');
+  await p.keyboard.press('ArrowLeft');
+  await p.waitForTimeout(300);
+  if ((await at()) !== second) throw new Error(`← went to ${await at()}, wanted ${second}`);
+  if ((await p.getByRole('slider', { name: 'Exposure' }).first().getAttribute('aria-valuenow')) !== before) throw new Error('the arrow also moved the slider');
+  // A slider reached with the keyboard keeps its arrows.
+  await p.getByRole('slider', { name: 'Exposure' }).first().focus();
+  await p.keyboard.press('ArrowRight');
+  await p.waitForTimeout(300);
+  if ((await at()) !== second) throw new Error('→ on a keyboard-focused slider changed Photo');
   await ctx.close();
 });
 
@@ -1018,7 +1155,7 @@ await check('smoke-import-path-no-spaces', async () => {
 
 await check('smoke-queue-drag-reorders', async () => {
   const { p, ctx } = await page('#/cull');
-  await p.locator('.sidebar [data-testid="queue-progress"]').first().click();
+  await p.locator('[data-testid="status-bar"] [data-testid="queue-progress"]').first().click();
   await p.getByTestId('queue-popover').waitFor();
   const labels = () => p.getByTestId('queue-jobs').locator('.job-label').allTextContents();
   const before = await labels();
@@ -1036,15 +1173,35 @@ await check('smoke-queue-drag-reorders', async () => {
 
 await check('smoke-meter-shows-ai-usage', async () => {
   const { p, ctx } = await page('#/cull');
-  const line = p.locator('.sidebar [data-testid="meter"]');
+  const line = p.locator('[data-testid="status-bar"] [data-testid="meter"]');
   const text = await line.innerText();
   if (!/AI [\d.]+% · GPU [\d.]+%/.test(text)) throw new Error(`meter line reads "${text}"`);
-  await p.screenshot({ path: `${out}16-meter-line.png`, clip: { x: 0, y: 900 - 150, width: 260, height: 150 } });
+  await p.screenshot({ path: `${out}16-meter-line.png`, clip: { x: 0, y: 900 - 60, width: 720, height: 60 } });
   await line.click();
   await p.getByTestId('meter-panel').waitFor();
   const model = await p.getByTestId('meter-local_model').innerText();
   if (!/GB/.test(model)) throw new Error(`local model row reads "${model}"`);
   await p.screenshot({ path: `${out}16-meter-panel.png` });
+  await ctx.close();
+});
+
+// One Status bar in every mode (Greg, 2026-11-01): the AI meter and the Queue always sit at
+// its left, and each screen's own footer sits in its middle instead of a second bar.
+await check('smoke-status-bar-every-mode', async () => {
+  const { p, ctx } = await page('#/cull');
+  for (const [mode, hash, foot] of [['Library', '#/cull', /Pick/], ['Cull', '#/moments', /Keep/], ['Edit', '#/edit/p3', null], ['Export', '#/export', /Leave out/], ['Loupe', '#/loupe/p3', null]]) {
+    await p.evaluate((h) => (location.hash = h), hash);
+    await p.waitForTimeout(600);
+    const bar = p.getByTestId('status-bar');
+    if ((await bar.count()) !== 1) throw new Error(`${mode}: ${await bar.count()} Status bars`);
+    if (!(await bar.getByTestId('meter').isVisible())) throw new Error(`${mode}: no AI meter in the Status bar`);
+    if (!(await bar.getByTestId('queue-progress').isVisible())) throw new Error(`${mode}: no Background work in the Status bar`);
+    const box = await bar.boundingBox();
+    if (Math.round(box.y + box.height) !== 900 || box.x !== 0 || box.width !== 1440) throw new Error(`${mode}: the Status bar isn't across the window bottom (${JSON.stringify(box)})`);
+    if (foot && !foot.test(await bar.locator('.status-mid').innerText())) throw new Error(`${mode}: the screen's footer isn't in the Status bar`);
+    if (await p.locator('footer.view-foot, footer.panel-foot').count()) throw new Error(`${mode}: a second footer bar`);
+    await p.screenshot({ path: `${out}16-status-${mode.toLowerCase()}.png`, clip: { x: 0, y: 900 - 60, width: 1440, height: 60 } });
+  }
   await ctx.close();
 });
 
@@ -1141,6 +1298,7 @@ await check('smoke-restart-to-update', async () => {
   await d.goto(`${base}?update=downloading#/cull`);
   await d.getByText('Argus 0.1.2 is downloading').waitFor();
   if (await d.getByTestId('update-restart').count()) throw new Error('Restart to update shows before the download is done');
+  if (!/Downloading 0\.1\.2/.test(await d.getByTestId('status-update').innerText())) throw new Error('the Status bar does not say the update is downloading');
   await d.screenshot({ path: `${out}/15-update-downloading.png` });
   await c3.close();
 });

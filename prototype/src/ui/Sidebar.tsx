@@ -5,16 +5,13 @@ import { LIVE, inCollection, openShoot, openShootToExport } from '../data/live';
 import { ShootItem } from './ShootItem';
 import { useLibrary, verdictOf } from '../store/library';
 import { go, type Route } from '../router';
-import { QueueProgress } from './Queue';
-import { MeterLine } from './Meter';
-import { UpdateButton } from './Updates';
 import { AlbumList } from './Search';
 import { useNamedCount } from '../data/people';
 import { Tick } from './motion';
 
 /**
  * The Library sidebar (Design pass v2): search, the Library's views, every Shoot newest
- * first with the open one marked, and the background work at the foot. Import sits at the top,
+ * first with the open one marked. Background work, the AI meter and updates live in the Status bar. Import sits at the top,
  * where modern Lightroom keeps its + (Design v3, 2026-10-20).
  * Views of one Shoot (grid, loupe, compare, edit) live in the Cull header instead.
  */
@@ -97,12 +94,6 @@ export function Sidebar({ route, onPalette, onExport, onAuto, onCull }: { route:
             />
           ),
         )}
-      </div>
-      <span className="grow" />
-      <div className="sidebar-foot">
-        <UpdateButton />
-        <QueueProgress />
-        <MeterLine />
       </div>
     </nav>
   );

@@ -38,6 +38,8 @@ export interface SortFacts {
   verdict: (id: string) => Verdict | null;
   /** Keepers first: each Photo's place in the held order (lower first). */
   keeper?: (id: string) => number;
+  /** Cull Round reached (domain/rounds.ts): a Stack leads with the Pick that went furthest. */
+  round?: (id: string) => number;
 }
 
 /** `photos` in `sort` order. `stacks` keeps each Stack together behind its best frame. */
@@ -54,7 +56,7 @@ export function sortPhotos(photos: Photo[], sort: Sort, facts: SortFacts, stacks
             ? (facts.keeper?.(p.id) ?? p.index)
             : p.index;
   // Each Stack sorts by the frame it shows collapsed: its best Pick, else its best frame.
-  const leadRank = (p: Photo) => (facts.verdict(p.id) === 'pick' ? -100 : 0) + (p.stackRank ?? 0);
+  const leadRank = (p: Photo) => (facts.verdict(p.id) === 'pick' ? -100 * (1 + (facts.round?.(p.id) ?? 1)) : 0) + (p.stackRank ?? 0);
   const lead = new Map<string, Photo>();
   if (stacks)
     for (const p of photos) {

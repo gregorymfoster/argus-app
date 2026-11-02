@@ -284,27 +284,6 @@ export async function cancelTakes(photoId: string, job: TakesJob): Promise<void>
   progressChanged(photoId);
 }
 
-/** "Apply to the rest": the Hero Photo's look becomes a Look, the others get matched takes. */
-export async function applyToRest(hero: string, heroRecipe: Recipe): Promise<number> {
-  if (LIVE) {
-    await call('match_to_photo', { photo_id: Number(hero), provider: chosenProvider() });
-    return PHOTOS.length - 1;
-  }
-  const file = PHOTO_BY_ID[hero]?.file.replace(/\.\w+$/, '') ?? hero;
-  let n = 0;
-  for (const p of PHOTOS) {
-    if (p.id === hero) continue;
-    const under = p.signals.exposure < -0.3;
-    dummyMatched[p.id] = [
-      { id: `m${p.id}-1`, photoId: p.id, rank: 1, title: `Match ${file}`, why: under ? 'Your look, brighter to match this light.' : 'Your look, as it is.', recipe: { ...heroRecipe, correction: { exposure: under ? 0.4 : 0, wbK: 0, face: 0 } }, referenceId: hero, status: 'open' },
-      { id: `m${p.id}-2`, photoId: p.id, rank: 2, title: 'Match, tighter', why: 'The same look, cropped in.', recipe: { ...heroRecipe, correction: { exposure: under ? 0.4 : 0, wbK: 0, face: 0 }, crop: { angle: 0, x: 0.08, y: 0.08, w: 0.84, h: 0.84 } }, referenceId: hero, status: 'open' },
-    ];
-    changed(p.id);
-    n++;
-  }
-  return n;
-}
-
 /** The background Queue, for the progress chip (live only; null with dummy data). */
 export function useQueue(): QueueStatus | null {
   return usePoll<QueueStatus>(LIVE ? 'progress' : null, {}, 3000) ?? null;

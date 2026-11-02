@@ -186,6 +186,18 @@ impl Library {
         Ok((batch, out))
     }
 
+    /// Close a Photo's waiting Shoot match: its look was applied another way (the Apply look
+    /// popover), so the take has nothing left to offer.
+    pub fn close_shoot_match(&self, photo: PhotoId) -> Result<()> {
+        self.db
+            .execute(
+                "UPDATE suggestions SET status = 'dismissed' WHERE photo_id = ?1 AND status = 'open' AND title = ?2",
+                params![photo, crate::suggest::SHOOT_MATCH],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     /// A Suggestion's Recipe at `amount` of the way from the Photo's current Recipe, like
     /// the Amount slider on a Lightroom preset (0 = the Photo as it is, 1 = the take, up to
     /// 1.5 pushes past it).

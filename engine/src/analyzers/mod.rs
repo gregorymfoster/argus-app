@@ -18,6 +18,8 @@ pub mod embedding;
 pub mod eyes;
 pub mod faces;
 pub mod identity;
+pub mod level;
+pub mod noise;
 pub mod runtime;
 pub mod segment;
 pub mod signals;
@@ -138,6 +140,7 @@ pub trait Analyzer: Sync {
 /// Every Analyzer, in the order they run (an Analyzer comes after the ones it needs).
 pub static REGISTRY: &[&dyn Analyzer] = &[
     &signals::Signals,
+    &noise::Noise,
     &faces::Faces,
     &segment::Segment,
     &sky::Sky,
@@ -146,6 +149,7 @@ pub static REGISTRY: &[&dyn Analyzer] = &[
     &embedding::Embedding,
     &depth::DepthMap,
     &crate::meaning::Meaning,
+    &level::LevelFact,
 ];
 
 /// The current version of an Analyzer's Facts.

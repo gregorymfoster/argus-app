@@ -34,6 +34,7 @@ import { LookScreen } from './screens/Look';
 import { EditScreen } from './screens/Edit';
 import { SettingsDialog, openSettings } from './settings/Settings';
 import { useUpdateToasts } from './ui/Updates';
+import { StatusBar, StatusSlotProvider } from './ui/StatusBar';
 import { checkForUpdates } from './data/updates';
 
 export function App() {
@@ -228,7 +229,7 @@ export function App() {
       body = <CompareScreen ids={route.ids} />;
       break;
     case 'moments':
-      body = <CullModeScreen key={route.id ?? ''} start={route.id} />;
+      body = <CullModeScreen key={`${route.pass ?? 1}:${route.id ?? ''}`} start={route.id} pass={route.pass} />;
       break;
     case 'export':
       body = <ExportScreen />;
@@ -246,11 +247,16 @@ export function App() {
 
   return (
     <TipProvider>
+      <StatusSlotProvider>
+        {(slot) => (
       <div className="app" style={{ ['--left' as string]: sidebar ? '232px' : '0px' } as CSSProperties}>
-        {sidebar && <Sidebar route={route} onPalette={() => setPalette(true)} onExport={() => setExporting(true)} onAuto={autoShoot} onCull={cullShoot} />}
-        <div className={`workspace ${sidebar ? '' : 'full'}`}>
-          {body}
+        <div className="app-main">
+          {sidebar && <Sidebar route={route} onPalette={() => setPalette(true)} onExport={() => setExporting(true)} onAuto={autoShoot} onCull={cullShoot} />}
+          <div className={`workspace ${sidebar ? '' : 'full'}`}>
+            {body}
+          </div>
         </div>
+        <StatusBar slot={slot} />
         <ImportDialog open={route.name === 'import'} autoCull={autoCull} setAutoCull={setAutoCull} />
         <SettingsDialog />
         <RemoveDialog />
@@ -268,6 +274,8 @@ export function App() {
         <VariantsPanel screen={screen} />
         <Toaster />
       </div>
+        )}
+      </StatusSlotProvider>
     </TipProvider>
   );
 }

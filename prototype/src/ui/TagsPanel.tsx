@@ -160,7 +160,7 @@ function KeywordInput({ photoId, initial, done }: { photoId: string; initial: st
   useEffect(() => {
     let live = true;
     if (!query.trim()) return setHits([]);
-    keywordCounts(query.split(/[›|>/]/).pop()!.trim()).then((h) => live && setHits(h));
+    keywordCounts(query.split(/[›|>/]/).pop()!.trim()).then((h) => live && setHits(h), () => live && setHits([]));
     return () => {
       live = false;
     };

@@ -1,7 +1,7 @@
-import { memo, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { previewUrl } from '../data/painter';
 import { layerStyle, plan } from '../domain/render';
-import { TILE_EDGE, useEdited } from '../data/editedThumbs';
+import { TILE_EDGE, editEdge, useEdited } from '../data/editedThumbs';
 import { LIVE } from '../data/live';
 import type { Look, Photo, Recipe } from '../domain/types';
 
@@ -99,22 +99,50 @@ interface Props {
   onPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
 
+/** The edited render size a frame needs: its shown long side in device pixels, measured
+ *  (a Cull grid of portraits is far taller than its `size` suggests), bucketed by editEdge. */
+function useShownEdge(el: React.RefObject<HTMLDivElement | null>, on: boolean, ratio: number, fallback: number) {
+  const [edge, setEdge] = useState(fallback);
+  useEffect(() => {
+    const node = el.current;
+    if (!on || !node || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const { width: w, height: h } = node.getBoundingClientRect();
+      if (!w || !h) return;
+      // The image is contained in the box: its own long side, not the box's.
+      const iw = Math.min(w, h * ratio);
+      const long = Math.max(iw, iw / ratio) * (window.devicePixelRatio || 1);
+      setEdge(editEdge(long));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, [el, on, ratio]);
+  return on ? edge : fallback;
+}
+
 export const PhotoView = memo(function PhotoView({ photo, size = 'thumb', recipe, look, original, showMasks, maskFocus, rendered, engineMasks, edits, className, style, children, ...pointer }: Props) {
   const preview = usePreview(photo, size);
-  const edited = useEdited(photo, Boolean(edits) && LIVE && !rendered && !original, size === 'full' ? 1536 : TILE_EDGE);
+  const box = useRef<HTMLDivElement>(null);
+  const wantEdited = Boolean(edits) && LIVE && !rendered && !original;
+  const edge = useShownEdge(box, wantEdited && size !== 'tile', photoRatio(photo), size === 'full' ? 1536 : TILE_EDGE);
+  const edited = useEdited(photo, wantEdited, edge);
   const engine = Boolean(rendered || edited) && !original;
   const url = engine ? (rendered ?? edited)! : preview;
   const p = recipe && !original ? plan(photo, recipe, look ?? null) : null;
   // The shown image's own shape, so a portrait (or a cropped render) fills a stage upright
-  // instead of being cut to 3:2. Until it loads, the original's upright size stands in.
-  const [shape, setShape] = useState<{ url: string; ratio: number } | null>(null);
-  const ratio = shape && shape.url === url ? shape.ratio : photoRatio(photo);
+  // instead of being cut to 3:2. Until it loads, the original's upright size stands in. It is
+  // kept per Photo, not per image: each live re-render is a new URL, and falling back to the
+  // original's shape while it loads made a cropped Photo's frame jump on every slider move.
+  const [shape, setShape] = useState<{ id: string; ratio: number } | null>(null);
+  const ratio = shape && shape.id === photo.id ? shape.ratio : photoRatio(photo);
   const shaped = { '--ar': ratio, ...style } as CSSProperties;
   return (
-    <div className={`photo ${className ?? ''}`} style={shaped} data-shape={ratio < 1 ? 'portrait' : undefined} {...pointer}>
+    <div ref={box} className={`photo ${className ?? ''}`} style={shaped} data-shape={ratio < 1 ? 'portrait' : undefined} {...pointer}>
       {url ? (
         <>
-          <Layer url={url} adjust={layerStyle(engine ? {} : (p?.base ?? {}))} alt={photo.file} onShape={(r) => setShape({ url, ratio: r })} />
+          <Layer url={url} adjust={layerStyle(engine ? {} : (p?.base ?? {}))} alt={photo.file} onShape={(r) => setShape((o) => (o?.id === photo.id && o.ratio === r ? o : { id: photo.id, ratio: r }))} />
           {/* The engine renders local adjustments itself; CSS layers stand in for dummy Photos. */}
           {!engine && p?.locals.map((l) => <Layer key={l.local.id} url={url} adjust={layerStyle(l.adjust)} mask={l.mask} alt="" />)}
           {p && p.grain > 0 && <div className="overlay" style={{ backgroundImage: GRAIN, opacity: p.grain / 180, mixBlendMode: 'overlay' }} />}

@@ -16,6 +16,7 @@ import { PHOTO_BY_ID } from '../data/dummy';
 import { previewUrl } from '../data/painter';
 import { Agent } from '../agent/AgentPanel';
 import { useLibrary } from '../store/library';
+import { StatusFoot } from '../ui/StatusBar';
 import {
   demoFace,
   faceKey,
@@ -174,14 +175,14 @@ function Overview() {
           </section>
         )}
       </div>
-      <footer className="panel-foot people-foot">
+      <StatusFoot className="panel-foot people-foot">
         <span><Kbd quiet>↵</Kbd> name</span>
         <span><Kbd quiet>⇧</Kbd> click several, name them together</span>
         <span>drag onto a person to merge</span>
         <span><Kbd quiet>⌫</Kbd> not someone to name</span>
         <span className="grow" />
         {people && <span className="faint">{people.faces.toLocaleString()} faces · grouped on this Mac</span>}
-      </footer>
+      </StatusFoot>
     </>
   );
 }
@@ -455,14 +456,14 @@ function PersonPage({ id }: { id: string }) {
           </section>
         ))}
       </div>
-      <footer className="panel-foot people-foot">
+      <StatusFoot className="panel-foot people-foot">
         <span><Kbd quiet>Y</Kbd> yes</span>
         <span><Kbd quiet>N</Kbd> not {page.name}</span>
         <span><Kbd quiet>←</Kbd><Kbd quiet>→</Kbd> move</span>
         <span><Kbd quiet>esc</Kbd> People</span>
         <span className="grow" />
         <span className="faint">Confirmed faces add People › {page.name} to the Photo</span>
-      </footer>
+      </StatusFoot>
     </>
   );
 }

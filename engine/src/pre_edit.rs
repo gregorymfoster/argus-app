@@ -226,18 +226,42 @@ fn lock_key(shoot: ShootId) -> String {
     format!("shoot_look_locked:{shoot}")
 }
 
-/// What a pre-edit starts from: the hero's Recipe less what belongs to that frame alone, as
-/// Lightroom's Sync leaves Crop, Masks and Spot removal unticked; one-click fixes and Lens
-/// Blur read the hero's own subject, so they stay behind too.
+/// What a pre-edit and Apply look start from: the hero's Recipe less what belongs to that
+/// frame alone, as Lightroom's Sync leaves Crop, Spot removal and drawn Masks unticked. Fixes
+/// that find their own target in each Photo carry over (Greg, 2026-11-01: "brighten faces ...
+/// apply it intelligently to all the photos"): Masks of faces, people, skin, hair, sky,
+/// subject, background, a luminance range or a frame-edge gradient are worked out again on
+/// every frame, as is the face exposure. Brushes, Linear and Radial Masks, colour picks, a
+/// Mask on one numbered face or person, and Lens Blur (its focus is a point in the hero) stay.
 pub fn sync_base(hero: &Recipe) -> Recipe {
     Recipe {
         crop: Crop::default(),
-        local: Vec::new(),
+        local: hero
+            .local
+            .iter()
+            .filter(|l| finds_its_own(&l.mask))
+            .cloned()
+            .collect(),
         spots: Vec::new(),
-        correction: Default::default(),
+        correction: crate::recipe::Correction {
+            face: hero.correction.face,
+            ..Default::default()
+        },
         lens_blur: Default::default(),
         ..hero.clone()
     }
+}
+
+/// A Mask that each Photo works out for itself, so it means the same on any frame.
+pub fn finds_its_own(m: &crate::masks::Mask) -> bool {
+    use crate::masks::Shape::*;
+    let own = match &m.shape {
+        Subject | Background | Skin | Hair | Sky | Luminance { .. } | Gradient { .. } => true,
+        Faces { face } => face.is_none(),
+        Person { person, .. } => person.is_none(),
+        Brush { .. } | Linear { .. } | Radial { .. } | Color { .. } => false,
+    };
+    own && m.components.iter().all(|c| finds_its_own(&c.mask))
 }
 
 fn photos(lib: &Library, shoot: ShootId) -> Result<Vec<Photo>> {

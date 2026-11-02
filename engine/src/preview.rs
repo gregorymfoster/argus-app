@@ -58,10 +58,10 @@ fn collect(t: &Tiff, ifd: usize, depth: u32, out: &mut Vec<(usize, usize)>, seen
                 } else {
                     t.u32(e + 8).unwrap_or(0) as usize
                 };
+                // A damaged count can claim billions: stop at the end of the file.
                 for k in 0..count as usize {
-                    if let Some(o) = t.u32(base + k * 4) {
-                        collect(t, o as usize, depth + 1, out, seen);
-                    }
+                    let Some(o) = t.u32(base + k * 4) else { break };
+                    collect(t, o as usize, depth + 1, out, seen);
                 }
             }
             _ => {}
@@ -110,7 +110,8 @@ pub fn tiff_default_crop_size(b: &[u8]) -> Option<(usize, usize)> {
                         t.u32(e + 8)? as usize
                     };
                     for k in 0..count as usize {
-                        stack.extend(t.u32(base + k * 4).map(|o| o as usize));
+                        let Some(o) = t.u32(base + k * 4) else { break };
+                        stack.push(o as usize);
                     }
                 }
                 _ => {}
@@ -289,5 +290,21 @@ mod tests {
         assert_eq!(tiff_orientation(b"nope"), None);
         assert_eq!(tiff_orientation(&tiff(true, Some(9))), None);
         assert_eq!(tiff_orientation(&tiff(true, Some(8))[..12]), None);
+    }
+
+    #[test]
+    fn a_damaged_subifd_count_stops_at_the_end_of_the_file() {
+        // IFD0 at 8 with one SubIFDs entry claiming u32::MAX offsets at 26.
+        let mut b = b"II*\0\x08\0\0\0".to_vec();
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&0x014Au16.to_le_bytes());
+        b.extend_from_slice(&4u16.to_le_bytes());
+        b.extend_from_slice(&u32::MAX.to_le_bytes());
+        b.extend_from_slice(&26u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        let t = std::time::Instant::now();
+        assert!(embedded_jpegs(&b).is_empty());
+        assert_eq!(tiff_default_crop_size(&b), None);
+        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
     }
 }

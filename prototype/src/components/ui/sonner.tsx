@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Toaster as Sonner, type ToasterProps } from 'sonner';
 
-// The bars docked at the bottom of each screen: the Cull footer, the Loupe's flag row, the Look's bar and the Compare and Stacks footers. Toasts sit just above whichever is
+// The bars docked at the bottom of each screen: the Status bar (which holds each screen's footer), the Loupe's flag row and the Look's bar. Toasts sit just above whichever is
 // highest, so an Undo toast never covers the key hints.
-const BOTTOM_BARS = '.cull-foot, .loupe-bar, .look-bar, .view-foot';
+const BOTTOM_BARS = '.status-bar, .loupe-bar, .look-bar';
 const GAP = 12;
 
 function useBottomOffset() {

@@ -1473,3 +1473,182 @@ fn a_shoots_pass_edits_likely_keepers_and_the_rest_wait_until_opened() {
         "the unopened 2-star frame still has none"
     );
 }
+
+#[test]
+fn a_burst_whose_first_frame_is_rejected_gives_its_next_frame_takes() {
+    let (_t, tools, ids, _seen) = library(3, false);
+    let shoot = json1(&tools, "list_photos", json!({}))[0]["shoot_id"].clone();
+    json1(
+        &tools,
+        "set_rating",
+        json!({ "photo_ids": [ids[0], ids[1], ids[2]], "stars": 3 }),
+    );
+    json1(
+        &tools,
+        "set_stacks",
+        json!({ "shoot_id": shoot, "stacks": [[ids[0], ids[1], ids[2]]] }),
+    );
+    json1(
+        &tools,
+        "set_verdict",
+        json!({ "photo_ids": [ids[0]], "verdict": "reject", "reason": "blur" }),
+    );
+    json1(&tools, "suggest_edits", json!({}));
+    let fan = jobs::run_next(&tools, Compute::Full).unwrap().unwrap();
+    let r = fan.result.unwrap();
+    assert_eq!(r["queued"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["on_open"], 1, "the third frame waits: {r}");
+    let job = jobs::run_next(&tools, Compute::Full).unwrap().unwrap();
+    assert_eq!(job.args["photo_id"], ids[1]);
+}
+
+#[test]
+fn apply_look_writes_the_previewed_match_as_one_undo_keeping_hand_edits_and_crops() {
+    let raws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw");
+    let mut found: Vec<_> = std::fs::read_dir(&raws)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "ARW"))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if found.len() < 3 {
+        eprintln!("jobs: fewer than three fixtures/raw/*.ARW, skipping");
+        return;
+    }
+    let (_t, tools, ids, seen) = library_of(
+        |src| {
+            for f in &found[..3] {
+                std::fs::copy(f, src.join(f.file_name().unwrap())).unwrap();
+            }
+        },
+        false,
+    );
+    let (hero, other, handed) = (ids[0], ids[1], ids[2]);
+    let edit = |id: i64, temp: i64| {
+        argus_engine::commands::dispatch(
+            &tools,
+            "edit",
+            json!({ "photo_id": id, "recipe": { "global": { "temp": temp, "saturation": 12 } } }),
+        )
+        .unwrap();
+    };
+    // The hero: a Mask each frame finds for itself (a luminance range here, as Brighten faces
+    // or Enhance sky are, minus the models) and sharpening carry over; a brush stays behind.
+    argus_engine::commands::dispatch(
+        &tools,
+        "edit",
+        json!({ "photo_id": hero, "recipe": {
+            "global": { "temp": 40, "saturation": 12, "sharpen": 60 },
+            "correction": { "exposure": 0.2, "wbK": 0, "face": 0 },
+            "local": [
+                { "id": "lights", "name": "Highlights", "mask": { "kind": "luminance", "lo": 0.7, "hi": 1.0 }, "adjust": { "exposure": -0.25 } },
+                { "id": "b", "name": "Brush", "mask": { "kind": "brush", "dots": [{ "x": 0.5, "y": 0.5, "r": 0.05 }] }, "adjust": { "exposure": 0.5 } }
+            ] } }),
+    )
+    .unwrap();
+    edit(handed, -30);
+    // An AI crop on the other frame, and a Shoot match waiting on it.
+    let crop = json!({ "angle": 0.0, "x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8 });
+    tools
+        .call(
+            "write_recipe",
+            json!({ "photo_ids": [other], "recipe": { "crop": crop } }),
+        )
+        .unwrap();
+    tools
+        .call("pre_edit_shoot", json!({ "shoot_id": 1, "every": true }))
+        .unwrap();
+    jobs::drain(&tools, Compute::Full).unwrap();
+    let shown = argus_engine::commands::dispatch(
+        &tools,
+        "shoot_look_preview",
+        json!({ "hero_id": hero, "photo_ids": [other] }),
+    )
+    .unwrap();
+    let want = shown["frames"][0]["sliders"]["temp"].as_f64().unwrap();
+
+    let r = json1(
+        &tools,
+        "apply_shoot_look",
+        json!({ "photo_id": hero, "photo_ids": [hero, other, handed] }),
+    );
+    assert_eq!(r["applied"], json!([other]), "{r}");
+    let skipped: Vec<i64> = r["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["photo_id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        skipped,
+        vec![handed],
+        "the hero isn't a target; a hand edit is skipped: {r}"
+    );
+
+    let now = json1(&tools, "read_recipe", json!({ "photo_id": other }));
+    assert_eq!(now["author"], "ai", "{now}");
+    let locals: Vec<&str> = now["recipe"]["local"]
+        .as_array()
+        .map(|l| l.iter().filter_map(|x| x["id"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        locals,
+        vec!["lights"],
+        "the luminance Mask is found again on the frame, the brush stays behind: {now}"
+    );
+    assert_eq!(
+        now["recipe"]["global"]["sharpen"], 60,
+        "detail carries over: {now}"
+    );
+    assert_eq!(
+        now["recipe"]["correction"]["exposure"], 0.0,
+        "the hero's own exposure fix stays: {now}"
+    );
+    assert_eq!(now["recipe"]["crop"]["x"], 0.1, "its crop stays: {now}");
+    let rendered = argus_engine::commands::dispatch(
+        &tools,
+        "shoot_look_preview",
+        json!({ "hero_id": hero, "photo_ids": [other] }),
+    )
+    .unwrap();
+    assert!(
+        (rendered["frames"][0]["sliders"]["temp"].as_f64().unwrap() - want).abs() < 1e-6,
+        "what the popover showed is what was written"
+    );
+    let open: Vec<Value> = json1(
+        &tools,
+        "list_suggestions",
+        json!({ "photo_id": other, "all": true }),
+    )
+    .as_array()
+    .unwrap()
+    .iter()
+    .filter(|s| s["status"] == "open" && s["title"] == "Shoot match")
+    .cloned()
+    .collect();
+    assert!(
+        open.is_empty(),
+        "its waiting Shoot match is closed: {open:?}"
+    );
+    assert_eq!(
+        json1(&tools, "read_recipe", json!({ "photo_id": handed }))["recipe"]["global"]["temp"],
+        -30.0,
+        "the hand edit is untouched"
+    );
+
+    tools
+        .call("undo_batch", json!({ "batch_id": r["batch_id"] }))
+        .unwrap();
+    let back = json1(&tools, "read_recipe", json!({ "photo_id": other }));
+    assert_eq!(back["recipe"]["crop"]["x"], 0.1, "{back}");
+    assert!(
+        back["recipe"]["global"]
+            .get("temp")
+            .is_none_or(|t| t == 0.0),
+        "one Undo takes the look off: {back}"
+    );
+    assert!(seen.lock().unwrap().is_empty(), "no model asked");
+}

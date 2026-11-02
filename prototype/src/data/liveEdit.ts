@@ -53,27 +53,28 @@ function useBaseStamp() {
  * whether a render is in flight.
  */
 export function useLiveRender(photoId: string, recipe: Recipe | null, enabled: boolean) {
-  const [url, setUrl] = useState<string | null>(null);
+  // Tagged with its Photo: a render still out when the person moves on is not shown on the next one.
+  const [out, setOut] = useState<{ photoId: string; url: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
-  const state = useRef({ running: false, next: null as Recipe | null });
+  const state = useRef({ running: false, next: null as { photoId: string; recipe: Recipe } | null });
   // Compared by content: the store hands out a fresh empty Recipe on every render.
   const json = recipe ? JSON.stringify(recipe) : null;
   const stamp = useBaseStamp();
 
   useEffect(() => {
     if (!enabled || !json) return;
-    const recipe = JSON.parse(json) as Recipe;
     const s = state.current;
-    s.next = recipe;
+    s.next = { photoId, recipe: JSON.parse(json) as Recipe };
+    // Each run takes the Photo from the queue, never from this effect's closure.
     const pump = async () => {
       if (s.running || !s.next) return;
-      const r = s.next;
+      const job = s.next;
       s.next = null;
       s.running = true;
       setBusy(true);
       try {
-        const out = await call<Rendered>('render_photo', { photo_id: Number(photoId), recipe: r, long_edge: EDGE });
-        setUrl(out.images[0] ?? null);
+        const r = await call<Rendered>('render_photo', { photo_id: Number(job.photoId), recipe: job.recipe, long_edge: EDGE });
+        setOut({ photoId: job.photoId, url: r.images[0] ?? null });
       } catch (e) {
         console.error('render failed', e);
       } finally {
@@ -85,7 +86,7 @@ export function useLiveRender(photoId: string, recipe: Recipe | null, enabled: b
     void pump();
   }, [photoId, json, enabled, stamp]);
 
-  return { url, busy };
+  return { url: out?.photoId === photoId ? out.url : null, busy };
 }
 
 /** Long edge of the Mask images the overlay tints; masks are soft, so this is plenty. */

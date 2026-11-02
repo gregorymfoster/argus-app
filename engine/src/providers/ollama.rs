@@ -52,17 +52,25 @@ pub fn pick_model(current: &str, pinned: bool, installed: &[String], preferred: 
     if pinned {
         return current.to_string();
     }
-    let has = |m: &str| installed.iter().any(|i| i == m);
+    // Ollama lists an untagged pull as `name:latest`.
+    let tagged = |m: &str| {
+        if m.contains(':') {
+            m.to_string()
+        } else {
+            format!("{m}:latest")
+        }
+    };
+    let has = |m: &str| installed.iter().any(|i| tagged(i) == tagged(m));
     let base = preferred
         .iter()
         .find(|p| has(p))
         .map(|p| p.to_string())
         .unwrap_or_else(|| current.to_string());
-    let mlx = format!("{base}-mlx");
-    if has(&mlx) {
-        mlx
-    } else {
+    let mlx = format!("{}-mlx", tagged(&base));
+    if base.ends_with("-mlx") || !has(&mlx) {
         base
+    } else {
+        mlx
     }
 }
 
@@ -159,6 +167,26 @@ impl Ollama {
         // Keep it loaded well past the cull; Ollama's 5-minute default can lapse while a
         // throttled cull is still sending.
         json!({ "model": self.model, "stream": false, "messages": [], "keep_alive": "30m", "options": self.options() })
+    }
+
+    /// The names of the models Ollama has pulled (`/api/tags` alone). Err when Ollama
+    /// isn't running.
+    pub fn model_names(&self) -> Result<Vec<String>> {
+        let tags: Value = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .get(&format!("{}/api/tags", self.base_url))
+            .call()
+            .map_err(|e| Error(format!("can't reach Ollama at {} ({e})", self.base_url)))?
+            .into_json()
+            .map_err(|e| Error(format!("Ollama /api/tags: {e}")))?;
+        Ok(tags["models"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|m| m["name"].as_str().map(str::to_owned))
+            .collect())
     }
 
     /// The models Ollama has pulled, largest first, and which are loaded now (`/api/tags`,
@@ -519,6 +547,21 @@ mod pick_model_tests {
         assert_eq!(
             pick_model("qwen3.8:27b", false, &installed, &["gemma4:26b-a4b"]),
             "qwen3.8:27b"
+        );
+    }
+
+    #[test]
+    fn an_untagged_model_finds_its_latest_mlx_build() {
+        let installed = have(&["qwen3.8:latest", "qwen3.8:latest-mlx"]);
+        assert_eq!(
+            pick_model("qwen3.8", false, &installed, &[]),
+            "qwen3.8:latest-mlx"
+        );
+        let mlx = have(&["qwen3.8:27b-mlx", "qwen3.8:27b-mlx-mlx"]);
+        assert_eq!(
+            pick_model("qwen3.8:27b-mlx", false, &mlx, &[]),
+            "qwen3.8:27b-mlx",
+            "an MLX build is not looked up again"
         );
     }
 

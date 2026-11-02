@@ -263,17 +263,27 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
         }
         Format::Jpeg | Format::Heic | Format::Tiff => {
             // AI Denoise needs its base; an export waits for it rather than leaving it out.
-            if crate::denoise::amount(item.recipe) > 0.0
-                && crate::denoise::base_file(item.photo).is_some()
-            {
-                crate::denoise::compute(item.photo, &|_, _| {})?;
+            // A base made only for this export is dropped once it is used: an exported party
+            // Shoot of noisy RAWs would otherwise leave ~330 MB per frame in the cache.
+            let mut made = None;
+            if crate::denoise::amount(item.recipe) > 0.0 {
+                if let Some(f) = crate::denoise::base_file(item.photo) {
+                    if !f.is_file() {
+                        made = Some(f);
+                    }
+                    crate::denoise::compute(item.photo, &|_, _| {})?;
+                }
             }
-            let mut img = render::render_photo(
+            let rendered = render::render_photo(
                 item.photo,
                 item.recipe,
                 long_edge(item, opts),
                 item.masks.clone(),
-            )?;
+            );
+            if let Some(f) = made {
+                let _ = std::fs::remove_file(f);
+            }
+            let mut img = rendered?;
             if let Some(s) = opts.sharpen {
                 sharpen(&mut img, s.amount());
             }

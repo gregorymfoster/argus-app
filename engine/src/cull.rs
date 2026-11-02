@@ -591,10 +591,14 @@ impl Live {
 struct Reporter<'a> {
     live: Mutex<Live>,
     progress: &'a (dyn Fn(CullProgress) + Sync),
+    /// Held from snapshot to delivery, so the heartbeat thread's older snapshot can't
+    /// arrive after a newer one from the request and move the bar back.
+    sending: Mutex<()>,
 }
 
 impl Reporter<'_> {
     fn report(&self) {
+        let _turn = self.sending.lock().unwrap();
         let p = self.live.lock().unwrap().snapshot();
         (self.progress)(p);
     }
@@ -793,6 +797,7 @@ pub fn cull_sheet(
             },
         }),
         progress,
+        sending: Mutex::new(()),
     };
     let every = std::env::var("ARGUS_CULL_HEARTBEAT_MS")
         .ok()

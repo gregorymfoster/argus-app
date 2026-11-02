@@ -17,6 +17,7 @@
 //! | `flag`   | {ids, verdict, author = "person", reason?, label?, batch_id?} | {flagged, batch_id, photos: [CullState]} |
 //! | `rate`   | {ids, stars (0-5), author = "person", label?, batch_id?} | {rated, batch_id, photos: [CullState]} |
 //! | `photo_states` | {ids}                                | [CullState]                   |
+//! | `mark_pass` | {ids, pass (2+), mark: keep\|cut\|clear, author = "person", label?, batch_id?} | {marked, batch_id, photos: [CullState]}: a Cull Round (GLOSSARY: Round) |
 //! | `log_moment` | [`crate::library::MomentLog`]          | {logged}: a Cull mode choice for the Usage log |
 //! | `denoise_status` | {photo_id}                         | {raw, ready, job: {status, done, total, eta_s} or null}: AI Denoise's base for the Edit panel |
 //! | `as_person` | {tool, args, label}                     | the tool's result plus `batch_id` |
@@ -25,6 +26,7 @@
 //! | `face_crops`   | {faces: [{photo_id, face}], edge = 160} | {"<photo>-<face>": Library-relative square JPEG of the face, or null}; cached on disk |
 //! | `edited_previews` | {photo_ids, long_edge}              | {"<id>": Library-relative JPEG of the Photo with its edits, or null}; cached on disk by what it shows |
 //! | `shoot_look_preview` | {hero_id, recipe?, photo_ids?, long_edge?} | {hero_id, anchors, frames: [{photo_id, anchor, sliders, reach, check, image?, error}], ms}: the Shoot matched to the hero as dragged (crate::shoot_look) |
+//! | `framing_preview` | {photo_ids, crop?, long_edge?}          | {frames: [{photo_id, crop, reasons, kept, image?, error}], ms}: Crop & straighten's proposals (crate::framing) |
 //! | `suggest_name` | {paths? \| shoot_id?, captured_at?, provider?} | {name, by, note}       |
 //! | `shoot_name`   | {title, captured_at?}                  | {shoot_name, originals}       |
 //! | `reveal`       | {shoot_id? \| photo_id? \| path?}      | {path, shown}                 |
@@ -135,6 +137,26 @@ struct FlagArgs {
     batch_id: Option<i64>,
 }
 
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum PassMark {
+    Keep,
+    Cut,
+    Clear,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MarkPassArgs {
+    ids: Vec<i64>,
+    pass: u8,
+    mark: PassMark,
+    #[serde(default = "person")]
+    author: Author,
+    label: Option<String>,
+    batch_id: Option<i64>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RateArgs {
@@ -207,6 +229,17 @@ struct PreviewArgs {
 struct EditedPreviewArgs {
     photo_ids: Vec<PhotoId>,
     long_edge: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FramingArgs {
+    photo_ids: Vec<PhotoId>,
+    /// Also propose punch-ins; straighten only when left out.
+    #[serde(default)]
+    crop: bool,
+    /// Render each proposal this big; only the proposals when left out.
+    long_edge: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -398,7 +431,9 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             IMPORT_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
             std::thread::spawn(move || {
                 let tools = Tools::new(library);
-                let r = match split_import(a) {
+                // A panic (a decoder on a damaged file) must still clear `running`, or every
+                // later Import is refused until the app restarts.
+                let run = std::panic::AssertUnwindSafe(|| match split_import(a) {
                     Ok(parts) => {
                         let mut last = Ok(json!(null));
                         for part in parts {
@@ -413,8 +448,10 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
                         last
                     }
                     Err(e) => Err(e.0),
-                };
-                *IMPORT.lock().unwrap() = (false, Some(r));
+                });
+                let r = std::panic::catch_unwind(run)
+                    .unwrap_or_else(|_| Err("Import stopped: a file crashed the importer".into()));
+                *IMPORT.lock().unwrap_or_else(|p| p.into_inner()) = (false, Some(r));
             });
             Ok(json!({ "started": true }))
         }
@@ -502,6 +539,25 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             Ok(
                 json!({ "hero_id": pv.hero_id, "anchors": pv.anchors, "frames": frames, "ms": t.elapsed().as_millis() as u64 }),
             )
+        }
+        "framing_preview" => {
+            let a: FramingArgs = args(command, a)?;
+            let lib = Library::open(tools.library())?;
+            let edge = a
+                .long_edge
+                .map(|e| e.clamp(64, crate::auto::MEASURE_EDGE as u32) as usize);
+            let t = std::time::Instant::now();
+            let frames: Vec<Value> = crate::framing::propose(&lib, &a.photo_ids, a.crop, edge)?
+                .iter()
+                .map(|f| {
+                    let mut v = json!(f);
+                    if let Some(j) = &f.jpeg {
+                        v["image"] = data_url(j);
+                    }
+                    v
+                })
+                .collect();
+            Ok(json!({ "frames": frames, "ms": t.elapsed().as_millis() as u64 }))
         }
         "face_crops" => {
             let a: FaceCropArgs = args(command, a)?;
@@ -670,6 +726,7 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
                 photos.retain(|p| theirs.contains(&p.id));
             }
             let edits = lib.recipe_stamps()?;
+            let marks = lib.all_pass_marks()?;
             Ok(Value::Array(
                 photos
                     .into_iter()
@@ -679,6 +736,12 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
                         let mut v = serde_json::to_value(&p).expect("Photo serializes");
                         v["preview"] = Value::String(rel);
                         v["edit"] = json!(edits.get(&p.id));
+                        let r = crate::library::round_of(
+                            p.verdict == Verdict::Pick,
+                            marks.get(&p.id).map_or(&[][..], |m| &m[..]),
+                        );
+                        v["round"] = json!(r.round);
+                        v["cut_in"] = json!(r.cut_in);
                         v
                     })
                     .collect(),
@@ -742,9 +805,27 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             let photos = lib.cull_states(&ids)?;
             Ok(json!({ "flagged": ids.len(), "batch_id": batch, "photos": photos }))
         }
+        "mark_pass" => {
+            let a: MarkPassArgs = args(command, a)?;
+            let ids = distinct(&a.ids);
+            if ids.is_empty() {
+                return Ok(json!({ "marked": 0, "batch_id": null, "photos": [] }));
+            }
+            let mut lib = Library::open(tools.library())?;
+            let (kept, word) = match a.mark {
+                PassMark::Keep => (Some(true), "Kept"),
+                PassMark::Cut => (Some(false), "Cut"),
+                PassMark::Clear => (None, "Cleared"),
+            };
+            let label = format!("{word} {} in Round {}", ids.len(), a.pass);
+            let batch = person_batch(&mut lib, a.author, a.batch_id, a.label, label)?;
+            lib.set_pass_mark(&ids, a.pass, kept, a.author, batch)?;
+            let photos = lib.cull_states(&ids)?;
+            Ok(json!({ "marked": ids.len(), "batch_id": batch, "photos": photos }))
+        }
         "log_moment" => {
             let m: crate::library::MomentLog = args(command, a)?;
-            let lib = Library::open(tools.library())?;
+            let mut lib = Library::open(tools.library())?;
             Ok(json!({ "logged": lib.log_moment(&m)? }))
         }
         "rate" => {

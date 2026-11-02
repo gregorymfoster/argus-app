@@ -13,10 +13,11 @@ import { acceptPreEdits, usePreEdits } from '../data/preEdit';
 import { go } from '../router';
 import { PhotoView } from '../ui/PhotoView';
 import { ExportModeBody } from '../ui/Export';
-import { Hints, ModeSwitch, QueueMeter } from '../ui/ViewBar';
-import { Kbd } from '../ui/kit';
+import { Hints, ModeSwitch } from '../ui/ViewBar';
+import { Kbd, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { EmptyState } from '../ui/Empty';
 import { Button } from '@/components/ui/button';
+import { StatusFoot } from '../ui/StatusBar';
 
 export function ExportScreen() {
   const { state, dispatch } = useLibrary();
@@ -30,7 +31,7 @@ export function ExportScreen() {
   const toggleOut = (id: string) => setOut((o) => (o.has(id) ? new Set([...o].filter((x) => x !== id)) : new Set([...o, id])));
 
   useHotkeys(['backspace', 'delete'], () => focus && toggleOut(focus), [focus]);
-  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }));
+  useHotkeys(['escape', 'g'], () => go({ name: 'cull' }), ESC_OUTSIDE_DIALOGS);
 
   const middle = (
     <div className="export-photos" data-testid="export-photos">
@@ -92,7 +93,6 @@ export function ExportScreen() {
               <span className="mono faint view-meta">{SHOOT.name}</span>
               <span className="grow" />
               <span className="faint view-meta wide-only">{facts}</span>
-              <QueueMeter />
               <Button size="sm" variant="default" onClick={start} disabled={!n || running} data-testid="export-start">
                 <Download size={12} /> Export {n} <Kbd>⌘↵</Kbd>
               </Button>
@@ -100,11 +100,11 @@ export function ExportScreen() {
           ),
         }}
       />
-      <footer className="view-foot">
+      <StatusFoot className="view-foot">
         <span>{out.size ? `${out.size} left out` : 'Originals are never touched'}</span>
         <span className="grow" />
         <Hints items={[['⌫', 'Leave out'], ['⌘↵', 'Export'], ['⌘3', 'Edit'], ['Esc', 'Library']]} />
-      </footer>
+      </StatusFoot>
     </div>
   );
 }

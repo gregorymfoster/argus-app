@@ -29,6 +29,7 @@ const STEPS: &[Step] = &[
     v10_keywords,
     v11_albums,
     v12_people,
+    v13_cull_rounds,
 ];
 
 /// The schema version this Argus writes.
@@ -187,14 +188,26 @@ fn v11_albums(tx: &Transaction, _root: &Path) -> Result<()> {
     )
 }
 
-/// People: the end of `schema.sql`.
+/// People: `schema.sql` from People up to the next step's tables.
 fn v12_people(tx: &Transaction, _root: &Path) -> Result<()> {
+    let schema = include_str!("schema.sql");
+    let from = schema
+        .find("-- People (the People")
+        .expect("people in schema");
+    let to = schema
+        .find("-- Cull Rounds (repeat")
+        .expect("cull rounds in schema");
+    sql(tx, &schema[from..to])
+}
+
+/// Cull Rounds: the end of `schema.sql`.
+fn v13_cull_rounds(tx: &Transaction, _root: &Path) -> Result<()> {
     let schema = include_str!("schema.sql");
     sql(
         tx,
         &schema[schema
-            .find("-- People (the People")
-            .expect("people in schema")..],
+            .find("-- Cull Rounds (repeat")
+            .expect("cull rounds in schema")..],
     )
 }
 

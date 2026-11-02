@@ -73,6 +73,8 @@ fn denoise_amount_queues_the_base_and_renders_blend_it() {
         json!({ "folder": card.to_str().unwrap(), "shoot_name": "2026-10-21_Denoise" }),
     );
     let id = 1;
+    // The person has it open, so an Agent edit's Denoise is made straight away.
+    argus_engine::commands::dispatch(&tools, "focus_photo", json!({ "photo_id": id })).unwrap();
     let plain = jpeg(&tools, id);
 
     // Denoise off: nothing queued.
@@ -145,15 +147,115 @@ fn denoise_amount_queues_the_base_and_renders_blend_it() {
         "base exists: no new job"
     );
 
-    // Clear cache drops the base; an export that needs it makes it again.
+    // Clear cache drops the base; an export that needs it makes it, uses it and drops it
+    // again (a whole exported Shoot would otherwise fill the disk).
     json1(&tools, "clear_cache", json!({}));
     assert!(denoise::ready(&photo).is_none());
-    let out = tmp.path().join("out");
+    let export = |folder: &str| -> image::RgbImage {
+        let out = tmp.path().join(folder);
+        let r = json1(
+            &tools,
+            "export_photos",
+            json!({ "photo_ids": [id], "folder": out.to_str().unwrap(), "long_edge": 800 }),
+        );
+        let file = r["exported"][0]["path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{r}"));
+        image::open(file).unwrap().to_rgb8()
+    };
+    let denoised = export("out");
+    assert!(
+        denoise::ready(&photo).is_none(),
+        "the export's own base was dropped"
+    );
     json1(
         &tools,
-        "export_photos",
-        json!({ "photo_ids": [id], "folder": out.to_str().unwrap(), "long_edge": 800 }),
+        "edit_recipe",
+        json!({ "photo_ids": [id], "set": { "denoise": 0 } }),
     );
-    assert!(denoise::ready(&photo).is_some(), "export computed the base");
+    let plain = export("out-plain");
+    assert!(
+        roughness(&denoised) < roughness(&plain),
+        "the export was denoised: {} vs {}",
+        roughness(&denoised),
+        roughness(&plain)
+    );
+    std::env::remove_var("ARGUS_DENOISE_FAKE");
+}
+
+/// Auto Denoise: AI edits (here Auto) give a noisy RAW the Amount its measured noise calls
+/// for and leave a clean one alone; the base waits until the person opens the Photo; and a
+/// Denoise someone set is never overridden.
+#[test]
+fn auto_sets_denoise_from_the_raws_own_noise() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw-a7rv");
+    // DSC08006: a dim room at high ISO; DSC07856: a bright, clean frame.
+    let (noisy, clean) = (dir.join("DSC08006.ARW"), dir.join("DSC07856.ARW"));
+    if !noisy.is_file() || !clean.is_file() {
+        eprintln!("auto denoise: needs fixtures/raw-a7rv DSC08006 and DSC07856, skipping");
+        return;
+    }
+    let _env = crate::env_lock();
+    std::env::set_var("ARGUS_DENOISE_FAKE", "1");
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    std::fs::create_dir_all(&card).unwrap();
+    for f in [&noisy, &clean] {
+        std::fs::copy(f, card.join(f.file_name().unwrap())).unwrap();
+    }
+    let tools = Tools::new(tmp.path().join("Argus.library"));
+    json1(
+        &tools,
+        "import_folder",
+        json!({ "folder": card.to_str().unwrap(), "shoot_name": "2026-11-01_Auto-Denoise" }),
+    );
+    let lib = Library::open(tools.library()).unwrap();
+    let photos = lib.list_photos(&Default::default()).unwrap();
+    let id = |name: &str| photos.iter().find(|p| p.file_name == name).unwrap().id;
+    let (n, c) = (id("DSC08006.ARW"), id("DSC07856.ARW"));
+    drop(lib);
+    let denoise_of = |photo: i64| -> Option<f64> {
+        let lib = Library::open(tools.library()).unwrap();
+        let r = lib.read_recipe(photo).unwrap()?;
+        r.recipe["global"]["denoise"].as_f64()
+    };
+
+    json1(&tools, "auto_edit", json!({ "photo_ids": [n, c] }));
+    let amount = denoise_of(n).expect("the noisy frame got Denoise");
+    assert!((25.0..=50.0).contains(&amount), "{amount}");
+    assert_eq!(denoise_of(c), None, "the clean frame was left alone");
+    let status = |photo: i64| -> Value {
+        argus_engine::commands::dispatch(&tools, "denoise_status", json!({ "photo_id": photo }))
+            .unwrap()
+    };
+    assert!(
+        status(n)["job"].is_null(),
+        "no base until it is opened: {}",
+        status(n)
+    );
+    argus_engine::commands::dispatch(
+        &tools,
+        "focus_photo",
+        json!({ "photo_id": n, "next_ids": [c] }),
+    )
+    .unwrap();
+    assert!(
+        status(n)["job"].is_object(),
+        "opening it queued the base: {}",
+        status(n)
+    );
+    assert!(
+        status(c)["job"].is_null(),
+        "the clean frame has nothing to build"
+    );
+
+    // Someone turns it off; Auto again keeps their 0.
+    json1(
+        &tools,
+        "edit_recipe",
+        json!({ "photo_ids": [n], "set": { "denoise": 0 } }),
+    );
+    json1(&tools, "auto_edit", json!({ "photo_ids": [n] }));
+    assert_eq!(denoise_of(n), Some(0.0));
     std::env::remove_var("ARGUS_DENOISE_FAKE");
 }

@@ -11,8 +11,9 @@ import type { Photo } from '../domain/types';
 import { PhotoView } from './PhotoView';
 import { Button } from '@/components/ui/button';
 
-// Scroll only the rail's own list: scrollIntoView would also scroll the Edit stage's ancestors.
-const keepInView = (el: HTMLElement | null) => {
+// Scroll only the rail's own list: scrollIntoView would also scroll the stage's ancestors.
+// Cull mode's moment rail uses it too. A stable function, so it runs when the row turns on, not every render.
+export const keepInView = (el: HTMLElement | null) => {
   const list = el?.closest('.rail-list') as HTMLElement | null;
   if (!el || !list) return;
   const top = el.offsetTop - list.offsetTop;
@@ -29,7 +30,7 @@ export function PicksRail({ open }: { open: string }) {
   const done = picks.filter((p) => !pre.byPhoto[p.id] && isEdited(state, p));
   const row = (p: Photo, dot: string, note: string) => (
     <button key={p.id} className={`moment-row pick-row ${p.id === open ? 'on' : ''}`} onClick={() => go({ name: 'edit', id: p.id })} ref={p.id === open ? keepInView : undefined} data-testid={`pick-row-${p.id}`}>
-      <PhotoView photo={p} size="tile" edits recipe={state.recipes[p.id]} look={state.look} style={{ width: 34, height: 23, borderRadius: 3, flex: 'none' }} />
+      <PhotoView photo={p} size="tile" edits recipe={state.recipes[p.id]} look={state.look} style={{ width: 34, height: 23, borderRadius: 4, flex: 'none' }} />
       <span className="mono trunc grow">{p.file}</span>
       <span className={`pick-dot ${dot}`} />
       <span className="faint pick-note">{note}</span>

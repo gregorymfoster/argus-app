@@ -156,7 +156,7 @@ export class ZoomPan {
     this.zoomAt(this.presetScale(p), undefined, undefined, true);
   }
 
-  /** Z, click: Fit when zoomed, else 100% around the point. */
+  /** A tap of Space, a click: Fit when zoomed, else 100% around the point. */
   toggle(cx?: number, cy?: number) {
     if (this.zoomed()) this.zoomAt(1, cx, cy, true);
     else this.zoomAt(Math.max(this.scaleFor(100), 1.5), cx, cy, true);
@@ -313,16 +313,29 @@ export function useZoomPan({ click = true, photoKey, natural }: Options) {
     const typing = (t: EventTarget | null) =>
       t instanceof HTMLElement &&
       (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+    // A dialog (Import's Space ticks a photo), a menu or the ⌘K palette over the stage keeps
+    // its own Space, and ⌘/⌃/⌥-Space belong to the system.
+    const elsewhere = (e: KeyboardEvent) =>
+      e.metaKey ||
+      e.ctrlKey ||
+      e.altKey ||
+      (e.target instanceof Element &&
+        Boolean(e.target.closest("[role=dialog], [role=alertdialog], [role=menu], [role=listbox], [cmdk-root]")));
+    let downAt = 0;
     const keydown = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || typing(e.target)) return;
+      if (e.code !== "Space" || typing(e.target) || (!z.hand && elsewhere(e))) return;
       e.preventDefault();
-      if (!e.repeat && !z.hand) spaceTap.current = true;
+      if (!e.repeat && !z.hand) {
+        spaceTap.current = true;
+        downAt = performance.now();
+      }
       z.setHand(true);
     };
     const keyup = (e: KeyboardEvent) => {
       if (e.code !== "Space" || !z.hand) return;
       z.setHand(false);
-      if (spaceTap.current) z.toggle();
+      // A tap toggles; holding Space to pan and letting go without a drag leaves the zoom alone.
+      if (spaceTap.current && performance.now() - downAt < 500) z.toggle();
       spaceTap.current = false;
     };
     const blur = () => {

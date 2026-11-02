@@ -12,6 +12,8 @@ dest="${1:?usage: scripts/public-export DIR}"
 
 # Private: Greg's photos and Lightroom data (bench fixtures, goldens rendered from his RAWs)
 # and the bench tooling that reads his catalog. Add a path here before it can go public.
+# Public on purpose (Greg, 2026-11-01): engine/src/edit_head.json and shoot_match.json, models fitted
+# on his Lightroom edits. They hold numbers only, no photos, and ship inside the app anyway.
 PRIVATE=(
   fixtures/bench
   fixtures/golden

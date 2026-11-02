@@ -60,10 +60,15 @@ import-check:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
     cd prototype && ../scripts/progress import-check -- node scripts/import-check.mjs
 
-# The Shoot look against the real engine: the whole Shoot under the hero in Edit (W), a drag redrawing it, Lock look and Accept all.
+# Apply look to Shoot against the real engine: the offer after a hand edit, the popover drawing every frame, Apply as one Undo, then Crop like this.
 shoot-look-check:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
     cd prototype && ../scripts/progress shoot-look-check -- node scripts/shoot-look-check.mjs
+
+# Crop & straighten against a real engine on Greg's edits: proposals, untick, Apply, the hand crop kept, one Undo.
+framing-check:
+    scripts/progress build-cli -- cargo build --profile fast -p argus-cli
+    cd prototype && ../scripts/progress framing-check -- node scripts/framing-check.mjs
 
 # Motion that answers the person (flag stamp, key echo, ticking counts, grid-Loupe zoom, gliding sliders,
 # Import pop-in, Reduce motion off) through the real UI; `--clips DIR` also records a webm per moment.

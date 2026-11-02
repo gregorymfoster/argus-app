@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { Bandage, Copy, Crop as CropIcon, GalleryHorizontal, History, Layers, SlidersHorizontal, SquareDashedMousePointer } from 'lucide-react';
+import { Bandage, Copy, Crop as CropIcon, History, Layers, SlidersHorizontal, SquareDashedMousePointer } from 'lucide-react';
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
 import type { Crop, LocalAdjust, NumKey, Recipe, Spot, Version } from '../domain/types';
 import { fmt, recipeOf, useLibrary } from '../store/library';
@@ -15,9 +15,9 @@ import { Filmstrip } from '../ui/Filmstrip';
 import { PicksRail } from '../ui/PicksRail';
 import { ModeSwitch } from '../ui/ViewBar';
 import { picksOf } from '../data/modes';
-import { ShootLookStrip } from '../ui/ShootLookStrip';
-import { usePref } from '../store/variants';
-import { acceptSuggestion, applyToRest, cancelTakes, dismissSuggestion, requestSuggestions, useQueue, useSuggestionImage, useSuggestions, useTakesProgress } from '../data/suggestions';
+import { ApplyLook, ApplyLookOffer, useOfferCount } from '../ui/ApplyLook';
+import { Framing } from '../ui/Framing';
+import { acceptSuggestion, cancelTakes, dismissSuggestion, requestSuggestions, useQueue, useSuggestionImage, useSuggestions, useTakesProgress } from '../data/suggestions';
 import { Kbd, Tip, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { QueueChip } from '../ui/Queue';
 import { ToolStrip } from '../ui/Develop';
@@ -115,9 +115,27 @@ export function EditScreen({ id }: { id: string }) {
   const pos = order.indexOf(p.id);
   const nextKey = order.slice(pos + 1, pos + 4).join(',');
   useEffect(() => focusPhoto(p.id, nextKey ? nextKey.split(',') : []), [p.id, nextKey]);
-  // Lightroom's Develop moves on with ⌘← ⌘→; plain arrows belong to the sliders.
-  useHotkeys('mod+right', () => order[pos + 1] && go({ name: 'edit', id: order[pos + 1] }), { preventDefault: true }, [pos]);
-  useHotkeys('mod+left', () => pos > 0 && go({ name: 'edit', id: order[pos - 1] }), { preventDefault: true }, [pos]);
+  // ← → move through the Photos as in Lightroom's Develop (Greg, 2026-11-01: "its not letting me
+  // arrow key through the photos"), and ⌘← ⌘→ always do. Plain arrows stay with a focused slider,
+  // text field or other arrow-key widget.
+  const step = (d: number) => {
+    const id = order[pos + d];
+    if (id) go({ name: 'edit', id });
+  };
+  const arrowsTaken = (e: KeyboardEvent) => {
+    const t = (e.target instanceof Element ? e.target : document.activeElement) as HTMLElement | null;
+    if (t?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"], [role="menu"], [role="listbox"], [role="slider"]')) return true;
+    // A button group clicked with the mouse keeps focus without showing it: let the arrows through.
+    const w = t?.closest('[role="radiogroup"], [role="tablist"], [role="group"]');
+    if (!w) return false;
+    if (t!.matches(':focus-visible')) return true;
+    t!.blur();
+    return false;
+  };
+  useHotkeys('mod+right', () => step(1), { preventDefault: true }, [pos, onPick, order.length]);
+  useHotkeys('mod+left', () => step(-1), { preventDefault: true }, [pos, onPick, order.length]);
+  useHotkeys('right', (e) => !arrowsTaken(e) && (e.preventDefault(), step(1)), [pos, onPick, order.length]);
+  useHotkeys('left', (e) => !arrowsTaken(e) && (e.preventDefault(), step(-1)), [pos, onPick, order.length]);
   const recipe = recipeOf(state, p.id);
   // Which tool the strip has open: Edit, Crop, Masking, Presets, History (design pass v2).
   const [tab, setTab] = useState('edit');
@@ -160,7 +178,12 @@ export function EditScreen({ id }: { id: string }) {
   // The take's Amount, like a Lightroom preset's: 0 = your edit, 100 = the take, up to 150.
   const [amount, setAmount] = useState(100);
   useEffect(() => setAmount(100), [p.id, take?.id]);
-  const takeUrl = useSuggestionImage(take, 1600, amount / 100);
+  // Hovering a take previews it on the photo like picking it, until the mouse leaves (Greg,
+  // 2026-11-01). undefined: no hover; -1: your edit.
+  const [peek, setPeek] = useState<number | undefined>(undefined);
+  useEffect(() => setPeek(undefined), [p.id]);
+  const view = peek === undefined ? take : peek >= 0 ? takes.list[peek] ?? null : null;
+  const viewUrl = useSuggestionImage(view, 1600, view === take ? amount / 100 : 1);
   const cycle = (d: number) => {
     const n = takes.list.length + 1;
     if (n <= 1) return;
@@ -238,10 +261,20 @@ export function EditScreen({ id }: { id: string }) {
     setSelSpot(null);
   }, [tab, selSpot, recipe]);
   // G goes back to the grid as in every other view (Lightroom's Library key).
-  // The Shoot look: the whole Shoot matched to this Photo, under it in place of the filmstrip.
-  const [shootLook, setShootLook] = usePref<'on' | 'off'>('shoot-look', 'off');
-  const toggleShootLook = () => setShootLook(shootLook === 'on' ? 'off' : 'on');
-  useHotkeys('w', toggleShootLook, [shootLook]);
+  // Apply look to Shoot (ui/ApplyLook.tsx): the popover, and its quiet offer after a hand edit.
+  // The offer is keyed by this Photo's Version count, so Not now or Apply hides it until the next edit.
+  const [applyOpen, setApplyOpen] = useState(false);
+  useEffect(() => setApplyOpen(false), [p.id]);
+  const handVersions = state.versions[p.id] ?? [];
+  const offerKey = `${p.id}:${handVersions.length}`;
+  const [offerGone, setOfferGone] = useState<string | null>(null);
+  const offerCount = useOfferCount(p);
+  const offer = !/\.jpe?g$/i.test(p.file) && handVersions.at(-1)?.by === 'you' && offerGone !== offerKey && offerCount > 0 && !applyOpen;
+  useHotkeys('mod+shift+a', (e) => (e.preventDefault(), setApplyOpen(true)), [p.id]);
+  // Crop & straighten (ui/Framing.tsx): the AI's crops and straightens for the Shoot, ⌥⌘R (R is Crop).
+  const [framingOpen, setFramingOpen] = useState(false);
+  useEffect(() => setFramingOpen(false), [p.id]);
+  useHotkeys('mod+alt+r', (e) => (e.preventDefault(), setFramingOpen(true)), [p.id]);
   useHotkeys('g', back, [state.look]);
   useHotkeys('escape', () => (rulerOut() ? setRuler(false) : brush ? setBrush(false) : refine !== 'off' ? setRefine('off') : depthView ? setDepthView(false) : tab === 'heal' && selSpot ? setSelSpot(null) : back()), ESC_OUTSIDE_DIALOGS, [brush, state.look, tab, selSpot, refine, depthView]);
   // Lightroom's Sync: fold this photo's sliders into the Shoot's Look.
@@ -300,16 +333,11 @@ export function EditScreen({ id }: { id: string }) {
   // The panel shows the takes coming, so no toast.
   const more = () =>
     requestSuggestions(p.id).catch((e) => dispatch({ type: 'toast', text: `Couldn't ask: ${String(e).replace(/^Error: /, '')}` }));
-  const toRest = () =>
-    applyToRest(p.id, recipe)
-      .then((n) => dispatch({ type: 'toast', text: `Matching ${n} Photos to ${p.file} in the background. Nothing changes until you accept.` }))
-      .catch((e) => dispatch({ type: 'toast', text: `Couldn't start: ${String(e).replace(/^Error: /, '')}` }));
   useHotkeys('tab', (e) => (e.preventDefault(), cycle(1)), [takes.list.length]);
   useHotkeys('shift+tab', (e) => (e.preventDefault(), cycle(-1)), [takes.list.length]);
-  useHotkeys('enter', accept, [take, p.id, amount]);
+  useHotkeys('enter', accept, { enabled: !applyOpen }, [take, p.id, amount]);
   useHotkeys('backspace', dismiss, [take]);
   useHotkeys('r', () => void more(), [p.id]);
-  useHotkeys('mod+shift+a', (e) => (e.preventDefault(), void toRest()), [p.id, recipe]);
 
   const setFromPreset = (r: Recipe, label: string, key?: string) => dispatch({ type: 'recipe/set', id: p.id, recipe: r, label, by: 'you', key });
   // While a handle is dragged (a Linear or Radial Mask, the crop box) the preview follows it;
@@ -450,6 +478,7 @@ export function EditScreen({ id }: { id: string }) {
       list={takes.list}
       pick={pick}
       onPick={setPick}
+      onPeek={setPeek}
       onAccept={accept}
       amount={amount}
       onAmount={setAmount}
@@ -484,7 +513,7 @@ export function EditScreen({ id }: { id: string }) {
   const controls = (
     <>
     <Navigator z={zp.z}>
-      <PhotoView photo={p} recipe={live} look={state.look} rendered={render.url} style={{ width: '100%', borderRadius: 0 }} />
+      <PhotoView photo={p} recipe={live} look={state.look} rendered={render.url} style={{ borderRadius: 0 }} />
     </Navigator>
     <div className="dev-scroll" role="tabpanel" aria-label={tab}>
       {tab === 'edit' && <EditPanel key={p.id} photo={p} recipe={recipe} look={state.look} versions={versions.length} shown={shown} onShown={setShown} onHover={setHover} onAuto={auto} onSync={sync} onPick={(label, then) => setPicking({ label, then })} takes={takesPanel} lensBlur={{ visualize: depthView, onVisualize: setDepthView, refine, onRefine: setRefine, size: refineSize, onSize: setRefineSize, depth }} />}
@@ -494,6 +523,7 @@ export function EditScreen({ id }: { id: string }) {
       {tab === 'presets' && <PresetsPanel photo={p} recipe={recipe} look={state.look} onHover={setHover} onSet={setFromPreset} onAuto={auto} />}
       {tab === 'history' && historyPanel}
     </div>
+    {offer && tab === 'edit' && <ApplyLookOffer count={offerCount} onOpen={() => setApplyOpen(true)} onDismiss={() => setOfferGone(offerKey)} />}
     </>
   );
   const strip = (
@@ -527,16 +557,17 @@ export function EditScreen({ id }: { id: string }) {
               <Kbd quiet>{'\\'}</Kbd> {take ? 'your edit' : 'before'}
             </span>
           </Tip>
-          <Tip label="Match the rest of the Shoot to this Photo, as Suggestions" keys="⇧⌘A">
-            <Button variant="ghost" size="sm" onClick={() => void toRest()} data-testid="apply-rest">
-              <Copy size={12} /> Apply to rest
+          <ApplyLook hero={p} recipe={live} open={applyOpen} onOpenChange={setApplyOpen} before={before} onApplied={() => setOfferGone(offerKey)}>
+            <Button variant="ghost" size="sm" className={applyOpen ? 'bg-chip text-text' : undefined} aria-label="Apply look to Shoot (⇧⌘A)" title="Apply this Photo's look to the rest of the Shoot, each matched to its own light (⇧⌘A)" data-testid="apply-look-open">
+              <Copy size={12} /> Apply look
+              {offer && <span className="apply-dot" aria-hidden />}
             </Button>
-          </Tip>
-          <Tip label="The whole Shoot under this Photo, matched to each frame's light as you edit" keys="W">
-            <Button variant="ghost" size="sm" className={shootLook === 'on' ? 'bg-chip text-text' : undefined} onClick={toggleShootLook} aria-pressed={shootLook === 'on'} data-testid="shoot-look-toggle">
-              <GalleryHorizontal size={12} /> Shoot look
+          </ApplyLook>
+          <Framing open={framingOpen} onOpenChange={setFramingOpen} before={before}>
+            <Button variant="ghost" size="sm" className={framingOpen ? 'bg-chip text-text' : undefined} aria-label="Crop and straighten the Shoot (⌥⌘R)" title="Straighten crooked horizons and walls, and tighten loose framing, across the Shoot (⌥⌘R)" data-testid="framing-open">
+              <CropIcon size={12} /> Crop &amp; straighten
             </Button>
-          </Tip>
+          </Framing>
           <Button variant="ghost" size="sm" className={masks ? 'bg-chip text-text' : undefined} onClick={() => setMasks(!masks)} aria-pressed={masks}>
             <Layers size={12} /> Masks
           </Button>
@@ -545,15 +576,15 @@ export function EditScreen({ id }: { id: string }) {
           </Button>
         </header>
         <div className="stage" data-testid="edit-stage" {...zp.stageProps}>
-          <div className="stage-fit"><PhotoView photo={p} size="full" recipe={take && !before ? take.recipe : live} look={state.look} original={before && !take} rendered={take ? (before ? render.url : takeUrl) : (detail.url ?? render.url)} engineMasks={take ? undefined : engineMasks} showMasks={(masks || brush || tab === 'masking') && !before && !take} maskFocus={tab === 'masking' && selMask && !masks ? selMask : null} className={brush || painting ? 'brushing' : ''} {...(brush ? brushHandlers : refineHandlers)}>
-            {before && !take && <span className="compare-flag">Before</span>}
-            {take && <span className="compare-flag" data-testid="previewing">{before ? 'Your edit' : `Previewing · ${take.title}`}</span>}
-            {!LIVE && take?.recipe.crop && !before && (
-              <span className="crop-box" style={{ left: `${take.recipe.crop.x * 100}%`, top: `${take.recipe.crop.y * 100}%`, width: `${take.recipe.crop.w * 100}%`, height: `${take.recipe.crop.h * 100}%`, transform: `rotate(${take.recipe.crop.angle}deg)` }} />
+          <div className="stage-fit"><PhotoView photo={p} size="full" recipe={view && !before ? view.recipe : live} look={state.look} original={before && !view} rendered={view ? (before ? render.url : viewUrl) : (detail.url ?? render.url)} engineMasks={view ? undefined : engineMasks} showMasks={(masks || brush || tab === 'masking') && !before && !view} maskFocus={tab === 'masking' && selMask && !masks ? selMask : null} className={brush || painting ? 'brushing' : ''} {...(brush ? brushHandlers : refineHandlers)}>
+            {before && !view && <span className="compare-flag">Before</span>}
+            {view && <span className="compare-flag" data-testid="previewing">{before ? 'Your edit' : `Previewing · ${view.title}`}</span>}
+            {!LIVE && view?.recipe.crop && !before && (
+              <span className="crop-box" style={{ left: `${view.recipe.crop.x * 100}%`, top: `${view.recipe.crop.y * 100}%`, width: `${view.recipe.crop.w * 100}%`, height: `${view.recipe.crop.h * 100}%`, transform: `rotate(${view.recipe.crop.angle}deg)` }} />
             )}
-            {LIVE && render.busy && !before && !take && <span className="compare-flag" data-testid="rendering">Rendering…</span>}
+            {LIVE && render.busy && !before && !view && <span className="compare-flag" data-testid="rendering">Rendering…</span>}
             {brush && !stroke && <span className="compare-flag">Drag to paint a Mask · Esc to stop</span>}
-            {lensOn && depthView && depth.info?.image && !before && !take && <img className="depth-view" src={depth.info.image} alt="Depth map" data-testid="depth-view" />}
+            {lensOn && depthView && depth.info?.image && !before && !view && <img className="depth-view" src={depth.info.image} alt="Depth map" data-testid="depth-view" />}
             {refineDots.map((d, i) => (
               <span key={i} className={`refine-dot ${d.mode}`} style={{ left: `${d.x * 100}%`, top: `${d.y * 100}%`, width: dotSize(d.r), aspectRatio: '1' }} />
             ))}
@@ -608,7 +639,7 @@ export function EditScreen({ id }: { id: string }) {
           </PhotoView></div>
           <ZoomReadout z={zp.z} loading={detail.loading} />
         </div>
-        {shootLook === 'on' ? <ShootLookStrip hero={p} recipe={live} /> : <Filmstrip order={order} pos={pos} open={(n) => go({ name: 'edit', id: n })} />}
+        <Filmstrip order={order} pos={pos} open={(n) => go({ name: 'edit', id: n })} />
       </main>
       <Agent ctx={`edit:${p.id}`} chips={[p.file, ...(recipe.local.length ? [`${recipe.local.length} Masks`] : [])]} placeholder="A bit more on the face…" header={controls} strip={strip} />
     </>

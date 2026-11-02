@@ -8,7 +8,7 @@
 # and agent worktrees start without fixtures/raw. Does nothing on Greg's Mac (no shared folder).
 # Never fails the caller: every step is best-effort. Quiet unless it changes something.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 0
 shared=/mnt/project-files
 [ -d "$shared" ] || exit 0
 

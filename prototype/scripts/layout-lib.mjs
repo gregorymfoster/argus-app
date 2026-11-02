@@ -1,7 +1,7 @@
 // Layout checks shared by the screenshot scripts: header and footer bars must stay one
 // line at Greg's real window sizes, with no label wrapped or clipped (Greg, 2026-10-18,
-// after headers broke at his MacBook's width). The sidebar foot (Restart to update, Background
-// work, the meter) is checked the same way (Greg, 2026-10-20, after the update pill wrapped).
+// after headers broke at his MacBook's width). The Status bar (the meter, Background
+// work, Restart to update) is checked the same way (Greg, 2026-10-20, after the update pill wrapped).
 
 // A webview at 125% zoom lays out like a window 1/1.25 as wide: 1280 px at 125% is 1024.
 export const WIDTHS = [1280, 1500, 1024];
@@ -11,11 +11,11 @@ export async function barProblems(p) {
   return p.evaluate(() => {
     const out = [];
     const name = (el) => (el.dataset.testid ? `[${el.dataset.testid}]` : `${el.tagName.toLowerCase()}${el.className && typeof el.className === 'string' ? '.' + el.className.split(' ').filter(Boolean).slice(0, 2).join('.') : ''}`);
-    for (const bar of document.querySelectorAll('.panel-head, .panel-foot, .import-strip, .loupe-bar, .view-foot, .look-bar, .sidebar-foot, .sidebar .nav-import')) {
+    for (const bar of document.querySelectorAll('.panel-head, .panel-foot, .import-strip, .loupe-bar, .view-foot, .look-bar, .status-bar, .sidebar .nav-import')) {
       const box = bar.getBoundingClientRect();
       if (box.width === 0) continue;
       const where = `${name(bar)} "${bar.textContent.trim().slice(0, 30)}"`;
-      if (box.height > 44 && !bar.matches('.sidebar-foot')) out.push(`${where} is ${Math.round(box.height)}px tall (wrapped)`);
+      if (box.height > 44) out.push(`${where} is ${Math.round(box.height)}px tall (wrapped)`);
       for (const el of bar.querySelectorAll('*')) {
         const r = el.getBoundingClientRect();
         if (r.width === 0 || getComputedStyle(el).display === 'none') continue;

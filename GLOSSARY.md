@@ -89,8 +89,12 @@ The Mac's record of how Argus ran, for tuning and fixing it: every command, Queu
 _Avoid_: Telemetry, trace, analytics
 
 **Resource meter**:
-What the AI is taking from the Mac right now and since launch: CPU, memory, power and GPU for the Local model (Ollama), Claude and Argus itself. A line under Background work, with a panel.
+What the AI is taking from the Mac right now and since launch: CPU, memory, power and GPU for the Local model (Ollama), Claude and Argus itself. The first item in the Status bar, with a panel.
 _Avoid_: Activity monitor, stats, usage widget
+
+**Status bar**:
+The thin bar along the bottom of the window in every mode: the Resource meter and running work (Import, Export, AI cull, the Queue) on the left, the screen's own key hints in the middle, the app update on the right.
+_Avoid_: Footer, activity center, tray
 
 **Backup**:
 A whole copy of a Library's database (Verdicts, Recipes, Looks), kept in the Library's `backups/` folder. Argus makes one a day and before every upgrade. Originals and previews are never in it.
@@ -178,6 +182,18 @@ _Avoid_: Module, tab, step
 What Cull mode shows at once: one Stack (best frame first), or a short run of single frames between Stacks (up to six), so every Photo of a Shoot comes up exactly once. ↵ ends a moment and logs it to the Usage log as a choice set.
 _Avoid_: Group, page, batch
 
+**Round**:
+One more pass of Cull mode over the keepers of the last (Greg, 2026-11-01: "I like recursive culling passes"). Pass 1 flags every Photo. Round 2 restacks the Picks into Moments and goes through them again, Z keeping and X cutting; Round 3 runs over Round 2's keepers, and so on. A cut never takes the Pick away, it only stops the Photo going further, so a Photo's Round is how far it got (R2, R3 on its tile; the Library filters by it). Stars stay the person's own.
+_Avoid_: Pass 2 (in the UI), second cull, re-cull
+
+**Moment rail**:
+Cull mode's left column: the Shoot's Moments in order, with how far the cull has got.
+_Avoid_: Sidebar, queue
+
+**Picks rail**:
+Edit mode's left column: the Shoot's Picks in the order to work through them. Shoot matches waiting to be accepted come first (Accept all is one Undo), then Picks with no edit yet, then the edited ones. ⌘← and ⌘→ in Edit follow it.
+_Avoid_: Filmstrip, sidebar, to-do list
+
 **Contact sheet**:
 Small previews of every Photo in a Shoot, in time order, with their Stacks and signals. The Agent reads it so it judges each Photo against the whole Shoot.
 _Avoid_: Overview, summary, context dump
@@ -189,8 +205,12 @@ A shared creative style (color grade, contrast, mood) applied across a set of Ph
 _Avoid_: Preset, filter, style
 
 **Shoot look**:
-A Shoot's style set by hand-editing a hero or two while the whole Shoot shows the edit, each frame matched to its own light (the Shoot match). **Lock look** readies that match as a Suggestion on every frame that isn't a Reject; nothing changes until the person accepts.
+A Shoot's style, spread from a hand-edited hero to the rest of the Shoot with **Apply look** (⇧⌘A in Edit, 2026-11-01): a popover shows every frame as it will look, each matched to its own light (the Shoot match), and Apply writes it on the ticked frames as one Undo. Quick fixes and AI Masks (Brighten faces, Enhance sky) are found again in each frame; frames edited by hand, crops, spots and drawn Masks stay as they are. (Replaced Lock look and the Shoot look strip.)
 _Avoid_: batch edit, sync
+
+**Crop & straighten**:
+The AI's straighten and crop for the frames of a Shoot, reviewed in one Edit popover (⌥⌘R) laid out like Apply look: only frames with something to fix show, each as it would look; untick to leave one out, and Apply writes the rest as one Undo that changes only the crop. A straighten (0.7° to 3.5°) only where a horizon over water or architecture shows the lean; "Straighten + crop" also punches in where the people sit loose, off by default. Frames already cropped are never touched (`engine/src/framing/`).
+_Avoid_: auto crop, recompose, framing (in the UI)
 
 **Crop offer**:
 "Crop like this": after the person crops a Photo by hand, the same crop offered as a Suggestion to the frames of its Shoot with the same shape shot within 2 minutes of it (or folded into a Shoot match already waiting there). Accepting one changes only the crop.
@@ -265,7 +285,7 @@ What the local Mask models found in a Photo (people, skin, hair, sky, faces with
 _Avoid_: Detection, segmentation result
 
 **Denoise**:
-Lightroom's AI Denoise: a learned model (SCUNet) runs once over a RAW's full-size image in the background and the result is kept as the Photo's denoised base in the Library's cache. The Recipe's Denoise Amount (0-100, 0 is off) blends that base over the plain image, so the slider moves instantly once the base exists. RAW only. Separate from the manual Noise reduction sliders.
+Lightroom's AI Denoise: a learned model (SCUNet) runs once over a RAW's full-size image in the background and the result is kept as the Photo's denoised base in the Library's cache. The Recipe's Denoise Amount (0-100, 0 is off) blends that base over the plain image, so the slider moves instantly once the base exists. RAW only. Separate from the manual Noise reduction sliders. **Auto Denoise** is the AI setting that Amount itself: Auto, Suggestions and Shoot match give each noisy RAW the Amount its measured sensor noise calls for (none on a clean frame), and never override one the person set. An AI-set Amount's base is made when the person opens the Photo or exports it.
 _Avoid_: Noise reduction (that's the manual sliders), enhance, clean up
 
 **Lens Blur**:

@@ -1,17 +1,15 @@
 // "Restart to update", like Cursor and Claude (Greg, 2026-10-18): every fresh launch checks
-// for a release (Greg, 2026-10-23), a quiet toast says once that one is downloading, then a
-// small button in the sidebar footer restarts into it, and a toast says so once on screens
-// without the sidebar. Check for Updates… (menu, ⌘K, Settings) reports what it found. See
+// for a release (Greg, 2026-10-23), a quiet toast says once that one is downloading, then
+// Restart to update at the right of the Status bar (ui/StatusBar.tsx) restarts into it, and a
+// toast says so once. Check for Updates… (menu, ⌘K, Settings) reports what it found. See
 // src/data/updates.ts.
 
 import { useEffect, useRef } from 'react';
-import { ArrowUpCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { onMenuCheck, restartToUpdate, useUpdate, type UpdateStatus } from '../data/updates';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 /** The release notes, first few lines. */
-function Notes({ s }: { s: UpdateStatus }) {
+export function UpdateNotes({ s }: { s: UpdateStatus }) {
   const lines = (s.notes ?? '').split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 6);
   return (
     <div className="update-notes">
@@ -24,26 +22,6 @@ function Notes({ s }: { s: UpdateStatus }) {
         </div>
       ))}
     </div>
-  );
-}
-
-/** Sidebar footer: shows only once a release is installed and waiting for a restart. */
-export function UpdateButton() {
-  const s = useUpdate();
-  if (s?.state !== 'ready') return null;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button className="update-button" onClick={() => void restartToUpdate()} data-testid="update-restart">
-          <ArrowUpCircle size={13} />
-          <span className="update-label">Restart to update</span>
-          <span className="update-version mono faint">{s.version}</span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right" className="max-w-[300px]">
-        <Notes s={s} />
-      </TooltipContent>
-    </Tooltip>
   );
 }
 

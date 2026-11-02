@@ -7,7 +7,8 @@ export type Route =
   | { name: 'loupe'; id: string }
   | { name: 'compare'; ids: string[] }
   // Cull mode (⌘2): the Shoot moment by moment. `id` opens on that Stack or Photo.
-  | { name: 'moments'; id?: string }
+  // `pass` 2 and on is a Round over the Picks (#/round/2, #/round/2/<id>).
+  | { name: 'moments'; id?: string; pass?: number }
   // Export mode (⌘4).
   | { name: 'export' }
   | { name: 'look' }
@@ -15,7 +16,8 @@ export type Route =
   | { name: 'people'; id?: string };
 
 function parse(hash: string): Route {
-  const [, name, arg] = hash.replace(/^#/, '').split('/');
+  const [, name, arg, more] = hash.replace(/^#/, '').split('/');
+  if (name === 'round' && Number(arg) > 1) return more ? { name: 'moments', pass: Number(arg), id: more } : { name: 'moments', pass: Number(arg) };
   if ((name === 'loupe' || name === 'edit') && arg) return { name, id: arg };
   if (name === 'compare' && arg) return { name, ids: arg.split(',') };
   // `cull` is the Library's grid (⌘1), named before the modes; `library` is its alias, and
@@ -29,6 +31,7 @@ function parse(hash: string): Route {
 
 function href(r: Route) {
   if (r.name === 'compare') return `#/compare/${r.ids.join(',')}`;
+  if (r.name === 'moments' && r.pass && r.pass > 1) return `#/round/${r.pass}${r.id ? `/${r.id}` : ''}`;
   return 'id' in r && r.id ? `#/${r.name}/${r.id}` : `#/${r.name}`;
 }
 

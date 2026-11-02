@@ -77,6 +77,8 @@ export interface Photo {
   /** The AI's star Rating (1-5), and the person's own (0-5) when they set one. */
   aiStars?: number;
   personStars?: number;
+  /** Cull Round marks the Library has (pass 2 and on: true kept, false cut). */
+  passMarks?: Record<number, boolean>;
   /** Rank in the Shoot's Best Photos (1 = best). */
   best?: number;
   /** Live mode: URL of the engine's preview JPEG, used instead of painting. */

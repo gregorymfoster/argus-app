@@ -117,14 +117,22 @@ pub fn tag(
         let jpeg = crate::tools::encode_jpeg(&img)?;
         let text = ask(&lib, &photo)?;
         drop(lib);
-        let reply = chat.next(
+        let reply = match chat.next(
             SYSTEM,
             &[Msg {
                 role: Role::User,
                 text,
                 images: vec![jpeg],
             }],
-        )?;
+        ) {
+            // A reply cut off at the length cap is one unreadable reply, not a dead model.
+            Err(e) if e.0.contains("output tokens without finishing") => {
+                eprintln!("argus tag: Photo {id}: {e}");
+                progress(i + 1, photos.len());
+                continue;
+            }
+            r => r?,
+        };
         if let Some((caption, keywords)) = parse(&reply) {
             let mut lib = Library::open(library)?;
             lib.suggest_tags(id, Some(&caption), &keywords)?;

@@ -75,7 +75,7 @@ export function usePeople(): People | null {
   const [people, setPeople] = useState<People | null>(null);
   useEffect(() => {
     let live = true;
-    void loadPeople().then((p) => live && setPeople(p));
+    void loadPeople().then((p) => live && setPeople(p), (e) => console.error('people failed', e));
     return () => {
       live = false;
     };

@@ -35,6 +35,7 @@ mod denoise;
 mod edit_head;
 mod exemplars;
 mod export;
+mod framing;
 mod golden;
 mod jobs;
 mod keywords;

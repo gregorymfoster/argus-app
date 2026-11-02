@@ -18,10 +18,14 @@ function DialogContent({
   className,
   children,
   closable = true,
+  ownKeys = false,
   onEscapeKeyDown,
+  onKeyDown,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   closable?: boolean;
+  /** The dialog binds plain-key hotkeys of its own (Import's ↵ and Space), so keys still reach the document. */
+  ownKeys?: boolean;
 }) {
   return (
     <DialogPrimitive.Portal>
@@ -35,6 +39,12 @@ function DialogContent({
         onEscapeKeyDown={(e) => {
           dialogEscape = e;
           onEscapeKeyDown?.(e);
+        }}
+        onKeyDown={(e) => {
+          onKeyDown?.(e);
+          // A plain key pressed in a dialog stays in it: the screen behind must not Pick, Reject or move on.
+          // Esc (Radix closes on it) and ⌘/⌃ shortcuts (⌘K, ⌘↵) still pass.
+          if (!ownKeys && e.key !== 'Escape' && !e.metaKey && !e.ctrlKey) e.stopPropagation();
         }}
         {...props}
       >

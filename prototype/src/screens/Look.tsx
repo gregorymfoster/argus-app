@@ -11,9 +11,9 @@ import type { Adjust, NumKey, Photo } from '../domain/types';
 import { fmt, recipeOf, useLibrary, verdictOf } from '../store/library';
 import { go } from '../router';
 import { Agent } from '../agent/AgentPanel';
-import { PhotoView } from '../ui/PhotoView';
+import { PhotoView, photoRatio } from '../ui/PhotoView';
 import { Kbd, Slider, Tip, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
-import { BackToGrid, Hints, QueueMeter } from '../ui/ViewBar';
+import { BackToGrid, Hints } from '../ui/ViewBar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
 
@@ -69,6 +69,8 @@ function BeforeAfter({ p, layout, solo }: { p: Photo; layout: Layout; solo: bool
         <div
           className="split-inner"
           ref={box}
+          // Sized from the Photo's own shape, so a portrait stands whole (the CSS default is 3:2).
+          style={{ width: `min(100cqw, calc(${photoRatio(p)} * 100cqh))` }}
           onPointerDown={(e) => {
             (e.target as HTMLElement).setPointerCapture(e.pointerId);
             drag(e);
@@ -267,7 +269,6 @@ export function LookScreen({ onExport }: { onExport: () => void }) {
           <span className="hints">
             <Kbd quiet>Y</Kbd> cycle
           </span>
-          <QueueMeter />
         </header>
         {!picks.length || !sel ? (
           <div className="faint" style={{ padding: 24 }}>No Picks yet. The AI cull only sets aside broken frames, so Pick the ones you want in the grid (Z), then come back to set a Look.</div>

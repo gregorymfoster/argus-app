@@ -44,7 +44,7 @@ export function useLearnAsYouCull(state: State, dispatch: (a: Action) => void, o
         if (states) dispatch(states);
         if (order) keepersOrder(order, (id) => latest.current.overrides[id] != null);
         setL({ picks, rejects, learning, changed, at: Date.now() });
-      });
+      }, (e) => console.warn('rerate failed', e));
     }, REST_MS);
     return () => clearTimeout(t);
   }, [picks, rejects, on, culled, dispatch]);

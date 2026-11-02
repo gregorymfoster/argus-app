@@ -1,6 +1,7 @@
-// Shoot look check against a real engine: a Shoot of sample RAWs, the hero in Edit with the
-// whole Shoot under it (W), a slider drag on the hero redrawing every frame matched to its own
-// light, then Lock look (⇧L) readying a Shoot match on every frame for Accept all in the grid.
+// Shoot look check against a real engine: a Shoot of sample RAWs, a hand edit on the hero in
+// Edit bringing up the Apply look offer, the popover drawing every frame matched to its own
+// light, one frame left out, Apply (↵) writing the rest as one Undo, and ⌘Z taking it off.
+// Then Crop like this in the grid.
 // Screenshots in out/shots/shoot-look-*.png.
 //
 //   node scripts/shoot-look-check.mjs [raw-folder]   (default ../fixtures/raw-a7rv, else ../fixtures/raw)
@@ -41,49 +42,57 @@ try {
     if (await fetch('http://127.0.0.1:7879/api/list_shoots').then((r) => r.ok, () => false)) break;
     await new Promise((r) => setTimeout(r, 200));
   }
-  // No AI work in the way: only the Shoot match the lock asks for runs, and it needs no model.
+  // No AI work in the way: Apply look needs no model.
   for (const j of await api('list_jobs', { status: 'queued' })) await api('cancel_job', { job_id: j.id });
   const photos = await api('list_photos', {});
   const hero = photos[0].id;
   const p = await (await browser.newContext({ viewport: { width: 1500, height: 900 }, deviceScaleFactor: 2 })).newPage();
   p.on('pageerror', (e) => failures.push(`page error: ${e.message}`));
   await p.goto(`http://localhost:5199/?library=live#/edit/${hero}`);
-  await p.getByTestId('shoot-look-toggle').waitFor({ timeout: 30000 });
-  await p.keyboard.press('w');
-  const tiles = p.getByTestId('shoot-look-tile');
-  await tiles.first().waitFor({ timeout: 10000 });
-  check((await tiles.count()) === raws.length, `the whole Shoot shows under the hero (${await tiles.count()} of ${raws.length})`);
-  const drawn = () => p.locator('[data-drawn=yes]').count();
-  const t0 = Date.now();
-  for (; Date.now() - t0 < 120000 && (await drawn()) < raws.length; ) await p.waitForTimeout(250);
-  check((await drawn()) === raws.length, `every frame is drawn matched to the hero, in ${((Date.now() - t0) / 1000).toFixed(1)} s the first time`);
-  await p.screenshot({ path: `${out}shoot-look-read.png` });
+  await p.getByTestId('apply-look-open').waitFor({ timeout: 30000 });
 
-  // Drag the hero's Temperature: every other frame redraws with it.
-  const other = p.locator('[data-drawn=yes] img').nth(1);
-  const was = await other.getAttribute('src');
+  // A hand edit on the hero brings up the quiet offer in the Edit panel.
   const temp = p.getByRole('slider', { name: /^Temp/ }).first();
   await temp.focus();
   for (let i = 0; i < 4; i++) await p.keyboard.press('Shift+ArrowRight');
-  const t1 = Date.now();
-  for (; Date.now() - t1 < 20000 && (await other.getAttribute('src')) === was; ) await p.waitForTimeout(100);
-  check((await other.getAttribute('src')) !== was, `a drag on the hero redraws the other frames (${Date.now() - t1} ms)`);
-  await p.waitForTimeout(1500);
-  const ms = await p.getByTestId('shoot-look-ms').innerText().catch(() => '');
-  check(/redrawn in/.test(ms), `the strip says how long a redraw took (${ms})`);
-  await p.screenshot({ path: `${out}shoot-look-drag.png` });
+  await p.getByTestId('apply-look-offer').waitFor({ timeout: 10000 });
+  check(true, 'a hand edit brings up the Apply look offer');
+  await p.screenshot({ path: `${out}shoot-look-offer.png` });
+  await p.getByTestId('apply-look-offer-open').click();
 
-  // Lock look: to the grid, where every other frame gets a Shoot match to accept as one.
-  await p.keyboard.press('Shift+L');
-  await p.waitForURL(/#\/cull/, { timeout: 10000 });
-  await p.getByTestId('pre-edits').waitFor({ timeout: 120000 });
-  const line = await p.getByTestId('pre-edits').innerText();
-  check(new RegExp(`ready for ${raws.length - 1} Photos`).test(line), `Lock look readies every other frame (${line.split('\n')[0]})`);
-  await p.screenshot({ path: `${out}shoot-look-locked.png` });
-  await p.getByTestId('pre-edits-accept').click();
-  await p.getByTestId('pre-edits').waitFor({ state: 'detached', timeout: 20000 });
-  const recipes = await Promise.all(photos.map((ph) => api('read_recipe', { photo_id: ph.id })));
-  check(recipes.filter((r) => r?.recipe).length === raws.length, 'Accept all edits every frame');
+  // The popover: every frame of the Shoot (no Picks yet, so all but Rejects), each drawn
+  // matched to its own light.
+  const tiles = p.getByTestId('apply-look-tile');
+  await tiles.first().waitFor({ timeout: 10000 });
+  check((await tiles.count()) === raws.length, `the popover shows the whole Shoot (${await tiles.count()} of ${raws.length})`);
+  const drawn = () => p.locator('[data-testid=apply-look-tile][data-drawn=yes]').count();
+  const t0 = Date.now();
+  for (; Date.now() - t0 < 120000 && (await drawn()) < raws.length; ) await p.waitForTimeout(250);
+  check((await drawn()) === raws.length, `every frame is drawn matched to the hero, in ${((Date.now() - t0) / 1000).toFixed(1)} s the first time`);
+  await p.waitForTimeout(400);
+  await p.screenshot({ path: `${out}shoot-look-popover.png` });
+
+  // Leave one frame out, then Apply (↵): the rest get the look as one Undo.
+  const leftOut = tiles.nth(1);
+  const leftName = (await leftOut.locator('.apply-cap').innerText()).trim().replace(/\.\w+$/, '');
+  await leftOut.click();
+  const go = await p.getByTestId('apply-look-go').innerText();
+  check(new RegExp(`Apply to ${raws.length - 2}`).test(go), `unticking a frame leaves it out (${go.split('\n')[0]})`);
+  await p.keyboard.press('Enter');
+  await p.getByTestId('apply-look').waitFor({ state: 'detached', timeout: 30000 });
+  const recipes = async () => Object.fromEntries(await Promise.all(photos.map(async (ph) => [ph.file_name.replace(/\.\w+$/, ''), await api('read_recipe', { photo_id: ph.id })])));
+  let r = await recipes();
+  const ai = Object.entries(r).filter(([, v]) => v?.author === 'ai').map(([k]) => k);
+  check(ai.length === raws.length - 2 && !ai.includes(leftName), `Apply edits every ticked frame and not ${leftName} (${ai.length} of ${raws.length - 2})`);
+  await p.screenshot({ path: `${out}shoot-look-applied.png` });
+  await p.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+  for (let i = 0; i < 50; i++) {
+    r = await recipes();
+    if (!Object.values(r).some((v) => v?.author === 'ai')) break;
+    await p.waitForTimeout(200);
+  }
+  check(!Object.values(r).some((v) => v?.author === 'ai'), 'one Undo takes the look off every frame');
+  await p.goto(`http://localhost:5199/?library=live#/cull`);
 
   // Crop like this: a hand crop on one frame is offered to the frame shot 39 s after it (the
   // a7R V samples DSC08006 and DSC08009), on its own or inside a fresh Shoot match.

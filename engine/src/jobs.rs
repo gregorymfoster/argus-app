@@ -39,8 +39,8 @@ use std::time::Duration;
 ///   ([`crate::edit_head::learn_library`]), queued after an export
 /// - `download_model` {}: the search-by-meaning model into the models folder
 ///   ([`crate::meaning::download`], progress in MB), then an `analyze` of the whole Library
-/// - `denoise` {photo_id}: AI Denoise's base for one RAW ([`crate::denoise`]), queued when a
-///   Recipe with a Denoise Amount is saved
+/// - `denoise` {photo_id}: AI Denoise's base for one RAW ([`crate::denoise`]), queued when the
+///   person saves a Denoise Amount, or opens a Photo whose AI edit has one
 /// - `pre_edit_shoot` {shoot_id, every?}: edit as you cull, a Shoot match Suggestion for each Pick and
 ///   likely keeper from the Shoot's hand edits ([`crate::pre_edit`], no model), queued when the
 ///   person saves an edit of a RAW and when the AI's stars refresh; with `every` (Lock look) for
@@ -83,6 +83,8 @@ pub const PRIORITY_PREFETCH: i64 = 70;
 /// The person opened `photo_id` (and `next` follow it in the filmstrip): their queued
 /// Suggestions jump ahead of background work. Returns how many jobs moved up.
 pub fn focus(lib: &mut Library, photo_id: PhotoId, next: &[PhotoId]) -> Result<usize> {
+    // An AI edit's Denoise gets its base when the person first looks (crate::denoise).
+    crate::denoise::queue_on_open(lib, photo_id)?;
     if !config(lib)?.focus_first {
         return Ok(0);
     }
@@ -771,8 +773,6 @@ struct ShootArgs {
     all: bool,
 }
 
-/// The Photos of a Shoot worth editing, best first: the AI's Best Photos in rank order,
-/// then Picks, then by stars, then capture order. Rejects are left out.
 /// Stars from which a frame counts as a likely keeper. The cull's Taste gives kept frames
 /// 3 to 5 stars for the top 70% of the Shoot and 2 for the rest.
 pub const KEEPER_STARS: u8 = 3;
@@ -782,14 +782,18 @@ pub const KEEPER_STARS: u8 = 3;
 /// (29 to 28, 2026-10-22), and get model takes when he opens them ([`focus`]). A model
 /// call is about 200 s a Photo on his Mac, so this roughly halves a card's AI pass.
 /// An unrated frame (no cull yet) has nothing to go on, so it counts as one; a burst's
-/// later frames wait for the person unless picked.
-fn likely_keeper(p: &crate::library::Photo) -> bool {
+/// later frames wait for the person unless picked. `leads` says whether `p` is the first
+/// frame of its burst that isn't a Reject (so a rejected cover doesn't leave the burst
+/// without takes).
+fn likely_keeper(p: &crate::library::Photo, leads: bool) -> bool {
     p.verdict == Verdict::Pick
         || p.best.is_some()
-        || ((p.stars == 0 || p.stars >= KEEPER_STARS) && p.stack_rank.unwrap_or(0) == 0)
+        || ((p.stars == 0 || p.stars >= KEEPER_STARS) && leads)
 }
 
-fn worth_editing(lib: &Library, shoot: ShootId) -> Result<Vec<(PhotoId, bool)>> {
+/// The Photos of a Shoot worth editing, best first: the AI's Best Photos in rank order,
+/// then Picks, then by stars, then capture order. Rejects are left out.
+fn worth_editing(lib: &Library, shoot: ShootId) -> Result<Vec<crate::library::Photo>> {
     let mut photos: Vec<_> = lib
         .list_photos(&crate::library::PhotoFilter {
             shoot: Some(shoot),
@@ -807,10 +811,15 @@ fn worth_editing(lib: &Library, shoot: ShootId) -> Result<Vec<(PhotoId, bool)>> 
             p.stack_rank.unwrap_or(0) > 0,
         )
     });
-    Ok(photos
-        .into_iter()
-        .map(|p| (p.id, p.verdict == Verdict::Pick))
-        .collect())
+    Ok(photos)
+}
+
+/// Whether `photo` already has fresh (not matched) Suggestions.
+fn has_fresh(lib: &Library, photo: PhotoId) -> Result<bool> {
+    Ok(lib
+        .suggestions(Some(photo), None, false)?
+        .iter()
+        .any(|s| s.reference_id.is_none()))
 }
 
 fn newest_shoot(lib: &Library) -> Result<ShootId> {
@@ -833,25 +842,39 @@ fn suggest_shoot(tools: &Tools, job: &Job) -> Result<Value> {
                 None => newest_shoot(&lib)?,
             };
             let all = worth_editing(&lib, shoot)?;
+            let pairs = |v: Vec<crate::library::Photo>| -> Vec<(PhotoId, bool)> {
+                v.into_iter()
+                    .map(|p| (p.id, p.verdict == Verdict::Pick))
+                    .collect()
+            };
             if a.all {
                 lib.set_setting(&on_open_key(shoot), &json!([]))?;
-                all
+                pairs(all)
             } else {
-                let photos: std::collections::HashMap<PhotoId, crate::library::Photo> = lib
-                    .list_photos(&crate::library::PhotoFilter {
-                        shoot: Some(shoot),
-                        verdict: None,
-                    })?
-                    .into_iter()
-                    .map(|p| (p.id, p))
-                    .collect();
-                let (now, later): (Vec<_>, Vec<_>) = all
-                    .into_iter()
-                    .partition(|(id, _)| photos.get(id).is_some_and(likely_keeper));
-                let later: Vec<PhotoId> = later.into_iter().map(|(id, _)| id).collect();
-                lib.set_setting(&on_open_key(shoot), &json!(later))?;
-                on_open = later.len();
-                now
+                // Each burst's lowest-ranked frame left after Rejects leads it.
+                let mut lead: std::collections::HashMap<i64, i64> = Default::default();
+                for p in &all {
+                    if let Some(s) = p.stack {
+                        let r = p.stack_rank.unwrap_or(0);
+                        lead.entry(s).and_modify(|m| *m = (*m).min(r)).or_insert(r);
+                    }
+                }
+                let (now, later): (Vec<_>, Vec<_>) = all.into_iter().partition(|p| {
+                    let leads = p
+                        .stack
+                        .is_none_or(|s| lead.get(&s) == Some(&p.stack_rank.unwrap_or(0)));
+                    likely_keeper(p, leads)
+                });
+                // A frame that already has fresh takes needs none when opened.
+                let mut wait = Vec::new();
+                for p in later {
+                    if a.redo || !has_fresh(&lib, p.id)? {
+                        wait.push(p.id);
+                    }
+                }
+                lib.set_setting(&on_open_key(shoot), &json!(wait))?;
+                on_open = wait.len();
+                pairs(now)
             }
         }
     };
@@ -859,11 +882,7 @@ fn suggest_shoot(tools: &Tools, job: &Job) -> Result<Value> {
     let mut skipped = 0;
     let total = targets.len() as i64;
     for (i, (photo, pick)) in targets.into_iter().enumerate() {
-        let has = lib
-            .suggestions(Some(photo), None, false)?
-            .iter()
-            .any(|s| s.reference_id.is_none());
-        if has && !a.redo {
+        if !a.redo && has_fresh(&lib, photo)? {
             skipped += 1;
             continue;
         }
@@ -938,7 +957,7 @@ fn match_hero(tools: &Tools, job: &Job) -> Result<Value> {
         Some(ids) => ids,
         None => worth_editing(&lib, hero.shoot_id)?
             .into_iter()
-            .map(|(id, _)| id)
+            .map(|p| p.id)
             .collect(),
     };
     let mut queued = Vec::new();

@@ -778,3 +778,93 @@ fn start_import_with_shoots_imports_each_split_as_its_own_shoot() {
         ]
     );
 }
+
+/// Cull Rounds (GLOSSARY: Round): pass 2 and on mark the Picks kept or cut. A Photo's Round is
+/// 1 plus the passes it was kept in, in a row; a cut never takes the Pick away; Undo puts the
+/// marks back, and Redo is the Undo undone.
+#[test]
+fn repeat_cull_passes_give_picks_a_round_that_undoes_with_the_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("2026-11-01_rounds");
+    for (i, f) in ["a.jpg", "b.jpg", "c.jpg"].iter().enumerate() {
+        write_jpeg(&src.join(f), 64, 48, 3 + i as u8);
+    }
+    let tools = Tools::new(dir.path().join("lib"));
+    dispatch(&tools, "import_folder", json!({ "folder": src })).unwrap();
+    let photos = dispatch(&tools, "photos", json!({})).unwrap();
+    let (a, b, c) = (
+        photos[0]["id"].clone(),
+        photos[1]["id"].clone(),
+        photos[2]["id"].clone(),
+    );
+    dispatch(&tools, "flag", json!({ "ids": [a, b], "verdict": "pick" })).unwrap();
+    let now = dispatch(&tools, "photo_states", json!({ "ids": [a, c] })).unwrap();
+    assert_eq!(
+        (now[0]["round"].clone(), now[1]["round"].clone()),
+        (json!(1), json!(0))
+    );
+
+    // Round 2: keep a, cut b, as one ↵.
+    let keep = json!({ "ids": [a], "pass": 2, "mark": "keep", "label": "Round 2: kept 1, cut 1" });
+    let r = dispatch(&tools, "mark_pass", keep).unwrap();
+    let batch = r["batch_id"].clone();
+    assert_eq!(r["photos"][0]["round"], 2);
+    let cut = json!({ "ids": [b], "pass": 2, "mark": "cut", "batch_id": batch });
+    let r = dispatch(&tools, "mark_pass", cut).unwrap();
+    assert_eq!(r["batch_id"], batch, "the cut joins the keep's batch");
+    assert_eq!(
+        r["photos"][0]["round"], 1,
+        "a cut Pick stays a Pick, at Round 1"
+    );
+    assert_eq!(r["photos"][0]["cut_in"], 2);
+    assert_eq!(r["photos"][0]["verdict"], "pick");
+
+    // Round 3 over a alone.
+    let r = dispatch(
+        &tools,
+        "mark_pass",
+        json!({ "ids": [a], "pass": 3, "mark": "keep" }),
+    )
+    .unwrap();
+    assert_eq!(r["photos"][0]["round"], 3);
+    let r3 = r["batch_id"].clone();
+    dispatch(&tools, "undo_batch", json!({ "batch_id": r3 })).unwrap();
+    let undo = dispatch(&tools, "undo_batch", json!({ "batch_id": batch })).unwrap();
+    assert_eq!(undo["passes"].as_array().unwrap().len(), 2);
+    let now = dispatch(&tools, "photo_states", json!({ "ids": [a, b] })).unwrap();
+    assert_eq!(
+        (now[0]["round"].clone(), now[1]["round"].clone()),
+        (json!(1), json!(1))
+    );
+    assert_eq!(now[1]["cut_in"], json!(null));
+    dispatch(
+        &tools,
+        "undo_batch",
+        json!({ "batch_id": undo["batch_id"] }),
+    )
+    .unwrap();
+    let now = dispatch(&tools, "photo_states", json!({ "ids": [a, b] })).unwrap();
+    assert_eq!(
+        (now[0]["round"].clone(), now[1]["cut_in"].clone()),
+        (json!(2), json!(2)),
+        "Redo"
+    );
+
+    // Clear takes a mark off; pass 1 isn't a mark (it is the flag), and a Reject has no Round.
+    let r = dispatch(
+        &tools,
+        "mark_pass",
+        json!({ "ids": [b], "pass": 2, "mark": "clear" }),
+    )
+    .unwrap();
+    assert_eq!(r["photos"][0]["cut_in"], json!(null));
+    assert!(dispatch(
+        &tools,
+        "mark_pass",
+        json!({ "ids": [a], "pass": 1, "mark": "keep" })
+    )
+    .is_err());
+    dispatch(&tools, "flag", json!({ "ids": [a], "verdict": "reject" })).unwrap();
+    let now = dispatch(&tools, "photo_states", json!({ "ids": [a] })).unwrap();
+    assert_eq!(now[0]["round"], 0);
+}

@@ -339,8 +339,14 @@ pub fn export_bench(tools: &Tools, folder: &Path, images: bool, edge: u32) -> Re
                 }
             }
         }
+        let rounds: BTreeMap<PhotoId, (u8, Option<u8>)> = lib
+            .cull_states(&list.iter().map(|p| p.id).collect::<Vec<_>>())?
+            .into_iter()
+            .map(|c| (c.id, (c.round, c.cut_in)))
+            .collect();
         let labels: Vec<Value> = list.iter().map(|p| {
             let h = histories.get(&p.id).cloned().unwrap_or_default();
+            let (round, cut_in) = rounds.get(&p.id).copied().unwrap_or_default();
             let stem = Path::new(&p.file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
             json!({
                 "image": format!("photos/{}", files.get(&p.id).cloned().unwrap_or_else(|| format!("{stem}.jpg"))),
@@ -349,6 +355,8 @@ pub fn export_bench(tools: &Tools, folder: &Path, images: bool, edge: u32) -> Re
                 "verdict": p.verdict.as_str(),
                 "verdict_by": p.verdict_by.map(|a| a.as_str()),
                 "rating": p.stars,
+                "round": round,
+                "cut_in": cut_in,
                 "ai_verdict": h.ai_verdict,
                 "ai_stars": h.ai_stars,
                 "aesthetics": null,
@@ -359,7 +367,7 @@ pub fn export_bench(tools: &Tools, folder: &Path, images: bool, edge: u32) -> Re
             &dir.join("labels.json"),
             &json!({
                 "shoot": name, "photos": labels.len(), "picks": picks,
-                "note": "From Argus's usage log: the person's final Verdicts and stars, with the AI cull's first ones. Rejects are real rejects here.",
+                "note": "From Argus's usage log: the person's final Verdicts and stars, with the AI cull's first ones. Rejects are real rejects here. `round` is how far a Pick got in repeat Cull passes (1: a Pick; k: kept in passes 2 to k), `cut_in` the pass that stopped it.",
                 "labels": labels,
             }),
         )?;

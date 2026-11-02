@@ -12,6 +12,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import { LIVE, aiName, asPerson, providerDown, liveShootId, readCull, saveChats, savedChats, saveRecipe, undoBatch, writeCull, type CullState, type CullWrite, type Written } from '../data/live';
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
 import { addAdjust, emptyRecipe } from '../domain/render';
+import { roundOf, marksFrom, type Marks, type Round } from '../domain/rounds';
 import type { Actor, Adjust, Correction, NumKey, LocalAdjust, Look, Recipe, Verdict, Version } from '../domain/types';
 
 interface ChatStep {
@@ -41,6 +42,8 @@ interface Undoable {
   /** Star Ratings: the AI's suggestion, and the person's own (which always wins). */
   aiStars: Record<string, number>;
   starOverrides: Record<string, number>;
+  /** Cull Rounds: each Photo's marks for pass 2 and on (domain/rounds.ts). */
+  passMarks: Record<string, Marks>;
   look: Look | null;
   recipes: Record<string, Recipe>;
 }
@@ -90,6 +93,8 @@ export type Action =
   | { type: 'cull/write'; verdicts: Record<string, Verdict>; stars?: Record<string, number> }
   | { type: 'stars/set'; id: string; stars: number; by: Actor }
   | { type: 'verdict/set'; id: string; verdict: Verdict; by: Actor }
+  /** A Cull Round's mark (pass 2 and on): kept, cut, or null to clear it. */
+  | { type: 'pass/set'; id: string; pass: number; kept: boolean | null }
   | { type: 'look/apply'; look: Look; corrections: Record<string, Correction>; ids: string[] }
   | { type: 'look/adjust'; key: NumKey; value: number }
   | { type: 'look/clear' }
@@ -126,6 +131,7 @@ function initial(skipImport = false): State {
     overrides: skipImport ? Object.fromEntries(PHOTOS.filter((p) => p.personVerdict).map((p) => [p.id, p.personVerdict!])) : {},
     aiStars: skipImport ? Object.fromEntries(PHOTOS.filter((p) => p.aiStars).map((p) => [p.id, p.aiStars!])) : {},
     starOverrides: skipImport ? Object.fromEntries(PHOTOS.filter((p) => p.personStars != null).map((p) => [p.id, p.personStars!])) : {},
+    passMarks: skipImport ? Object.fromEntries(PHOTOS.filter((p) => p.passMarks).map((p) => [p.id, p.passMarks!])) : {},
     look: null,
     recipes: {},
     imported: skipImport ? PHOTOS.length : 0,
@@ -176,7 +182,7 @@ function seedCullMessage(): ChatMessage {
   };
 }
 
-const snap = (s: State): Undoable => ({ aiVerdicts: s.aiVerdicts, overrides: s.overrides, aiStars: s.aiStars, starOverrides: s.starOverrides, look: s.look, recipes: s.recipes });
+const snap = (s: State): Undoable => ({ aiVerdicts: s.aiVerdicts, overrides: s.overrides, aiStars: s.aiStars, starOverrides: s.starOverrides, passMarks: s.passMarks, look: s.look, recipes: s.recipes });
 
 /** A Photo's stars and whether the person set them (0 = unrated). */
 export function starsOf(s: Pick<State, 'aiStars' | 'starOverrides'>, id: string): { stars: number; you: boolean } {
@@ -186,6 +192,11 @@ export function starsOf(s: Pick<State, 'aiStars' | 'starOverrides'>, id: string)
 
 export function recipeOf(s: Pick<State, 'recipes' | 'look'>, id: string): Recipe {
   return s.recipes[id] ?? emptyRecipe(s.look?.id ?? null);
+}
+
+/** A Photo's Cull Round (0 for anything not a Pick). */
+export function roundIn(s: Pick<State, 'aiVerdicts' | 'overrides' | 'passMarks'>, id: string): Round {
+  return roundOf(verdictOf(s, id) === 'pick', s.passMarks[id]);
 }
 
 export function verdictOf(s: Pick<State, 'aiVerdicts' | 'overrides'>, id: string): Verdict | null {
@@ -234,6 +245,12 @@ function apply(s: State, a: Action): State {
       const log = ai && ai !== a.verdict ? [...s.overrideLog, { photoId: a.id, what: 'Verdict', from: ai, to: a.verdict, at: Date.now() }] : s.overrideLog;
       void before;
       return { ...s, overrides, overrideLog: log };
+    }
+    case 'pass/set': {
+      const marks = { ...s.passMarks[a.id] };
+      if (a.kept == null) delete marks[a.pass];
+      else marks[a.pass] = a.kept;
+      return { ...s, passMarks: { ...s.passMarks, [a.id]: marks } };
     }
     case 'look/apply': {
       const recipes = { ...s.recipes };
@@ -297,9 +314,10 @@ function apply(s: State, a: Action): State {
       return { ...s, chats: { ...s.chats, [a.ctx]: (s.chats[a.ctx] ?? []).map((m) => (m.id === a.msgId ? { ...m, ...a.patch } : m)) } };
     case 'cull/states': {
       // What the Library has now. The person's own Verdict and stars win, as in the engine.
-      const [aiVerdicts, overrides, aiStars, starOverrides] = [{ ...s.aiVerdicts }, { ...s.overrides }, { ...s.aiStars }, { ...s.starOverrides }];
+      const [aiVerdicts, overrides, aiStars, starOverrides, passMarks] = [{ ...s.aiVerdicts }, { ...s.overrides }, { ...s.aiStars }, { ...s.starOverrides }, { ...s.passMarks }];
       for (const p of a.states) {
         const id = String(p.id);
+        if (p.round != null) passMarks[id] = marksFrom(p.round, p.cut_in);
         if (p.verdict_by === 'person') overrides[id] = p.verdict;
         else {
           delete overrides[id];
@@ -312,7 +330,7 @@ function apply(s: State, a: Action): State {
           else delete aiStars[id];
         }
       }
-      return { ...s, aiVerdicts, overrides, aiStars, starOverrides };
+      return { ...s, aiVerdicts, overrides, aiStars, starOverrides, passMarks };
     }
     case 'look/load': {
       // The Library's Looks: the Look screen shows the one most of the loaded Recipes are under.
@@ -330,7 +348,7 @@ function apply(s: State, a: Action): State {
   }
 }
 
-const UNDOABLE = new Set<Action['type']>(['verdict/set', 'stars/set', 'look/apply', 'look/adjust', 'look/clear', 'look/sync', 'correction/set', 'recipe/global', 'recipe/set', 'recipe/local-upsert', 'recipe/local-adjust', 'recipe/local-remove', 'version/restore', 'batch']);
+const UNDOABLE = new Set<Action['type']>(['verdict/set', 'stars/set', 'pass/set', 'look/apply', 'look/adjust', 'look/clear', 'look/sync', 'correction/set', 'recipe/global', 'recipe/set', 'recipe/local-upsert', 'recipe/local-adjust', 'recipe/local-remove', 'version/restore', 'batch']);
 
 function undoLabel(a: Action): { label: string; key?: string } {
   switch (a.type) {
@@ -340,6 +358,8 @@ function undoLabel(a: Action): { label: string; key?: string } {
       return { label: a.label, key: a.key && `s:${a.id}:${a.key}` };
     case 'verdict/set':
       return { label: `${cap(a.verdict)} on ${PHOTO_BY_ID[a.id]?.file ?? a.id}` };
+    case 'pass/set':
+      return { label: `${a.kept == null ? 'Cleared' : a.kept ? 'Kept' : 'Cut'} ${PHOTO_BY_ID[a.id]?.file ?? a.id} in Round ${a.pass}` };
     case 'stars/set':
       return { label: `${a.stars ? `${a.stars} stars` : 'No stars'} on ${PHOTO_BY_ID[a.id]?.file ?? a.id}` };
     case 'look/adjust':
@@ -364,7 +384,7 @@ function undoLabel(a: Action): { label: string; key?: string } {
 /** Live, a snapshot never puts back Verdicts, stars or Recipes: those come from the Library. */
 const restore = (u: Undoable): Partial<Undoable> => {
   if (!LIVE) return u;
-  const { aiVerdicts: _v, overrides: _o, aiStars: _s, starOverrides: _so, recipes: _r, ...rest } = u;
+  const { aiVerdicts: _v, overrides: _o, aiStars: _s, starOverrides: _so, passMarks: _p, recipes: _r, ...rest } = u;
   return rest;
 };
 
@@ -431,9 +451,16 @@ const Ctx = createContext<{ state: State; dispatch: React.Dispatch<Action> } | n
 /** Live: the flags and stars the person set in this action, as one Library write (null if none). */
 function cullWrite(a: Action): CullWrite | null {
   const sets = a.type === 'batch' ? a.actions : [a];
-  if (!sets.every((x) => (x.type === 'verdict/set' || x.type === 'stars/set') && x.by === 'you')) return null;
-  const w: CullWrite = { label: a.type === 'batch' ? a.label : undoLabel(a).label, flags: [], stars: [] };
+  if (!sets.every((x) => x.type === 'pass/set' || ((x.type === 'verdict/set' || x.type === 'stars/set') && x.by === 'you'))) return null;
+  const w: CullWrite = { label: a.type === 'batch' ? a.label : undoLabel(a).label, flags: [], stars: [], passes: [] };
   for (const x of sets) {
+    if (x.type === 'pass/set') {
+      const mark = x.kept == null ? 'clear' : x.kept ? 'keep' : 'cut';
+      const g = w.passes.find((f) => f.pass === x.pass && f.mark === mark);
+      if (g) g.ids.push(x.id);
+      else w.passes.push({ ids: [x.id], pass: x.pass, mark });
+      continue;
+    }
     if (x.type === 'verdict/set') {
       const g = w.flags.find((f) => f.verdict === x.verdict);
       if (g) g.ids.push(x.id);
@@ -444,7 +471,7 @@ function cullWrite(a: Action): CullWrite | null {
       else w.stars.push({ ids: [x.id], stars: x.stars });
     }
   }
-  return w.flags.length || w.stars.length ? w : null;
+  return w.flags.length || w.stars.length || w.passes.length ? w : null;
 }
 
 /** Live: an edit being made (a slider drag), saved as one batch once it settles. */
@@ -505,7 +532,7 @@ export function LibraryProvider({ children, skipImport }: { children: ReactNode;
     const w = cullWrite(a);
     if (w) {
       const batch = writeCull(w);
-      void settle(batch, [...w.flags, ...w.stars].flatMap((g) => g.ids));
+      void settle(batch, [...w.flags, ...w.stars, ...w.passes].flatMap((g) => g.ids));
       return send({ type: 'engine/saving', change: a, batch });
     }
     // A drag (steady changes to one key) is saved once it rests, as one batch; anything

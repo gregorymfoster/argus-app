@@ -28,6 +28,15 @@ const notify = () => listeners.forEach((f) => f());
 
 /** The grid's tile size: changed Photos are rendered ahead at this size. */
 export const TILE_EDGE = 400;
+/** The sizes edited renders come in (the engine's cap is 1536), so a resize asks again only
+ *  when a frame crosses one. */
+const EDGES = [TILE_EDGE, 800, 1536];
+
+/** The render size for a frame `px` device pixels on its long side: the smallest that is
+ *  at most ~15% upscaled, so a portrait in a big Cull grid never shows a 400 px tile. */
+export function editEdge(px: number): number {
+  return EDGES.find((e) => e * 1.15 >= px) ?? EDGES[EDGES.length - 1];
+}
 const BATCH = 4;
 
 function pump() {
@@ -104,6 +113,17 @@ export function useEdited(photo: Photo, on: boolean, edge: number): string | nul
     return () => void (wanted = wanted.filter((k) => k !== key));
   }, [key]);
   if (!key) return null;
-  // While a new edit renders, the previous render of the Photo beats the unedited preview.
-  return urls.get(key) ?? [...urls].reverse().find(([k]) => k.startsWith(`${photo.id}|${edge}|`))?.[1] ?? null;
+  return urls.get(key) ?? standIn(photo.id, edge, key.slice(key.lastIndexOf('|') + 1));
+}
+
+/** What to show while `id`'s render at `edge` is on its way: the same edit at another size
+ *  (biggest first), else the previous edit at this size; either beats the unedited preview. */
+function standIn(id: string, edge: number, stamp: string): string | null {
+  let best: [number, string] | null = null;
+  for (const [k, u] of urls) {
+    const [i, e, s] = k.split('|');
+    if (i === id && s === stamp && (!best || Number(e) > best[0])) best = [Number(e), u];
+  }
+  if (best) return best[1];
+  return [...urls].reverse().find(([k]) => k.startsWith(`${id}|${edge}|`))?.[1] ?? null;
 }

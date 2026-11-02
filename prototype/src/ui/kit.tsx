@@ -75,9 +75,24 @@ interface SliderProps {
 }
 
 /** A labelled slider row; double-click resets to zero, as in Lightroom. */
+/** The value a slider had when the pointer went down on it. */
+let pressedAt: string | null = null;
+const thumbValue = (el: Element) => el.querySelector('[role=slider]')?.getAttribute('aria-valuenow') ?? null;
+
 export function Slider({ label, value, min, max, step = 1, display, ai, track, def = 0, name, onChange }: SliderProps) {
   return (
-    <div className={`slider ${value !== def ? 'set' : ''}`} onDoubleClick={() => onChange(Math.max(min, Math.min(max, def)))}>
+    <div
+      className={`slider ${value !== def ? 'set' : ''}`}
+      onDoubleClick={() => onChange(Math.max(min, Math.min(max, def)))}
+      // A slider dragged (or clicked to a new value) lets go of focus, so ← → go back to moving
+      // through Photos; a click on the thumb that leaves it in place keeps it for nudging.
+      onPointerDownCapture={(e) => (pressedAt = thumbValue(e.currentTarget))}
+      onPointerUp={(e) => {
+        const el = e.currentTarget;
+        // The thumb's value settles a frame after the pointer lets go.
+        requestAnimationFrame(() => pressedAt !== thumbValue(el) && el.contains(document.activeElement) && (document.activeElement as HTMLElement).blur());
+      }}
+    >
       <span className="slider-label" title={label}>{label}</span>
       <UiSlider min={min} max={max} step={step} value={[value]} onValueChange={([v]) => onChange(v)} aria-label={name ?? label} track={track} bipolar={min < 0} />
       <span className={`val ${ai ? 'ai' : ''}`} title={ai ? 'Set by the Agent' : undefined}>

@@ -3,6 +3,7 @@ import * as React from 'react';
 import { Select as S } from 'radix-ui';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { markEscape } from './dialog';
 
 interface Props<T extends string> {
   value: T;
@@ -31,7 +32,7 @@ export function Select<T extends string>({ value, onValueChange, items, label, c
         </S.Icon>
       </S.Trigger>
       <S.Portal>
-        <S.Content position="popper" sideOffset={4} className="anim-pop z-50 min-w-[var(--radix-select-trigger-width)] rounded-lg border border-border-strong bg-glass p-1 shadow-pop backdrop-blur-2xl backdrop-saturate-150">
+        <S.Content onEscapeKeyDown={(e) => markEscape(e)} position="popper" sideOffset={4} className="anim-pop z-50 min-w-[var(--radix-select-trigger-width)] rounded-lg border border-border-strong bg-glass p-1 shadow-pop backdrop-blur-2xl backdrop-saturate-150">
           <S.Viewport>
             {items.map((i) => (
               <S.Item key={i.value} value={i.value} className="relative flex h-7 cursor-pointer select-none items-center gap-2 rounded-[5px] pl-6 pr-2.5 text-[12.5px] text-text-2 outline-none data-[highlighted]:bg-selected data-[highlighted]:text-text">

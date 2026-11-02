@@ -203,8 +203,12 @@ fn daily_backups_are_made_once_a_day_and_pruned_to_the_newest_fourteen() {
         root.join("backups/2026-09-01_000000_pre-v2.db"),
     )
     .unwrap();
+    // A stray file whose name has a multibyte character where the time goes is skipped,
+    // not a panic.
+    std::fs::write(root.join("backups/2026-09-30_12000\u{e9}.db"), b"x").unwrap();
     lib.backup_if_due().unwrap().expect("a week old: due");
     let all = lib.backups().unwrap();
+    assert!(all.iter().all(|b| !b.name.contains('\u{e9}')));
     let daily: Vec<_> = all.iter().filter(|b| b.kind == "daily").collect();
     assert_eq!(daily.len(), 14);
     assert!(

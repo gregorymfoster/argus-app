@@ -13,8 +13,9 @@ import { PhotoView, photoRatio } from '../ui/PhotoView';
 import { Stars } from '../ui/Stars';
 import { Button } from '@/components/ui/button';
 import { Kbd, VERDICT_KEYS, VERDICT_HOTKEYS, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
-import { BackToGrid, Hints, QueueMeter, ViewSwitch } from '../ui/ViewBar';
+import { BackToGrid, Hints, ViewSwitch } from '../ui/ViewBar';
 import { LIVE, aiName } from '../data/live';
+import { StatusFoot } from '../ui/StatusBar';
 
 /** Best first: a cull's Stack rank, then (dummy Photos) the sharper frame. */
 const byRank = (a: Photo, b: Photo) => (a.stackRank ?? 99) - (b.stackRank ?? 99) || b.signals.focus - a.signals.focus;
@@ -70,7 +71,7 @@ export function CompareScreen({ ids }: { ids: string[] }) {
   // K: keep the Select, reject the rest of the Stack.
   const keepOnly = () =>
     dispatch({ type: 'batch', label: `Kept 1 of ${photos.length}`, actions: photos.map((p) => ({ type: 'verdict/set', id: p.id, verdict: p.id === sel.id ? 'pick' : 'reject', by: 'you' })) });
-  // P / X / U judge the Candidate; a Reject moves on to the next one.
+  // Z or P, X and U judge the Candidate; a Reject moves on to the next one.
   const flag = (v: Verdict) => {
     if (!cand) return;
     set(cand.id, v);
@@ -99,7 +100,6 @@ export function CompareScreen({ ids }: { ids: string[] }) {
         <span className="mono faint view-meta trunc">{sel.exif}</span>
         <span className="grow" />
         <ViewSwitch view="compare" id={cand.id} compareIds={ids} />
-        <QueueMeter />
       </header>
       <div className="compare-body">
         <div className="compare-pair">
@@ -136,11 +136,11 @@ export function CompareScreen({ ids }: { ids: string[] }) {
           })}
         </div>
       </div>
-      <footer className="view-foot">
+      <StatusFoot className="view-foot">
         <span>White frame is the Select, terracotta the Candidate</span>
         <span className="grow" />
         <Hints items={[['← →', 'Next candidate'], ['↑', 'Swap'], ['Z', 'Pick'], ['X', 'Reject'], ['K', 'Keep only the Select'], ['Esc', 'Grid']]} />
-      </footer>
+      </StatusFoot>
     </div>
   );
 }

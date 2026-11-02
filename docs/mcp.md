@@ -95,6 +95,9 @@ claude mcp add argus -- /path/to/argus/target/release/argus mcp --library /Users
 | `list_looks` / `set_look` | Read a Shoot's Looks, or create or tune one (sliders as in `edit_recipe`) and put Photos under it; a new Look goes on the Picks |
 | `sync_to_look` | Lightroom's Sync: fold one Photo's own sliders into its Shoot's Look |
 | `paste_settings` | Lightroom's Copy/Paste and Sync settings: groups of one Photo's settings onto others, one batch |
+| `propose_framing` | Crop & straighten, read only: each Photo's proposed straighten (0.7° to 3.5°, only with a horizon or architecture to go by) and, with `crop: true`, a punch-in on loose people; Photos already cropped are kept |
+| `apply_framing` | Writes those proposals as one batch, only the crop changes; Photos already cropped are skipped |
+| `apply_shoot_look` | Edit's Apply look to Shoot: the hero's saved edit onto the ticked Photos of its Shoot, each a Shoot match to its own light (no model call), one batch; hand edits skipped, crops and spots kept |
 | `remove_look` | Take a Look off every Photo under it (the Look is kept, so undo puts it back) |
 | `export_photos` | Write edited JPEGs to a folder, never overwriting |
 | `crop.*` settings | `edit_recipe` also straightens (`crop.angle`, degrees) and crops (`crop.x/y/w/h`, fractions of the straightened frame, never empty corners) |

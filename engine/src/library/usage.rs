@@ -56,9 +56,16 @@ pub struct MomentLog {
     /// "some", "none" (kept nothing) or "all" (kept every frame shown).
     #[serde(default)]
     pub outcome: String,
+    /// The Cull pass: 1 is the flag pass, 2 and on are Rounds over the Picks (GLOSSARY: Round).
+    #[serde(default = "first_pass")]
+    pub pass: u8,
     /// The Stacks merged into one before choosing, as they were.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merged_from: Vec<Vec<PhotoId>>,
+}
+
+fn first_pass() -> u8 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -145,18 +152,38 @@ impl Library {
     /// together, or a run of single frames) and what the person kept. Logged as a `moment`
     /// event on every shown Photo, so benches can rebuild each choice set. Returns the rows
     /// written (0 with recording off).
-    pub fn log_moment(&self, m: &MomentLog) -> Result<usize> {
+    ///
+    /// The moment_id must not be blank (bench export groups rows by it). A frame shown
+    /// twice gets one row, an id that is no Photo none, and the rows land together.
+    pub fn log_moment(&mut self, m: &MomentLog) -> Result<usize> {
+        if m.moment_id.trim().is_empty() {
+            return Err(crate::Error("log_moment: moment_id is blank".into()));
+        }
         if !self.recording_usage() {
             return Ok(0);
         }
         let data = serde_json::to_value(m).map_err(|e| crate::Error(e.to_string()))?;
-        let mut n = 0;
-        for &id in &m.shown {
-            self.try_start(id)?;
-            self.insert_event(id, "moment", &data)?;
-            n += 1;
-        }
-        Ok(n)
+        self.atomic(|lib| {
+            let mut done = std::collections::HashSet::new();
+            let mut n = 0;
+            for &id in &m.shown {
+                if !done.insert(id) || !lib.is_photo(id)? {
+                    continue;
+                }
+                lib.try_start(id)?;
+                lib.insert_event(id, "moment", &data)?;
+                n += 1;
+            }
+            Ok(n)
+        })
+    }
+
+    fn is_photo(&self, id: PhotoId) -> Result<bool> {
+        self.db
+            .query_row("SELECT 1 FROM photos WHERE id = ?1", [id], |_| Ok(()))
+            .optional()
+            .map(|r| r.is_some())
+            .map_err(db_err)
     }
 
     /// A Recipe Version was written: log it with who wrote it and the batch's label, which

@@ -1,4 +1,4 @@
-// Background work (culls, Suggestions, previews): a line and a bar in the sidebar, a chip
+// Background work (culls, Suggestions, previews): an item in the Status bar, a chip
 // where it's worth seeing, and a panel with what's running, waiting and done today, each
 // with an honest ETA and its own Cancel, plus Pause all and the Compute level.
 
@@ -12,10 +12,8 @@ import { plain, useQueue, type QueueStatus } from '../data/suggestions';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
 import { openSettings } from '../settings/Settings';
-import { useLibrary } from '../store/library';
 import { Kbd, Seg } from './kit';
-import { eta } from './Progress';
-import { useExportProgress } from './Export';
+import { eta, etaLeft } from './Progress';
 
 /** A job as `list_jobs` returns it. */
 interface Job {
@@ -48,12 +46,6 @@ export function dur(s: number): string {
   if (n < 60) return `${n} s`;
   if (n < 3600) return `${Math.floor(n / 60)} m ${String(n % 60).padStart(2, '0')} s`;
   return `${Math.floor(n / 3600)} h ${Math.round((n % 3600) / 60)} m`;
-}
-
-/** "about 9 min", "20 s". */
-function about(s: number | null | undefined): string | null {
-  if (s == null || !isFinite(s)) return null;
-  return s < 90 ? `${Math.max(1, Math.round(s / 5) * 5)} s` : `about ${Math.round(s / 60)} min`;
 }
 
 const seconds = (a: string | null, b: string | null) => (a && b ? (Date.parse(b) - Date.parse(a)) / 1000 : null);
@@ -90,7 +82,7 @@ const DEMO_JOBS: Record<string, Job[]> = {
   ],
 };
 
-function useQueueOrDemo(): Queue | null {
+export function useQueueOrDemo(): Queue | null {
   const q = useQueue() as Queue | null;
   return LIVE ? q : DEMO_QUEUE;
 }
@@ -192,8 +184,9 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
   const dragging = useRef(false);
   dragging.current = !!drag;
   const refresh = () => {
-    void listJobs('queued', 50).then((j) => !dragging.current && setWaiting([...j].sort((a, b) => b.priority - a.priority || a.id - b.id)));
-    void listJobs('done', 40).then(setDone);
+    // A failed read keeps the last lists; the next round tries again.
+    void listJobs('queued', 50).then((j) => !dragging.current && setWaiting([...j].sort((a, b) => b.priority - a.priority || a.id - b.id)), () => {});
+    void listJobs('done', 40).then(setDone, () => {});
   };
   useEffect(() => {
     if (!open) return;
@@ -201,7 +194,7 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
     return whileShown(refresh, 3000);
   }, [open]);
   const set = (args: Record<string, unknown>) => (LIVE ? call('set_queue', args).then(() => bump((n) => n + 1), toastFailure('Couldn’t change Background work')) : Promise.resolve());
-  const cancel = (id: number) => (LIVE ? call('cancel_job', { job_id: id }).then(refresh) : undefined);
+  const cancel = (id: number) => (LIVE ? call('cancel_job', { job_id: id }).then(refresh, toastFailure('Couldn’t cancel')) : undefined);
   const reorder = (ids: number[]) => {
     setWaiting((cur) => ids.map((id) => cur.find((j) => j.id === id)!).filter(Boolean));
     if (LIVE) void call('reorder_jobs', { job_ids: ids }).then(refresh, refresh);
@@ -216,7 +209,7 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
     ids.splice(Math.max(pinned, ids.indexOf(before)), 0, id);
     reorder(ids);
   };
-  const retry = () => (LIVE ? call('retry_failed').then(() => (refresh(), bump((n) => n + 1))) : undefined);
+  const retry = () => (LIVE ? call('retry_failed').then(() => (refresh(), bump((n) => n + 1)), toastFailure('Couldn’t retry')) : undefined);
 
   // Seconds per job of each kind, from what finished lately: the honest basis for an ETA.
   const avg: Record<string, number> = {};
@@ -258,7 +251,7 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
           <Seg label="Compute" className="seg-wide" value={queue.compute} onChange={(v) => void set({ compute: v })} items={(['gentle', 'balanced', 'full'] as const).map((c) => ({ value: c, label: COMPUTE_LABEL[c] }))} />
           <p className="qp-note" data-testid="queue-note">
             {COMPUTE_NOTE[queue.compute]}
-            {queue.paused ? ' Paused: nothing new starts until you resume.' : queue.battery_paused ? '' : left != null ? ` About ${about(left)?.replace(/^about /, '')} left at this pace.` : ''}
+            {queue.paused ? ' Paused: nothing new starts until you resume.' : queue.battery_paused ? '' : left != null ? ` ${etaLeft(left)?.replace(/^a/, "A")} at this pace.` : ''}
             {queue.boost && ` Running at Full now, ${queue.boost === 'idle' ? 'while the Mac is idle' : 'overnight'}.`}
           </p>
           {queue.battery_paused && !queue.paused && (
@@ -306,7 +299,7 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
             <ul>
               <JobRow
                 job={r as Job}
-                eta={about(runningLeft)}
+                eta={eta(runningLeft)}
                 focus={(r.priority ?? 0) >= PRIORITY_FOCUS}
                 sub={r.waiting ? `Waiting: ${plain(r.waiting)}` : [r.total > 0 ? `${r.done} / ${r.total}` : null, r.stage && r.stage !== r.label ? r.stage : null, (r.priority ?? 0) >= PRIORITY_FOCUS ? 'at Full while it’s open' : levelNow(queue)].filter(Boolean).join(' · ')}
                 progress={r.total > 0 ? r.done / r.total : undefined}
@@ -323,7 +316,7 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
                 <JobRow
                   key={j.id}
                   job={j}
-                  eta={about(avg[j.kind])}
+                  eta={eta(avg[j.kind])}
                   focus={j.priority >= PRIORITY_FOCUS}
                   sub={kindSub(j.kind)}
                   onCancel={() => cancel(j.id)}
@@ -408,83 +401,6 @@ export function QueueChip() {
           </span>
         )}
         {q.queued > 0 && <span className="mono faint">+{q.queued}</span>}
-      </button>
-    </QueuePopover>
-  );
-}
-
-/** Engine tasks outside the Queue that the sidebar shows, by `progress` kind, with their name. */
-const FOREGROUND: Record<string, string> = { cull: 'AI cull', auto: 'Auto', rank_presets: 'Presets' };
-
-/** The sidebar's line for work the person started and is waiting on: label, count, bar, time left. */
-function ForegroundRow({ q, label, done, total, eta_s }: { q: QueueStatus; label: string; done: number; total: number; eta_s: number | null }) {
-  const left = eta(eta_s);
-  return (
-    <QueuePopover q={q}>
-      <button className="queue-side" data-testid="queue-progress" title={label}>
-        <span className="qs-line">
-          <Sparkles size={12} className="qs-icon" />
-          <span className="qs-label">{label}</span>
-          <span className="grow" />
-          {total > 0 && (
-            <span className="qs-count">
-              {done}/{total}
-            </span>
-          )}
-        </span>
-        <span className={`job-bar ${total > 0 ? '' : 'indeterminate'}`}>
-          <span style={total > 0 ? { width: `${(100 * done) / total}%` } : undefined} />
-        </span>
-        <span className="qs-meta">
-          {left ? `${left}${left === 'a few seconds' ? '' : ' left'}` : 'working'} · {levelNow(q)}
-        </span>
-      </button>
-    </QueuePopover>
-  );
-}
-
-/** The queue at a glance at the foot of the sidebar: what runs, a bar, time left and the level. */
-export function QueueProgress() {
-  const q = useQueueOrDemo();
-  const { state } = useLibrary();
-  const exporting = useExportProgress();
-  if (!q) return null;
-  // An Import filling the open Shoot comes first: it's what the person is waiting on.
-  if (state.importing && state.importTotal) {
-    const copying = (state.importLabel ?? 'Importing').startsWith('Importing');
-    return <ForegroundRow q={q} label={copying ? 'Import · copying' : (state.importLabel ?? 'Importing')} done={state.importDone ?? state.imported} total={state.importTotal} eta_s={state.importEta ?? null} />;
-  }
-  // Then work this window started outside the Queue (an AI cull from the chat, Auto all):
-  // the person is watching it, and the Queue itself may be idle (Greg, 2026-10-21).
-  if (exporting) return <ForegroundRow q={q} label="Export" done={exporting.done} total={exporting.total} eta_s={exporting.eta_s} />;
-  const fg = q.tasks?.find((t) => FOREGROUND[t.kind]);
-  if (fg) {
-    const label = fg.waiting ? `${FOREGROUND[fg.kind]} · waiting: ${plain(fg.waiting)}` : fg.kind === 'auto' ? fg.label : `${FOREGROUND[fg.kind]} · ${fg.label}`;
-    return <ForegroundRow q={q} label={label} done={fg.done} total={fg.total} eta_s={fg.waiting ? null : fg.eta_s} />;
-  }
-  const r = q.running;
-  const idle = !r && q.queued === 0;
-  const left = r?.waiting ? null : about(q.eta_s);
-  const held = q.battery_paused ? 'wait for power' : q.thermal_paused ? 'wait for the Mac to cool' : q.waiting_for_idle ? 'wait for you to step away' : null;
-  return (
-    <QueuePopover q={q}>
-      <button className="queue-side" data-testid="queue-progress" title={r?.waiting ? `Waiting: ${plain(r.waiting)}` : 'Background work'}>
-        <span className="qs-line">
-          <Sparkles size={12} className="qs-icon" />
-          <span className="qs-label">{q.paused ? 'Background work paused' : idle ? 'Background work' : r ? r.label : queueLine(q)}</span>
-          <span className="grow" />
-          {r && r.total > 0 && (
-            <span className="mono faint">
-              {r.done}/{r.total}
-            </span>
-          )}
-        </span>
-        <span className="job-bar">
-          <span style={{ width: r && r.total > 0 ? `${(100 * r.done) / r.total}%` : '0%' }} />
-        </span>
-        <span className="qs-meta">
-          {idle ? (q.failed ? `${q.failed} failed, open to retry` : 'nothing waiting') : q.paused ? (q.queued ? `${q.queued} waiting, resume to run` : 'resume to run') : r?.waiting ? 'waiting for the model' : held && !r ? `${q.queued} ${held}` : left ? `${left}${q.queued ? ` · +${q.queued}` : ''}` : q.queued ? `+${q.queued} waiting` : 'working'} · {levelNow(q)}
-        </span>
       </button>
     </QueuePopover>
   );

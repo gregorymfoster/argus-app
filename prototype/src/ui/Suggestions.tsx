@@ -4,12 +4,13 @@ import type { Look, Photo, Recipe, Suggestion } from '../domain/types';
 import { useSuggestionImage, type TakesJob } from '../data/suggestions';
 import { PhotoView } from './PhotoView';
 import { Kbd, Slider } from './kit';
+import { etaLeft } from './Progress';
 import { Button } from '@/components/ui/button';
 
-function Tile({ photo, recipe, look, s, label, title, why, selected, onPick }: { photo: Photo; recipe: Recipe; look: Look | null; s: Suggestion | null; label: string; title: string; why: string; selected: boolean; onPick: () => void }) {
+function Tile({ photo, recipe, look, s, label, title, why, selected, onPick, onPeek }: { photo: Photo; recipe: Recipe; look: Look | null; s: Suggestion | null; label: string; title: string; why: string; selected: boolean; onPick: () => void; onPeek?: (on: boolean) => void }) {
   const url = useSuggestionImage(s, 320);
   return (
-    <button className={`take ${selected ? 'sel' : ''}`} onClick={onPick} aria-pressed={selected} data-testid="take" title={`${title}: ${why}`}>
+    <button className={`take ${selected ? 'sel' : ''}`} onClick={onPick} onMouseEnter={() => onPeek?.(true)} onMouseLeave={() => onPeek?.(false)} aria-pressed={selected} data-testid="take" title={`${title}: ${why}`}>
       <PhotoView photo={photo} size="thumb" recipe={recipe} look={look} rendered={url} />
       <span className="take-title">
         <span className="mono faint">{label}</span>
@@ -37,13 +38,6 @@ function Pending({ photo, recipe, look, n, stage, delay }: { photo: Photo; recip
       <span className="take-why">{stage}</span>
     </div>
   );
-}
-
-/** "0:42 left", "~12 min left". */
-function left(s: number): string {
-  const n = Math.max(1, Math.round(s));
-  if (n < 600) return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')} left`;
-  return `~${Math.round(n / 60)} min left`;
 }
 
 /** The job as of now: its bar and ETA move between the engine's reads. */
@@ -78,7 +72,7 @@ function TakesProgress({ job, held, onCancel }: { job: TakesJob; held: string | 
   const { progress, eta, elapsed } = useLive(job);
   const running = job.status === 'running';
   const status = held ?? (running ? job.stage : job.ahead ? `Queued · ${job.ahead} ahead` : 'Starting');
-  const time = eta != null ? left(eta) : elapsed != null ? `${Math.round(elapsed)} s so far` : 'no timing yet';
+  const time = eta != null ? etaLeft(eta) : elapsed != null ? `${Math.round(elapsed)} s so far` : 'no timing yet';
   return (
     <div className="takes-progress" data-testid="takes-progress" role="status" aria-live="polite">
       <div className="takes-progress-text">
@@ -100,7 +94,7 @@ function TakesProgress({ job, held, onCancel }: { job: TakesJob; held: string | 
  * its height): your edit, then the AI's Suggestions, like Lightroom's preset previews. Picking
  * one previews it on the photo at its Amount; nothing is saved until it's accepted.
  */
-export function TakesPanel({ photo, recipe, look, list, pick, onPick, onAccept, amount, onAmount, onDismiss, onMore, onCancel, job, held, waiting, diff }: {
+export function TakesPanel({ photo, recipe, look, list, pick, onPick, onPeek, onAccept, amount, onAmount, onDismiss, onMore, onCancel, job, held, waiting, diff }: {
   photo: Photo;
   recipe: Recipe;
   look: Look | null;
@@ -108,6 +102,8 @@ export function TakesPanel({ photo, recipe, look, list, pick, onPick, onAccept, 
   /** -1 = your edit. */
   pick: number;
   onPick: (i: number) => void;
+  /** Hovering a tile previews it on the photo (-1 = your edit); undefined when the mouse leaves. */
+  onPeek?: (i: number | undefined) => void;
   onAccept: () => void;
   /** The picked take's Amount, 0..150 (100 = as proposed). */
   amount: number;
@@ -139,13 +135,13 @@ export function TakesPanel({ photo, recipe, look, list, pick, onPick, onAccept, 
       </div>
       {job && <TakesProgress job={job} held={held} onCancel={onCancel} />}
       <span className="dev-note" data-testid="takes-line" hidden={!!job} title={job ? jobLine(job, held) : undefined}>
-        {job ? jobLine(job, held) : current ? current.why : list.length ? <><Kbd quiet>Tab</Kbd> previews a take. Nothing changes until you accept one.</> : waiting ?? 'None yet'}
+        {job ? jobLine(job, held) : current ? current.why : list.length ? <>Hover or <Kbd quiet>Tab</Kbd> to preview a take. Nothing changes until you accept one.</> : waiting ?? 'None yet'}
       </span>
       {(list.length > 0 || job) && (
         <div className="takes-grid">
-          <Tile photo={photo} recipe={recipe} look={look} s={null} label="0" title="Your edit" why="What you have now" selected={pick < 0} onPick={() => onPick(-1)} />
+          <Tile photo={photo} recipe={recipe} look={look} s={null} label="0" title="Your edit" why="What you have now" selected={pick < 0} onPick={() => onPick(-1)} onPeek={(on) => onPeek?.(on ? -1 : undefined)} />
           {list.map((s, i) => (
-            <Tile key={s.id} photo={photo} recipe={s.recipe} look={look} s={s} label={String(i + 1)} title={s.title} why={s.why} selected={pick === i} onPick={() => onPick(i)} />
+            <Tile key={s.id} photo={photo} recipe={s.recipe} look={look} s={s} label={String(i + 1)} title={s.title} why={s.why} selected={pick === i} onPick={() => onPick(i)} onPeek={(on) => onPeek?.(on ? i : undefined)} />
           ))}
           {job && Array.from({ length: job.takes }, (_, i) => <Pending key={`${job.id}-${i}`} photo={photo} recipe={recipe} look={look} n={i + 1} stage={held ?? (job.status === 'running' ? job.stage : 'Queued')} delay={i * 90} />)}
         </div>

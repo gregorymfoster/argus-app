@@ -4,12 +4,12 @@
 # Does nothing on Greg's Mac. Never fails the session: every step is best-effort.
 set -u
 [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 0
 
 if ! command -v just >/dev/null 2>&1; then
   v=1.40.0
   mkdir -p "$HOME/.local/bin"
-  curl -fsSL "https://github.com/casey/just/releases/download/$v/just-$v-x86_64-unknown-linux-musl.tar.gz" \
+  curl -fsSL --max-time 60 "https://github.com/casey/just/releases/download/$v/just-$v-x86_64-unknown-linux-musl.tar.gz" \
     | tar -xz -C "$HOME/.local/bin" just 2>/dev/null \
     && ln -sf "$HOME/.local/bin/just" /usr/local/bin/just 2>/dev/null
 fi

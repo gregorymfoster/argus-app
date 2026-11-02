@@ -23,6 +23,10 @@ pub struct CullState {
     pub verdict_by: Option<String>,
     pub stars: u8,
     pub stars_by: Option<String>,
+    /// Cull Rounds: 0 not a Pick, 1 a Pick, k kept in passes 2 to k as well.
+    pub round: u8,
+    /// The pass that cut it, if one did.
+    pub cut_in: Option<u8>,
 }
 
 impl Library {
@@ -39,18 +43,24 @@ impl Library {
         photos
             .iter()
             .map(|&id| {
-                q.query_row([id], |r| {
-                    Ok(CullState {
-                        id: r.get(0)?,
-                        verdict: r.get(1)?,
-                        verdict_by: r.get(2)?,
-                        stars: r.get(3)?,
-                        stars_by: r.get(4)?,
+                let mut s = q
+                    .query_row([id], |r| {
+                        Ok(CullState {
+                            id: r.get(0)?,
+                            verdict: r.get(1)?,
+                            verdict_by: r.get(2)?,
+                            stars: r.get(3)?,
+                            stars_by: r.get(4)?,
+                            round: 0,
+                            cut_in: None,
+                        })
                     })
-                })
-                .optional()
-                .map_err(db_err)?
-                .ok_or_else(|| Error(format!("no Photo with id {id}")))
+                    .optional()
+                    .map_err(db_err)?
+                    .ok_or_else(|| Error(format!("no Photo with id {id}")))?;
+                let r = super::round_of(s.verdict == "pick", &self.pass_marks(id)?);
+                (s.round, s.cut_in) = (r.round, r.cut_in);
+                Ok(s)
             })
             .collect()
     }

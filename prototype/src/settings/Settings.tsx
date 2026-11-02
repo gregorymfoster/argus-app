@@ -4,7 +4,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { LIVE, PROVIDERS, chooseProvider, chosenProvider, loadProviders } from '../data/live';
-import { call } from '../data/backend';
+import { call, onAppEvent } from '../data/backend';
 import { toastFailure } from '@/lib/utils';
 import { toast } from 'sonner';
 import { bytes } from '../data/libraries';
@@ -16,7 +16,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { ArrowUpCircle, Check, ChevronDown, Download, Keyboard, Library, RefreshCw, Settings2, Sparkles, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ago, checkForUpdates, restartToUpdate, useUpdate } from '../data/updates';
-import { IN_APP } from '../data/backend';
 import { Seg } from '../ui/kit';
 import { LibrarySection } from './LibrarySection';
 import { Row } from './Row';
@@ -393,11 +392,10 @@ export function SettingsDialog() {
     };
     window.addEventListener('argus:settings', show);
     // The app menu's Settings… item (⌘,) arrives as a Tauri event.
-    let unlisten: (() => void) | undefined;
-    if (IN_APP) void import('@tauri-apps/api/event').then(({ listen }) => listen('open-settings', () => openSettings()).then((u) => (unlisten = u)));
+    const unlisten = onAppEvent('open-settings', () => openSettings());
     return () => {
       window.removeEventListener('argus:settings', show);
-      unlisten?.();
+      unlisten();
     };
   }, []);
   const current = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];

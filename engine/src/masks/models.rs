@@ -39,8 +39,8 @@ fn scene() -> Result<&'static Model> {
     SCENE_MODEL.get()
 }
 
-/// Sky probability at [`SCENE_OUT`]², from the scene segmenter's softmax.
-pub fn sky(img: &RgbImage) -> Result<Vec<f32>> {
+/// The scene segmenter's logits for `img`: [`SCENE_OUT`]² cells of 151 ADE20K classes.
+fn scene_logits(img: &RgbImage) -> Result<tract_ndarray::Array4<f32>> {
     let n = SCENE_SIZE;
     let input: Tensor = tract_ndarray::Array4::from_shape_fn((1, n, n, 3), |(_, y, x, c)| {
         sample(
@@ -58,13 +58,21 @@ pub fn sky(img: &RgbImage) -> Result<Vec<f32>> {
     let v = t
         .to_plain_array_view::<f32>()
         .map_err(|e| Error(format!("scene segmenter output: {e}")))?;
-    let (h, w, k) = (v.shape()[1], v.shape()[2], v.shape()[3]);
-    if (h, w) != (SCENE_OUT, SCENE_OUT) {
+    if (v.shape()[1], v.shape()[2]) != (SCENE_OUT, SCENE_OUT) {
         return Err(Error(format!(
             "scene segmenter: unexpected output {:?}",
             v.shape()
         )));
     }
+    v.to_owned()
+        .into_dimensionality()
+        .map_err(|e| Error(format!("scene segmenter output: {e}")))
+}
+
+/// Sky probability at [`SCENE_OUT`]², from the scene segmenter's softmax.
+pub fn sky(img: &RgbImage) -> Result<Vec<f32>> {
+    let v = scene_logits(img)?;
+    let (h, w, k) = (v.shape()[1], v.shape()[2], v.shape()[3]);
     let mut plane = vec![0f32; h * w];
     for y in 0..h {
         for x in 0..w {
@@ -74,6 +82,23 @@ pub fn sky(img: &RgbImage) -> Result<Vec<f32>> {
         }
     }
     Ok(plane)
+}
+
+/// The likeliest ADE20K class of each [`SCENE_OUT`]² cell, row by row from the top (DeepLab's
+/// numbering: 0 unlabelled, 1 wall, 2 building, 3 sky, 13 person, 27 sea...).
+pub fn scene_labels(img: &RgbImage) -> Result<Vec<u8>> {
+    let v = scene_logits(img)?;
+    let (h, w, k) = (v.shape()[1], v.shape()[2], v.shape()[3]);
+    let mut out = vec![0u8; h * w];
+    for y in 0..h {
+        for x in 0..w {
+            let best = (0..k)
+                .max_by(|&a, &b| v[[0, y, x, a]].total_cmp(&v[[0, y, x, b]]))
+                .unwrap_or(0);
+            out[y * w + x] = best.min(255) as u8;
+        }
+    }
+    Ok(out)
 }
 
 /// Segmenter classes, in output order.

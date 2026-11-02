@@ -291,8 +291,10 @@ try {
     await bar.getByText(/[1-9]\d* of \d+/).waitFor({ timeout: 10000 });
     await p.screenshot({ path: `${out}live-cull-progress.png` });
     check(/Culling/.test(await bar.innerText()), 'the cull bar says what the model is doing');
-    check(/AI cull/.test(await p.getByTestId('queue-progress').innerText()), 'Background work in the sidebar shows the running cull');
-    await p.locator('.sidebar-foot').screenshot({ path: `${out}live-cull-sidebar.png` }).catch(() => {});
+    // A cull started from the chat shows as a foreground task (status-task), not Queue work.
+    const work = (await p.locator('[data-testid="status-task"], [data-testid="queue-progress"]').allInnerTexts()).join(' ');
+    check(/AI cull/.test(work), 'Background work in the Status bar shows the running cull');
+    await p.locator('.status-bar').screenshot({ path: `${out}live-cull-sidebar.png` }).catch(() => {});
     await p.getByText('Mock cull.').waitFor({ timeout: 15000 });
     await p.screenshot({ path: `${out}live-culled.png` });
     const culled = await api(`/api/photos?shoot_id=${shoot.id}`);
@@ -340,13 +342,13 @@ try {
     let side = '';
     let finished = false;
     for (let i = 0; i < 50; i++) {
-      side = await p.getByTestId('queue-progress').innerText();
+      side = (await p.locator('[data-testid="status-task"], [data-testid="queue-progress"]').allInnerTexts()).join(' ');
       if (/Auto/.test(side)) break;
       finished = await p.getByText(/Auto applied to \d+ Photos?/).first().isVisible();
       if (finished) break;
       await p.waitForTimeout(100);
     }
-    await p.locator('.sidebar-foot').screenshot({ path: `${out}live-auto-sidebar.png` }).catch(() => {});
+    await p.locator('.status-bar').screenshot({ path: `${out}live-auto-sidebar.png` }).catch(() => {});
     check(/Auto/.test(side) || finished, `Background work shows Auto while it runs (got "${side.replace(/\n/g, ' | ')}"${finished ? ', Auto already done' : ''})`);
     await p.getByText(/Auto applied to \d+ Photos?/).first().waitFor({ timeout: 120000 });
     await p.locator('.panel.agent').screenshot({ path: `${out}live-auto-done.png` }).catch(() => {});
@@ -450,6 +452,12 @@ try {
     await p.waitForTimeout(1000);
     // One proposal plus one Review round (pinned above, the Full default).
     check(suggestCalls - suggestBefore === 2, `the Queue asked the model for takes and one Review round (${suggestCalls - suggestBefore})`);
+    // Hovering a take previews it on the photo; leaving puts your edit back (Greg, 2026-11-01).
+    await p.getByTestId('take').filter({ hasText: 'Punchy' }).hover();
+    await p.getByTestId('previewing').getByText(/Punchy/).waitFor({ timeout: 5000 });
+    await p.locator('.stage').hover();
+    await p.getByTestId('previewing').waitFor({ state: 'detached', timeout: 5000 });
+    check(true, 'hovering a take previews it, leaving puts your edit back');
     await p.keyboard.press('Tab');
     await p.keyboard.press('Tab');
     await p.getByTestId('previewing').getByText(/Punchy/).waitFor({ timeout: 5000 });

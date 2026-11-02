@@ -12,7 +12,8 @@ import { Download, FolderOpen, Layers, Plus, X } from 'lucide-react';
 import { PHOTOS, SHOOT } from '../data/dummy';
 import { LIVE } from '../data/live';
 import { call, pickFolder } from '../data/backend';
-import { useLibrary, verdictOf } from '../store/library';
+import { useLibrary } from '../store/library';
+import { picksOf } from '../data/modes';
 import type { Photo } from '../domain/types';
 import { Kbd } from './kit';
 import { ProgressBar } from './Progress';
@@ -169,7 +170,7 @@ const emit = () => listeners.forEach((l) => l());
 const subscribe = (l: () => void) => (listeners.add(l), () => listeners.delete(l));
 const useRun = () => useSyncExternalStore(subscribe, () => run);
 
-/** The running Export, for Background work in the sidebar: done, total and seconds left. */
+/** The running Export, for the Status bar: done, total and seconds left. */
 export function useExportProgress(): { done: number; total: number; eta_s: number | null } | null {
   const r = useRun();
   if (!r || r.finished) return null;
@@ -311,7 +312,7 @@ export function ExportModeBody({ mode }: { mode: ExportMode }) {
 
 function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange: (o: boolean) => void; ids?: string[]; mode?: ExportMode }) {
   const { state } = useLibrary();
-  const photos = mode ? mode.photos : ids ? PHOTOS.filter((p) => ids.includes(p.id)) : PHOTOS.slice(0, state.imported).filter((p) => verdictOf(state, p.id) === 'pick');
+  const photos = mode ? mode.photos : ids ? PHOTOS.filter((p) => ids.includes(p.id)) : picksOf(state);
   const [s, setS] = useState<Settings>(load);
   const [mine, setMine] = useState<Preset[]>(() => read<Preset[]>(PRESETS_KEY, []));
   const [naming, setNaming] = useState<string | null>(null);

@@ -9,6 +9,7 @@
 import { OTHER_SHOOTS, PHOTOS, PHOTO_BY_ID, SHOOT, STACKS, STACK_BY_ID } from './dummy';
 import { IN_APP, call, libraryUrl } from './backend';
 import { loadRecipe } from './liveEdit';
+import { marksFrom } from '../domain/rounds';
 import type { Look, Photo, Recipe, Verdict } from '../domain/types';
 
 export const LIVE = IN_APP || new URLSearchParams(location.search).get('library') === 'live';
@@ -39,6 +40,9 @@ interface EnginePhoto {
   stars: number;
   stars_by: 'ai' | 'person' | null;
   best: number | null;
+  /** Cull Rounds (domain/rounds.ts). */
+  round?: number;
+  cut_in?: number | null;
 }
 
 interface EngineShoot {
@@ -87,6 +91,7 @@ function toPhoto(p: EnginePhoto, index: number): Photo {
     aiStars: p.stars_by === 'ai' ? p.stars : undefined,
     personStars: p.stars_by === 'person' ? p.stars : undefined,
     best: p.best ?? undefined,
+    passMarks: p.round != null ? marksFrom(p.round, p.cut_in) : undefined,
     edit: p.edit ?? null,
   };
 }
@@ -532,6 +537,9 @@ export interface CullState {
   verdict_by: 'ai' | 'person' | null;
   stars: number;
   stars_by: 'ai' | 'person' | null;
+  /** Cull Rounds (domain/rounds.ts): 0 not a Pick, 1 a Pick, k kept in passes 2 to k. */
+  round?: number;
+  cut_in?: number | null;
 }
 
 /** What one write to the Library did: the batch Undo reverts, and the Photos as they are now. */
@@ -559,6 +567,8 @@ export interface CullWrite {
   label: string;
   flags: { ids: string[]; verdict: Verdict }[];
   stars: { ids: string[]; stars: number }[];
+  /** Cull Round marks (`mark_pass`). */
+  passes: { ids: string[]; pass: number; mark: 'keep' | 'cut' | 'clear' }[];
 }
 
 /** Save a change as one batch (`flag` and `rate`; later calls join the first one's batch). */
@@ -566,7 +576,7 @@ export function writeCull(w: CullWrite): Promise<Written> {
   return serial(async () => {
     let batch: number | null = null;
     const photos = new Map<number, CullState>();
-    const calls = [...w.flags.map((f) => ['flag', { ids: f.ids.map(Number), verdict: f.verdict }] as const), ...w.stars.map((r) => ['rate', { ids: r.ids.map(Number), stars: r.stars }] as const)];
+    const calls = [...w.flags.map((f) => ['flag', { ids: f.ids.map(Number), verdict: f.verdict }] as const), ...w.stars.map((r) => ['rate', { ids: r.ids.map(Number), stars: r.stars }] as const), ...(w.passes ?? []).map((r) => ['mark_pass', { ids: r.ids.map(Number), pass: r.pass, mark: r.mark }] as const)];
     for (const [command, args] of calls) {
       const r: { batch_id: number | null; photos: CullState[] } = await call(command, { ...args, label: w.label, ...(batch != null ? { batch_id: batch } : {}) });
       batch ??= r.batch_id;
@@ -620,8 +630,8 @@ export function wrote(batch: Promise<number | null>): Promise<Written> {
  */
 export function undoBatch(batch: number): Promise<Written> {
   return serial(async () => {
-    const r = await call<{ batch_id: number; verdicts: number[]; ratings?: number[]; recipes: number[]; looks: number }>('undo_batch', { batch_id: batch });
-    const ids = [...new Set([...r.verdicts, ...(r.ratings ?? [])])];
+    const r = await call<{ batch_id: number; verdicts: number[]; ratings?: number[]; passes?: number[]; recipes: number[]; looks: number }>('undo_batch', { batch_id: batch });
+    const ids = [...new Set([...r.verdicts, ...(r.ratings ?? []), ...(r.passes ?? [])])];
     const looks = r.looks || r.recipes.length ? await listLooks() : undefined;
     return { batch: r.batch_id, photos: ids.length ? await readCull(ids) : [], recipes: await readRecipes(r.recipes), looks };
   });

@@ -10,7 +10,7 @@ import { undoBatch } from './liveAgent';
 import type { Suggestion } from '../domain/types';
 
 /** The start of an offer's title (`crop_offer::PREFIX`). */
-export const CROP_LIKE = 'Crop like ';
+const CROP_LIKE = 'Crop like ';
 
 export interface CropOffers {
   /** Open offers, one per Photo, newest hero's first. */
@@ -19,7 +19,7 @@ export interface CropOffers {
   hero: string | null;
 }
 
-export const isCropOffer = (s: Suggestion) => s.title.startsWith(CROP_LIKE);
+const isCropOffer = (s: Suggestion) => s.title.startsWith(CROP_LIKE);
 
 export function useCropOffers(): CropOffers {
   const takes = useShootTakes();
@@ -32,19 +32,26 @@ export function useCropOffers(): CropOffers {
   }, [takes]);
 }
 
+const refreshTakes = () => window.dispatchEvent(new Event('argus:suggestions'));
+/** A toast for a step the engine refused, and the takes read again to show where things stand. */
+const failed = (what: string) => (e: unknown) => {
+  toast(`${what} failed: ${String(e).replace(/^Error: /, '')}`, { id: 'argus' });
+  refreshTakes();
+};
+
 /** Accept every offer as one Undo: each frame gets only the crop. */
 export function acceptCropOffers(list: Suggestion[]) {
   if (!list.length) return;
   void acceptMany(list).then(({ batch }) => {
-    window.dispatchEvent(new Event('argus:suggestions'));
+    refreshTakes();
     toast(list.length === 1 ? 'Crop accepted' : `Crop accepted on ${list.length} Photos`, {
       id: 'argus',
-      action: batch == null ? undefined : { label: 'Undo', onClick: () => void undoBatch(batch).then(() => window.dispatchEvent(new Event('argus:suggestions'))) },
+      action: batch == null ? undefined : { label: 'Undo', onClick: () => void undoBatch(batch).then(refreshTakes, failed('Undo')) },
     });
-  });
+  }, failed('Crop'));
 }
 
 /** Not for these: dismiss every offer, so the same crop isn't offered to them again. */
 export function dismissCropOffers(list: Suggestion[]) {
-  void Promise.all(list.map((s) => dismissSuggestion(s))).then(() => window.dispatchEvent(new Event('argus:suggestions')));
+  void Promise.all(list.map((s) => dismissSuggestion(s))).then(refreshTakes, failed('Dismiss'));
 }

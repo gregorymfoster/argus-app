@@ -76,3 +76,24 @@ export function fitGrid(n: number, W: number, H: number, gap = 8, caption = 25, 
   }
   return best;
 }
+
+/** The smallest short side, in CSS px, at which frames of a burst can still be compared. */
+export const MIN_SHORT = 240;
+
+/** How many frames fit on one page of the Survey at a size worth comparing (Greg, 2026-11-01:
+ *  "limit how many we show ... based on screen size"). At least 2, so a page is still a choice. */
+export function pageSize(n: number, W: number, H: number, aspect = 1.5, min = MIN_SHORT) {
+  if (!W || !H) return n;
+  let best = Math.min(2, n);
+  for (let k = 1; k <= n; k++) {
+    const { width } = fitGrid(k, W, H, 8, 25, aspect);
+    if (Math.min(width, width / aspect) >= min) best = Math.max(best, k);
+  }
+  return best;
+}
+
+/** Split `ids` into even pages of at most `size`. */
+export function pages<T>(ids: T[], size: number): T[][] {
+  const n = Math.max(1, Math.ceil(ids.length / Math.max(1, size)));
+  return Array.from({ length: n }, (_, i) => ids.slice(Math.round((i * ids.length) / n), Math.round(((i + 1) * ids.length) / n)));
+}

@@ -1,5 +1,5 @@
 // Every main screen at Greg's window widths (1280 and 1500 px): fails when a header or
-// footer wraps, or a label in one is clipped or sticks out, plus the sidebar foot squeezed. Shots in out/shots/layout-*.png.
+// footer wraps, or a label in one is clipped or sticks out, the Status bar included, plus the sidebar squeezed. Shots in out/shots/layout-*.png.
 //
 //   node scripts/layout.mjs
 
@@ -28,7 +28,7 @@ try {
       if (problems.length) failures.push(`${name}@${w}`);
       await ctx.close();
     }
-  // The sidebar foot at a squeezed sidebar, since Greg's fonts and zoom run wider than Chromium's here.
+  // A squeezed sidebar, since Greg's fonts and zoom run wider than Chromium's here.
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } });
   const p = await ctx.newPage();
   await p.goto(`http://localhost:5197/${SCREENS.grid}`);

@@ -175,19 +175,17 @@
 .export-v2 .ex-foot .facts { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .export-v2 .ex-foot .grow { flex: 1 1 0; }
 .export-toast { display: flex; flex-direction: column; gap: 6px; min-width: 240px; }
-.export-toast .bar { height: 3px; border-radius: 2px; background: rgb(255 255 255 / 0.1); overflow: hidden; }
-.export-toast .bar > div { height: 100%; background: var(--accent); transition: width 0.3s ease; }
 
-/* Burst culling (screens/Bursts.tsx): every frame of one Stack, Survey-style. */
+/* Cull mode's Survey (screens/CullMode.tsx): every frame of a moment side by side. */
 .burst-progress { width: 90px; height: 3px; border-radius: 2px; background: var(--fill); overflow: hidden; flex: none; }
 .burst-progress > span { display: block; height: 100%; background: var(--accent); transition: width 240ms ease; }
 .burst-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 10px; background: var(--canvas); }
-.burst-grid { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px; align-content: center; justify-content: center; grid-template-columns: repeat(var(--cols, 3), var(--cell-w, minmax(0, 1fr))); container-type: size; overflow: hidden; }
+.burst-grid { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px; align-content: center; justify-content: center; grid-template-columns: repeat(var(--cols, 3), var(--cell-w, minmax(0, 1fr))); container-type: size; overflow: hidden; padding: 6px; }
 .burst-cell { margin: 0; min-width: 0; width: var(--cell-w, min(100%, calc(max(100cqh / var(--rows, 1) - 36px, 90px) * var(--ar, 1.5)))); display: flex; flex-direction: column; gap: 5px; cursor: default; }
 .burst-cell > .photo { width: 100%; aspect-ratio: var(--ar, 3 / 2); border-radius: 4px; overflow: hidden; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08); transition: box-shadow 120ms ease, opacity 120ms ease; }
-.burst-cell.kept > .photo { box-shadow: 0 0 0 1.5px var(--pick); }
-.burst-cell.focus > .photo { box-shadow: 0 0 0 2px rgb(255 255 255 / 0.9); }
-.burst-cell.faded > .photo { opacity: 0.4; }
+.burst-cell.kept > .photo { box-shadow: 0 0 0 3px var(--pick); }
+.burst-cell.focus > .photo { outline: 2px solid var(--text); outline-offset: 3px; }
+.burst-cell.faded > .photo { opacity: 0.35; }
 .burst-cell figcaption { display: flex; align-items: center; gap: 6px; height: 20px; overflow: hidden; font-size: 11px; color: var(--text-3); min-width: 0; }
 .burst-cell figcaption .grow { flex: 1 1 0; }
 .burst-empty { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-size: 12px; color: var(--text-2); background: var(--canvas); padding: 0 24px; text-align: center; }
@@ -268,3 +266,11 @@
 /* The Survey's frames share one box from fitGrid; each Photo sits whole inside it. */
 .burst-grid .burst-cell > .photo { aspect-ratio: auto; height: var(--cell-h, auto); background: var(--canvas); }
 .burst-grid .burst-cell > .photo img { object-fit: contain; }
+/* Cull flags at a glance: solid Pick, faded Reject with a red cross, dashed "needs a flag". */
+.burst-cell { position: relative; }
+.cell-flag { position: absolute; top: 8px; left: 8px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; pointer-events: none; }
+.cell-flag.pick { background: var(--pick); color: var(--bg); }
+.cell-flag.reject { background: var(--reject); color: var(--bg); }
+.burst-cell .v-chip.pick { background: var(--pick); border-color: var(--pick); color: var(--bg); }
+.burst-cell .v-chip.reject { background: var(--reject-bg); border-color: var(--reject-line); }
+.burst-cell .v-chip.needs { background: transparent; border: 1px dashed var(--border-strong); color: var(--text-2); }

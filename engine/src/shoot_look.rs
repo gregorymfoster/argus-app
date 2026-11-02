@@ -4,11 +4,12 @@
 //! frame is measured once (cached), so a slider drag re-matches the Shoot with no rendering
 //! and only the small tiles are drawn again.
 //!
-//! Locking the look is `pre_edit_shoot` with `every`: a Shoot match Suggestion, ready to
-//! accept, for every frame that isn't a Reject.
+//! Applying the look ([`apply`], tool `apply_shoot_look`, Greg 2026-11-01) writes that match
+//! on the frames the person ticked in Edit's Apply look popover, as one undoable batch. Frames
+//! edited by hand are never touched, and each keeps its own crop and spots.
 
 use crate::edit_head::{Sample, SLIDERS};
-use crate::library::{Author, Library, Photo, PhotoId};
+use crate::library::{Author, BatchId, Library, Photo, PhotoId};
 use crate::pre_edit::sync_base;
 use crate::recipe::Recipe;
 use crate::shoot_match::{self, Model, MAX_ANCHORS};
@@ -39,6 +40,10 @@ pub struct Frame {
     /// data URL).
     #[serde(skip)]
     pub jpeg: Option<Vec<u8>>,
+    /// The Recipe the match would write (before the frame's own crop and spots go back on);
+    /// None for a hand-edited frame or one that couldn't be matched.
+    #[serde(skip)]
+    pub recipe: Option<Recipe>,
     pub error: Option<String>,
 }
 
@@ -136,16 +141,16 @@ fn frame(
     long_edge: Option<usize>,
 ) -> Result<Frame> {
     let anchor = own.is_some();
-    let (recipe, reach) = match own {
-        Some(r) => (r, 1.0),
+    let (recipe, reach, matched) = match own {
+        Some(r) => (r, 1.0, false),
         None if p.kind == "raw" && !samples.is_empty() => {
             let (facts, auto) = shoot_match::measure(lib, p)?;
             let want = shoot_match::matched(&facts, &auto, samples, smart);
             let reach = Model::shipped().reach(&facts, samples);
-            (shoot_match_recipe(lib, p, base, &want)?, reach)
+            (shoot_match_recipe(lib, p, base, &want)?, reach, true)
         }
         // A JPEG, or nothing edited yet: it shows as it is.
-        None => (crate::tools::current_recipe(lib, p.id)?, 0.0),
+        None => (crate::tools::current_recipe(lib, p.id)?, 0.0, false),
     };
     let shown = crate::tools::with_look(lib, p, &recipe)?;
     let values = crate::edit_head::sliders(&shown.global);
@@ -154,11 +159,17 @@ fn frame(
     } else {
         BTreeMap::new()
     };
+    // AI denoise can't be seen in a tile and costs seconds a frame, so the tiles skip it; the
+    // Recipe written on Apply keeps it.
     let jpeg = match long_edge {
-        Some(e) => Some(crate::render::encode_jpeg(
-            &crate::render::render_in(lib, p, &shown, Some(e))?,
-            82,
-        )?),
+        Some(e) => {
+            let mut quick = shown.clone();
+            quick.set("denoise", 0.0, false)?;
+            Some(crate::render::encode_jpeg(
+                &crate::render::render_in(lib, p, &quick, Some(e))?,
+                82,
+            )?)
+        }
         None => None,
     };
     Ok(Frame {
@@ -168,6 +179,7 @@ fn frame(
         reach,
         check: !anchor && p.kind == "raw" && !samples.is_empty() && reach < CHECK_BELOW,
         jpeg,
+        recipe: matched.then_some(recipe),
         error: None,
     })
 }
@@ -180,6 +192,70 @@ fn failed(photo_id: PhotoId, anchor: bool, error: String) -> Frame {
         reach: 0.0,
         check: false,
         jpeg: None,
+        recipe: None,
         error: Some(error),
     }
+}
+
+/// What [`apply`] did.
+#[derive(Debug, Clone, Serialize)]
+pub struct Applied {
+    pub batch_id: BatchId,
+    /// The frames that got the look.
+    pub applied: Vec<PhotoId>,
+    /// Frames left as they were, with why (edited by hand, a JPEG, couldn't be measured).
+    pub skipped: Vec<Skipped>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Skipped {
+    pub photo_id: PhotoId,
+    pub why: String,
+}
+
+/// Apply the hero's saved look to `ids` (Photos of its Shoot): each frame gets the Shoot match
+/// it shows in the preview, keeping its own crop and spots, all in `batch` (one Undo). Frames
+/// edited by hand, and the hero, are skipped. Any Shoot match still waiting on an applied frame
+/// is closed, since the look it offered is now on the frame.
+pub fn apply(lib: &mut Library, hero: &Photo, ids: &[PhotoId], batch: BatchId) -> Result<Applied> {
+    let recipe = crate::tools::current_recipe(lib, hero.id)?;
+    let ids: Vec<PhotoId> = ids.iter().copied().filter(|&id| id != hero.id).collect();
+    let pv = preview(lib, hero, &recipe, &ids, None)?;
+    let mut applied = Vec::new();
+    let mut skipped = Vec::new();
+    for f in pv.frames {
+        let why = if f.anchor {
+            Some("edited by hand".to_string())
+        } else if let Some(e) = &f.error {
+            Some(e.clone())
+        } else if f.recipe.is_none() {
+            Some("not a RAW, or no hand-edited RAW to match".to_string())
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            skipped.push(Skipped {
+                photo_id: f.photo_id,
+                why,
+            });
+            continue;
+        }
+        let mut r = f.recipe.expect("checked above");
+        let own = crate::tools::current_recipe(lib, f.photo_id)?;
+        r.crop = own.crop;
+        r.spots = own.spots;
+        lib.write_recipe(f.photo_id, &r.to_value(), Author::Ai, Some(batch))?;
+        lib.close_shoot_match(f.photo_id)?;
+        lib.log_usage(
+            f.photo_id,
+            "look_applied",
+            serde_json::json!({ "hero_id": hero.id, "batch_id": batch, "reach": f.reach, "check": f.check }),
+        );
+        applied.push(f.photo_id);
+    }
+    Ok(Applied {
+        batch_id: batch,
+        applied,
+        skipped,
+    })
 }

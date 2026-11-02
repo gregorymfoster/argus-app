@@ -84,7 +84,7 @@ fn parse(path: PathBuf) -> Option<Backup> {
         && b[7] == b'-'
         && b[10] == b'_'
         && stem[..10].bytes().filter(u8::is_ascii_digit).count() == 8
-        && stem[11..17].bytes().all(|c| c.is_ascii_digit());
+        && b[11..17].iter().all(u8::is_ascii_digit);
     if !dated {
         return None;
     }

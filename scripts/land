@@ -13,17 +13,18 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 fi
 
 for attempt in 1 2 3 4 5; do
-  git fetch -q origin main || { sleep $((2 ** attempt)); continue; }
+  scripts/timeout 120 git fetch -q origin main || { sleep $((2 ** attempt)); continue; }
   if ! git rebase -q origin/main; then
     echo "land: rebase onto origin/main hit a conflict. Resolve it (git status), 'git rebase --continue', then rerun." >&2
     echo "land: ADR or schema-step numbers clashing? Take the next free number on origin/main." >&2
     exit 1
   fi
-  if [ "${LAND_SKIP_CHECK:-}" != "1" ] && [ "${checked:-}" != "$(git rev-parse HEAD^{tree})" ]; then
+  if [ "${LAND_SKIP_CHECK:-}" != "1" ] && [ "${checked:-}" != "$(git rev-parse "HEAD^{tree}")" ]; then
     just check
-    checked=$(git rev-parse HEAD^{tree})
+    checked=$(git rev-parse "HEAD^{tree}")
   fi
-  if git push -q origin HEAD:main; then
+  # A time limit, so a stalled connection retries instead of hanging the thread (CLAUDE.md).
+  if scripts/timeout 600 git push -q origin HEAD:main; then
     echo "land: pushed $(git rev-parse --short HEAD) to main"
     exit 0
   fi

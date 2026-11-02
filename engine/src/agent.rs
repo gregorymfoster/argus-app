@@ -50,6 +50,7 @@ pub const TOOLS: &[&str] = &[
     "list_looks",
     "set_look",
     "sync_to_look",
+    "apply_shoot_look",
     "paste_settings",
     "suggest_edits",
     "match_to_photo",
@@ -658,6 +659,7 @@ pub fn chat_with_format(
                     || crate::variant::current().is_ok_and(|v| v.think == Some(true)),
                 max_tokens: None,
                 throttle: Mutex::new(None),
+                installed: None,
             };
             // The same model's MLX build, when installed, runs faster at the same quality.
             chat.prefer_models(&[]);
@@ -688,6 +690,8 @@ struct OllamaChat {
     /// The caller's cap on output tokens ([`Chat::cap_output`]); else [`max_output_tokens`].
     max_tokens: Option<u32>,
     throttle: Mutex<Option<Throttle>>,
+    /// The models Ollama has pulled, read once by [`Chat::prefer_models`].
+    installed: Option<Vec<String>>,
 }
 
 impl OllamaChat {
@@ -798,14 +802,17 @@ impl Chat for OllamaChat {
     }
 
     fn prefer_models(&mut self, models: &[&str]) {
-        let installed: Vec<String> = match self.o.installed() {
-            Ok(list) => list.into_iter().map(|m| m.name).collect(),
-            Err(_) => return,
-        };
+        // Asked once per chat: a Queue job calls this again after chat_with_format did.
+        if self.installed.is_none() {
+            match self.o.model_names() {
+                Ok(names) => self.installed = Some(names),
+                Err(_) => return,
+            }
+        }
         self.o.model = crate::providers::pick_model(
             &self.o.model,
             crate::providers::model_pinned(),
-            &installed,
+            self.installed.as_deref().unwrap_or_default(),
             models,
         );
     }
@@ -1032,6 +1039,7 @@ mod tests {
             think: false,
             max_tokens: None,
             throttle: Mutex::new(None),
+            installed: None,
         };
         let b = c.body(
             "sys",
@@ -1066,6 +1074,7 @@ mod tests {
             think: false,
             max_tokens: None,
             throttle: Mutex::new(None),
+            installed: None,
         };
         capped.cap_output(1500);
         assert_eq!(

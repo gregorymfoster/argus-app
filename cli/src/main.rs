@@ -29,6 +29,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Propose a straighten and crop for image files (JPEG, PNG) with no Library, one line of
+    /// JSON each: the scene-gated turn, the plain line detector's, and the crop rectangle on
+    /// the unturned frame. A bench and debug tool (bench/straighten_bench.py, crop_bench.py).
+    Frame {
+        #[arg(required = true, num_args = 1..)]
+        files: Vec<PathBuf>,
+        /// Long edge to read at (default 1024).
+        #[arg(long, default_value_t = 1024)]
+        long_edge: u32,
+    },
     /// Decode + develop a RAW to JPEG (q90) or PNG, chosen by the --out extension. Prints one line of JSON timings.
     Render {
         file: PathBuf,
@@ -178,6 +188,14 @@ enum Cmd {
         compute: Option<Compute>,
         #[arg(long, default_value = "out/denoise")]
         out: PathBuf,
+        /// Only measure the RAW's sensor noise and print the Amount Auto Denoise would set
+        /// (at the frame's own exposure), without running the model.
+        #[arg(long)]
+        noise_only: bool,
+        /// Centre of the crop as fractions of the frame before rotation, e.g. `0.46,0.4`
+        /// (default the middle).
+        #[arg(long)]
+        center: Option<String>,
     },
     /// Replace camera previews with Argus's own render (what Import leaves with
     /// --camera-previews, or the app builds in the background). Prints JSON.
@@ -452,6 +470,38 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("{out}");
         }
+        Cmd::Frame { files, long_edge } => {
+            use argus_engine::framing::{self, level};
+            let show = |l: level::Level| match l {
+                level::Level::Turn(a) => serde_json::json!(a),
+                level::Level::Level => serde_json::json!(0.0),
+                level::Level::Unsure => serde_json::Value::Null,
+            };
+            for f in files {
+                let im = image::open(&f)?.thumbnail(long_edge, long_edge).to_rgb8();
+                let img = argus_engine::RgbImage {
+                    width: im.width() as usize,
+                    height: im.height() as usize,
+                    data: im.into_raw(),
+                };
+                let t = std::time::Instant::now();
+                let scene = framing::scene(&img)?;
+                let gated = level::find(&img, Some(&scene));
+                let ms = t.elapsed().as_millis() as u64;
+                let plain = level::find(&img, None);
+                let crop = framing::crop_rect(&img)?
+                    .map(|r| serde_json::json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h }));
+                let mut row = serde_json::json!({ "file": f, "turn": show(gated), "plain": show(plain), "crop": crop, "ms": ms });
+                // Bench only: ARGUS_LEVEL_GATES="g1|g2" scores other gate settings on the same scene.
+                if let Ok(list) = std::env::var("ARGUS_LEVEL_GATES") {
+                    for (k, g) in list.split('|').enumerate() {
+                        let g: level::Gates = g.parse()?;
+                        row[format!("g{k}")] = show(level::find_with(&img, Some(&scene), &g));
+                    }
+                }
+                println!("{row}");
+            }
+        }
         Cmd::Speed {
             folders,
             baseline,
@@ -469,6 +519,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             compare,
             compute,
             out,
+            noise_only,
+            center,
         } => denoise_time(
             &file,
             tiles,
@@ -476,6 +528,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             compare,
             compute.unwrap_or_else(Compute::from_env),
             &out,
+            noise_only,
+            center.as_deref(),
         )?,
         Cmd::Previews {
             library,
@@ -823,6 +877,7 @@ fn main() -> ExitCode {
 }
 
 /// `argus denoise`: see [`Cmd::Denoise`].
+#[allow(clippy::too_many_arguments)]
 fn denoise_time(
     file: &Path,
     tiles: usize,
@@ -830,6 +885,8 @@ fn denoise_time(
     compare: bool,
     compute: Compute,
     out: &Path,
+    noise_only: bool,
+    center: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use argus_engine::denoise::{self, Backend};
     use argus_engine::pipeline;
@@ -840,6 +897,20 @@ fn denoise_time(
         other => return Err(format!("--backend {other}: auto, cpu or coreml").into()),
     };
     let raw = decode(file)?;
+    let noise = argus_engine::noise::measure(&raw);
+    let visible = argus_engine::noise::visible(&noise, 0.0);
+    if noise_only {
+        println!(
+            "{}",
+            serde_json::json!({
+                "file": file,
+                "noise": noise,
+                "visible": (visible * 1000.0).round() / 1000.0,
+                "auto_amount": argus_engine::noise::auto_amount(visible),
+            })
+        );
+        return Ok(());
+    }
     let (w, h) = raw.crop_size();
     let full = pipeline::demosaic_bilinear(&pipeline::normalize_white_balance(&raw), w, h, raw.cfa);
     // A centre crop about `tiles` tiles big (224 px apart), or the whole frame.
@@ -849,7 +920,17 @@ fn denoise_time(
         ((tiles as f64).sqrt() * 224.0) as usize
     };
     let (cw, ch) = (side.min(w), side.min(h));
-    let (x0, y0) = ((w - cw) / 2, (h - ch) / 2);
+    let (fx, fy) = match center.map(|c| c.split_once(',')) {
+        None => (0.5, 0.5),
+        Some(Some((x, y))) => (x.trim().parse::<f64>()?, y.trim().parse::<f64>()?),
+        Some(None) => return Err("--center takes x,y fractions, e.g. 0.46,0.4".into()),
+    };
+    let place = |f: f64, n: usize, c: usize| {
+        ((f.clamp(0.0, 1.0) * n as f64) as usize)
+            .saturating_sub(c / 2)
+            .min(n - c)
+    };
+    let (x0, y0) = (place(fx, w, cw), place(fy, h, ch));
     let mut crop = Vec::with_capacity(cw * ch * 3);
     for y in y0..y0 + ch {
         crop.extend_from_slice(&full[(y * w + x0) * 3..(y * w + x0 + cw) * 3]);
@@ -892,7 +973,16 @@ fn denoise_time(
         .to_string();
     let mut half = crop.clone();
     denoise::blend(&mut half, &den, denoise::weight(50.0));
-    for (name, rgb) in [("before", crop), ("amount50", half), ("after", den)] {
+    let auto = argus_engine::noise::auto_amount(visible);
+    let mut auto_img = crop.clone();
+    denoise::blend(&mut auto_img, &den, denoise::weight(auto));
+    let auto_name = format!("auto{auto}");
+    for (name, rgb) in [
+        ("before", crop),
+        ("amount50", half),
+        (auto_name.as_str(), auto_img),
+        ("after", den),
+    ] {
         let d = argus_engine::Demosaiced {
             width: cw,
             height: ch,
@@ -923,6 +1013,9 @@ fn denoise_time(
             "compute": format!("{compute:?}").to_lowercase(),
             "vs_cpu": vs_cpu,
             "whole_frame_tiles": denoise::tiles(w, h),
+            "noise": noise,
+            "visible": (visible * 1000.0).round() / 1000.0,
+            "auto_amount": auto,
             "whole_frame_minutes": (per_tile * denoise::tiles(w, h) as f64 / 6.0).round() / 10.0,
         })
     );

@@ -261,3 +261,26 @@ CREATE TABLE face_not (
   person_id INTEGER NOT NULL REFERENCES people(id),
   PRIMARY KEY (photo_id, face, person_id)
 );
+
+-- Cull Rounds (repeat Cull passes over the Picks, Greg 2026-11-01). Pass 1 is the Verdicts;
+-- pass 2 and on mark the Photos still in the running as kept or cut. A Pick's Round is 1 plus
+-- the passes it was kept in, in a row from pass 2. `pass_log` is the append-only history,
+-- for batch undo, like `rating_log`.
+CREATE TABLE pass_marks (
+  photo_id INTEGER NOT NULL REFERENCES photos(id),
+  pass     INTEGER NOT NULL,
+  kept     INTEGER NOT NULL,
+  author   TEXT NOT NULL,
+  batch_id INTEGER REFERENCES batches(id),
+  at       TEXT NOT NULL,
+  PRIMARY KEY (photo_id, pass)
+);
+CREATE TABLE pass_log (
+  id       INTEGER PRIMARY KEY,
+  photo_id INTEGER NOT NULL REFERENCES photos(id),
+  pass     INTEGER NOT NULL,
+  kept     INTEGER,            -- NULL: the mark was cleared
+  author   TEXT NOT NULL,
+  batch_id INTEGER REFERENCES batches(id),
+  at       TEXT NOT NULL
+);

@@ -21,6 +21,8 @@ interface Poll {
   wants: Map<object, number>;
   timer: ReturnType<typeof setTimeout> | null;
   inFlight: boolean;
+  /** Asked again while a call was out: its answer may predate the change, so ask once more. */
+  again: boolean;
 }
 
 const polls = new Map<string, Poll>();
@@ -38,8 +40,12 @@ function schedule(p: Poll) {
 }
 
 async function load(p: Poll) {
-  if (p.inFlight) return;
+  if (p.inFlight) {
+    p.again = true;
+    return;
+  }
   p.inFlight = true;
+  p.again = false;
   try {
     const value = await call(p.command, p.args);
     const text = JSON.stringify(value);
@@ -52,7 +58,8 @@ async function load(p: Poll) {
     // Keep the last answer; the next round tries again.
   } finally {
     p.inFlight = false;
-    schedule(p);
+    if (p.again && p.subs.size && !hidden()) void load(p);
+    else schedule(p);
   }
 }
 
@@ -81,7 +88,7 @@ export function usePoll<T>(command: string | null, args: Record<string, unknown>
     if (!command) return () => {};
     let p = polls.get(key);
     if (!p) {
-      p = { command, args, value: undefined, text: null, subs: new Set(), wants: new Map(), timer: null, inFlight: false };
+      p = { command, args, value: undefined, text: null, subs: new Set(), wants: new Map(), timer: null, inFlight: false, again: false };
       polls.set(key, p);
     }
     const poll = p;

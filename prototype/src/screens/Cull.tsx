@@ -13,7 +13,7 @@ import { EyeBadges } from '../ui/EyeBadges';
 import { askRemove } from '../ui/Remove';
 import { OTHER_SHOOTS, PHOTOS, PHOTO_BY_ID, SHOOT, STACK_BY_ID, stackOf } from '../data/dummy';
 import type { Photo, Verdict } from '../domain/types';
-import { recipeOf, starsOf, useLibrary, verdictOf } from '../store/library';
+import { recipeOf, roundIn, starsOf, useLibrary, verdictOf } from '../store/library';
 import { autoAction, runAuto } from '../data/auto';
 import { usePref } from '../store/variants';
 import { MIN_FLAGS, useLearnAsYouCull, type Learning } from '../data/learn';
@@ -40,6 +40,7 @@ import { Button } from '@/components/ui/button';
 import { FoundLine } from '../ui/Search';
 import { Slider } from '@/components/ui/slider';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
+import { StatusFoot } from '../ui/StatusBar';
 
 type Filter = 'all' | Verdict | 'best';
 
@@ -60,6 +61,8 @@ interface TileProps {
   stars: { stars: number; you: boolean };
   /** Rank in Best Photos, shown once the Shoot is culled. */
   best?: number;
+  /** Cull Round reached (GLOSSARY: Round): a badge from Round 2 on. */
+  round?: number;
   hero?: boolean;
   /** How many Suggestions are waiting for this Photo. */
   takes?: number;
@@ -186,7 +189,7 @@ function useArrivals(imported: number, importing: boolean) {
   return map;
 }
 
-const Tile = memo(function Tile({ p, arrive, v, you, stars, best, hero, takes, ai, eyes, onStars, selected, current, highlighted, stackSize, expanded, stackPos, stackFirst, stackLast, stackCover, culling, onToggleStack, onClick, onSet, menu, small }: TileProps) {
+const Tile = memo(function Tile({ p, arrive, v, you, stars, best, round, hero, takes, ai, eyes, onStars, selected, current, highlighted, stackSize, expanded, stackPos, stackFirst, stackLast, stackCover, culling, onToggleStack, onClick, onSet, menu, small }: TileProps) {
   const stk = stackSize > 1 ? ['stk', expanded ? 'stk-open' : 'stk-shut', stackCover && 'stk-cover', stackFirst && 'stk-first', stackLast && 'stk-last'] : [];
   const cls = ['tile', arrive != null && 'arrive', hero && 'hero', selected && 'sel', current && 'cur', highlighted && 'hl', v === 'reject' && 'faded', ...stk].filter(Boolean).join(' ');
   return (
@@ -211,6 +214,13 @@ const Tile = memo(function Tile({ p, arrive, v, you, stars, best, hero, takes, a
                     {(!expanded || stackCover) && <Layers size={10} strokeWidth={2.2} />}
                     {expanded ? `${stackPos}/${stackSize}` : stackSize}
                   </button>
+                </Tip>
+              )}
+              {!!round && round > 1 && (
+                <Tip label={`Kept through Round ${round} of Cull`}>
+                  <span className="best-badge round-badge" data-testid="round-badge" aria-label={`Round ${round}`}>
+                    R{round}
+                  </span>
                 </Tip>
               )}
               {best != null && hero === undefined && (
@@ -372,6 +382,8 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const [tileInfo, setTileInfo] = usePref<TileInfo>('tile-info', 'compact');
   const [filter, setFilter] = useState<Filter>('all');
   const [minStars, setMinStars] = useState(0);
+  // Lightroom-ish attribute filter for Cull Rounds: Round 2 and up, 3 and up...
+  const [minRound, setMinRound] = useState(0);
   // Lightroom has no AI filter; ours narrows to what the background AI has done or not yet.
   const [aiFilter, setAiFilter] = useState<'any' | 'ready' | 'waiting'>('any');
   const [sort, setSort] = useSort();
@@ -410,10 +422,11 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const eyesOf = useEyeFlags();
   const aiOf = (id: string) => aiStatus.of(id, openTakes(id) > 0);
   const aiOk = (p: Photo) => aiFilter === 'any' || (aiFilter === 'ready' ? openTakes(p.id) > 0 : aiOf(p.id) != null);
-  // A collapsed Stack shows the frame that was kept (its best Pick), else its best frame.
+  // A collapsed Stack shows the frame that was kept (its best Pick, the one that went furthest in
+  // the Cull Rounds), else its best frame.
   const cover = useMemo(() => {
     const out: Record<string, string> = {};
-    const rank = (p: Photo) => (verdictOf(state, p.id) === 'pick' ? -100 : 0) + (p.stackRank ?? 99);
+    const rank = (p: Photo) => (verdictOf(state, p.id) === 'pick' ? -100 * (1 + roundIn(state, p.id).round) : 0) + (p.stackRank ?? 99);
     for (const p of all) if (p.stackId && (!out[p.stackId] || rank(p) < rank(PHOTO_BY_ID[out[p.stackId]]))) out[p.stackId] = p.id;
     return out;
   }, [all, state]);
@@ -421,7 +434,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const visible = useMemo(() => {
     if (sort.key === 'stars' && !held.current) held.current = Object.fromEntries(all.map((p) => [p.id, starsOf(state, p.id).stars]));
     const stars = (id: string) => (sort.key === 'stars' && starsOf(state, id).you === false ? held.current?.[id] ?? starsOf(state, id).stars : starsOf(state, id).stars);
-    const facts = { stars, verdict: (id: string) => verdictOf(state, id), keeper: keeperRank };
+    const facts = { stars, verdict: (id: string) => verdictOf(state, id), keeper: keeperRank, round: (id: string) => roundIn(state, id).round };
     if (filter === 'best') {
       const best = bestPhotos.filter((p) => starsOf(state, p.id).stars >= minStars && aiOk(p));
       // Best Photos stay in rank order unless another sort is chosen.
@@ -429,13 +442,20 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     }
     const shown = all.filter((p) => {
       if (minStars && starsOf(state, p.id).stars < minStars) return false;
+      if (minRound && roundIn(state, p.id).round < minRound) return false;
       if (!aiOk(p)) return false;
-      if (!minStars && p.stackId && cover[p.stackId] !== p.id && !expanded.has(p.stackId)) return false;
+      if (!minStars && !minRound && p.stackId && cover[p.stackId] !== p.id && !expanded.has(p.stackId)) return false;
       return filter === 'all' || (verdictOf(state, p.id) ?? 'unflagged') === filter;
     });
     // The star filter shows every frame of a Stack, so they sort one by one then.
-    return sortPhotos(shown, sort, facts, !minStars);
-  }, [all, bestPhotos, cover, expanded, filter, minStars, state, aiFilter, takes, aiStatus, sort, keepers.version]);
+    return sortPhotos(shown, sort, facts, !minStars && !minRound);
+  }, [all, bestPhotos, cover, expanded, filter, minStars, minRound, state, aiFilter, takes, aiStatus, sort, keepers.version]);
+  // Rounds reached so far, from 2 up, with how many Photos got at least that far.
+  const rounds = useMemo(() => {
+    const got = all.map((p) => roundIn(state, p.id).round);
+    const top = Math.max(1, ...got);
+    return [[0, all.length] as [number, number], ...Array.from({ length: top - 1 }, (_, i) => [i + 2, got.filter((r) => r >= i + 2).length] as [number, number])];
+  }, [all, state]);
   const counts = useMemo(() => {
     const c = { all: all.length, pick: 0, reject: 0, unflagged: 0, best: bestPhotos.length };
     all.forEach((p) => {
@@ -659,9 +679,9 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   useHotkeys('s', () => current?.stackId && toggleStack(current.stackId), [current]);
   useHotkeys('shift+s', () => changeSort(toggleStars(sort)), [sort]);
   useHotkeys('shift+k', () => changeSort(toggleKeepers(sort)), [sort]);
-  // N (Lightroom's Survey key) culls the Shoot's bursts one Stack at a time, from the current Photo's.
-  const openBursts = () => (stackCount ? go({ name: 'moments', id: current?.stackId }) : dispatch({ type: 'toast', text: 'No Stacks yet: bursts stack once Import has looked at the Photos, or after an AI cull' }));
-  useHotkeys('n', openBursts, [current, stackCount]);
+  // N (Lightroom's Survey key) opens Cull mode on the current Photo's moment. Moments cover single
+  // frames too, so it works before anything is stacked.
+  useHotkeys('n', () => go(current ? { name: 'moments', id: current.id } : { name: 'moments' }), [current]);
   useHotkeys('j', () => {
     const next = TILE_INFO[(TILE_INFO.indexOf(tileInfo) + 1) % TILE_INFO.length];
     setTileInfo(next);
@@ -803,6 +823,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" aria-label="Filter by stars" data-testid="stars-filter" className="stars-trigger">
                 <Star size={12} fill={minStars ? 'currentColor' : 'none'} /> {minStars ? `${minStars}${minStars < 5 ? '+' : ''}` : 'Any'}
+                {!!minRound && <span className="mono">R{minRound}+</span>}
                 {aiFilter !== 'any' && <Sparkles size={11} className="ai-icon" />} <ChevronDown size={11} />
               </Button>
             </DropdownMenuTrigger>
@@ -844,6 +865,27 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
                   <span className="n mono faint">{n}</span>
                 </DropdownMenuItem>
               ))}
+              {rounds.length > 1 && (
+                <>
+                  <div className="menu-sep" />
+                  <div className="menu-label">Cull Round</div>
+                  {rounds.map(([r, n]) => (
+                    <DropdownMenuItem
+                      key={r}
+                      data-testid={`round-filter-${r}`}
+                      onSelect={() => {
+                        setMinRound(r);
+                        setCur(0);
+                        setSel(new Set());
+                      }}
+                    >
+                      <span style={{ width: 14 }}>{r === minRound && <Check size={12} />}</span>
+                      <span className="grow">{r ? `Round ${r} and up` : 'Any Round'}</span>
+                      <span className="n mono faint">{n}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
           <SortMenu sort={sort} onChange={changeSort} rank={filter === 'best'} />
@@ -966,6 +1008,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
                 ai={aiOf(p.id)}
                 eyes={eyesOf(p.id)}
                 best={culled ? p.best : undefined}
+                round={roundIn(state, p.id).round}
                 onStars={(n) => act.current.stars(p.id, n)}
                 selected={sel.has(p.id)}
                 current={i === cur}
@@ -1002,7 +1045,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
           )}
         </div>
         {/* Lightroom's grid info line: what the cursor is on, then the keys. */}
-        <footer className="panel-foot cull-foot">
+        <StatusFoot className="panel-foot cull-foot">
           {sel.size > 1 ? (
             <span style={{ color: 'var(--text)' }}>{sel.size} selected</span>
           ) : current ? (
@@ -1020,11 +1063,11 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             <span><Kbd quiet>U</Kbd> Clear</span>
             <span><Kbd quiet>1-5</Kbd> Stars</span>
             <span><Kbd quiet>C</Kbd> Compare</span>
-            <span><Kbd quiet>N</Kbd> Stacks</span>
+            <span><Kbd quiet>N</Kbd> Cull</span>
             <span><Kbd quiet>D</Kbd> Edit</span>
             <span><Kbd quiet>⌘</Kbd><Kbd quiet>Z</Kbd> Undo</span>
           </span>
-        </footer>
+        </StatusFoot>
       </main>
       <Agent
         ctx="cull"

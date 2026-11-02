@@ -1,14 +1,12 @@
 // The pieces of the v2 one-line header (Design pass v2): the icon view switch, Lightroom's
-// G / E / C / D, and a small meter for the background queue. Loupe, Compare and Look share
+// G / E / C / D. Loupe, Compare and Look share
 // them; any screen's header can.
 
 import type { ReactNode } from 'react';
-import { Columns2, Download, Layers, LayoutGrid, Library as LibraryIcon, SlidersHorizontal, Sparkles, Square, type LucideIcon } from 'lucide-react';
+import { Columns2, Download, Layers, LayoutGrid, Library as LibraryIcon, SlidersHorizontal, Square, type LucideIcon } from 'lucide-react';
 import { go } from '../router';
 import { useLibrary } from '../store/library';
-import { cullProgress, editTarget, isEdited, picksOf, type Mode } from '../data/modes';
-import { useQueue } from '../data/suggestions';
-import { QueuePopover, queueLine } from './Queue';
+import { cullProgress, currentPass, editTarget, isEdited, picksOf, type Mode } from '../data/modes';
 import { Kbd, Tip } from './kit';
 
 export type View = 'grid' | 'loupe' | 'compare' | 'edit';
@@ -37,7 +35,10 @@ export function ViewSwitch({ view, id, compareIds }: { view: View; id?: string; 
 /** Go to a mode, as ⌘1 to ⌘4 and the mode switch do. `current` is the Photo in hand. */
 export function goMode(mode: Mode, state: ReturnType<typeof useLibrary>['state'], dispatch: ReturnType<typeof useLibrary>['dispatch'], current?: string) {
   if (mode === 'library') return go({ name: 'cull' });
-  if (mode === 'cull') return go(current ? { name: 'moments', id: current } : { name: 'moments' });
+  if (mode === 'cull') {
+    const pass = currentPass();
+    return go({ name: 'moments', ...(current ? { id: current } : {}), ...(pass > 1 ? { pass } : {}) });
+  }
   if (mode === 'export') return go({ name: 'export' });
   const id = editTarget(state, current);
   if (id) return go({ name: 'edit', id });
@@ -69,27 +70,6 @@ export function ModeSwitch({ mode, current }: { mode: Mode; current?: string }) 
         </Tip>
       ))}
     </span>
-  );
-}
-
-/** The queue at a glance: a sparkle, done of total and a short bar. Click for the queue. */
-export function QueueMeter() {
-  const q = useQueue();
-  if (!q || (!q.running && q.queued === 0)) return null;
-  const r = q.running;
-  const pct = r && r.total > 0 ? Math.round((100 * r.done) / r.total) : null;
-  return (
-    <QueuePopover q={q}>
-      <button className="queue-meter" data-testid="queue" title={queueLine(q)} aria-label="Background work">
-        <Sparkles size={12} />
-        {r && r.total > 0 ? <span className="mono">{r.done}/{r.total}</span> : <span className="mono">+{q.queued}</span>}
-        {pct != null && (
-          <span className="bar">
-            <i style={{ width: `${pct}%` }} />
-          </span>
-        )}
-      </button>
-    </QueuePopover>
   );
 }
 

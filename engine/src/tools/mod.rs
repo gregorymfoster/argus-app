@@ -181,7 +181,10 @@ impl Tools {
             p.kind == "raw",
             head.as_ref(),
         )?;
-        Ok(crate::auto::applied(own, &auto))
+        let mut r = crate::auto::applied(own, &auto);
+        // Auto Denoise rides on Auto, so Suggestions and the Agent start from it too.
+        crate::denoise::auto_fill(&lib, &p, &mut r)?;
+        Ok(r)
     }
 
     pub fn specs() -> Vec<ToolSpec> {
@@ -335,7 +338,10 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     let mut stopped = Vec::new();
     for (id, r) in results {
         match r {
-            Ok(r) => {
+            Ok(mut r) => {
+                if let Some((p, ..)) = jobs.iter().find(|j| j.0.id == id) {
+                    crate::denoise::auto_fill(lib, p, &mut r)?;
+                }
                 let version = lib.write_recipe(id, &r.to_value(), Author::Ai, Some(batch))?;
                 out.insert(id, json!({ "version": version, "global": r.global }));
             }

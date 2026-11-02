@@ -223,3 +223,33 @@ fn cull_mode_moments_export_as_choice_sets() {
     assert_eq!(row["frames"][1]["pos"], 1);
     assert!(row["frames"][0]["captured_at"].is_string());
 }
+
+#[test]
+fn log_moment_refuses_a_blank_id_and_skips_repeats_and_unknown_photos() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("2026-11-01_harbour");
+    for (i, n) in ["a", "b"].iter().enumerate() {
+        write_jpeg(&src.join(format!("{n}.jpg")), 160, 120, 3 + i as u8);
+    }
+    let tools = Tools::new(dir.path().join("lib"));
+    dispatch(&tools, "import_folder", json!({ "folder": src })).unwrap();
+    let ids: Vec<i64> = dispatch(&tools, "photos", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_i64().unwrap())
+        .collect();
+    // A blank moment_id would fold every such choice into one on bench export.
+    let blank =
+        json!({ "moment_id": " ", "kind": "singles", "shown": ids, "kept": [], "seconds": 1 });
+    assert!(dispatch(&tools, "log_moment", blank).is_err());
+    let r = dispatch(
+        &tools,
+        "log_moment",
+        json!({ "moment_id": "m1", "kind": "singles", "shown": [ids[0], ids[0], ids[1], 999_999],
+                "kept": [ids[1]], "seconds": 2 }),
+    )
+    .unwrap();
+    assert_eq!(r["logged"], 2, "one row per distinct, real Photo shown");
+}

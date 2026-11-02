@@ -65,6 +65,8 @@ export function useDepth(photoId: string, lb: LensBlur | undefined, on: boolean)
     return () => {
       live = false;
       clearTimeout(t);
+      // The answer this was waiting on is dropped, so it can't clear `busy` itself.
+      setBusy(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);

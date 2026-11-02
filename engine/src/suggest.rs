@@ -21,7 +21,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-/// Long edge of what the model sees, and of the saved Suggestion previews.
 /// Long edge of the images a Suggestion shows the model. 512 against 768 on the Mac edit
 /// bench (2026-11-01, qwen3.8:27b, 20 cases): first take 9.35 vs 9.40 dE, best 8.60 vs
 /// 8.57, 62 vs 84 s a Photo (a sixth fewer prompt tokens, shorter replies too). A
@@ -231,6 +230,8 @@ pub fn shoot_match_recipe(
     g.temp = want.temp - look.temp;
     g.tint = want.tint - look.tint;
     g.vibrance = want.vibrance - look.vibrance;
+    // The hero's Denoise carries over; without one, the frame's own noise decides.
+    crate::denoise::auto_fill(lib, photo, &mut r)?;
     Ok(r)
 }
 
@@ -1042,11 +1043,25 @@ fn worse_light(was: &Light, now: &Light) -> bool {
 }
 
 fn parse(text: &str) -> Result<Proposals> {
-    let (Some(a), Some(b)) = (text.find('{'), text.rfind('}')) else {
+    let Some(a) = text.find('{') else {
         return Err(Error("your reply had no JSON object".into()));
     };
-    serde_json::from_str(&text[a..=b])
-        .map_err(|e| Error(format!("your reply was not valid JSON ({e})")))
+    // The first complete object, from the first `{` that starts one: prose with braces
+    // around the JSON (a note after it, `{x}` before it) doesn't spoil the reply.
+    let first = |at: usize| {
+        serde_json::Deserializer::from_str(&text[at..])
+            .into_iter::<Proposals>()
+            .next()
+    };
+    let err = match first(a) {
+        Some(Ok(p)) => return Ok(p),
+        Some(Err(e)) => e,
+        None => return Err(Error("your reply had no JSON object".into())),
+    };
+    text.match_indices('{')
+        .skip(1)
+        .find_map(|(i, _)| first(i).and_then(|r| r.ok()))
+        .ok_or_else(|| Error(format!("your reply was not valid JSON ({err})")))
 }
 
 /// Render a Photo (with `recipe`, else its own) for the model: the JPEG and the tool's JSON.
@@ -1161,6 +1176,18 @@ mod tests {
         let echoed = &seen[1][1];
         assert_eq!(echoed.role, Role::Agent);
         assert!(echoed.text.chars().count() <= ECHO_CHARS);
+    }
+
+    #[test]
+    fn a_reply_with_braces_around_its_json_still_parses() {
+        let json = r#"{"suggestions": [{"see": "flat", "title": "Natural", "why": "lift", "set": {"exposure": 0.3}, "done": false}]}"#;
+        for reply in [
+            format!("{json}\n(I kept {{exposure}} modest.)"),
+            format!("Using {{auto}} as a base: {json}"),
+        ] {
+            assert_eq!(parse(&reply).unwrap().suggestions.len(), 1, "{reply}");
+        }
+        assert!(parse(r#"{"suggestions": [{"see": "fl"#).is_err(), "cut off");
     }
 
     #[test]

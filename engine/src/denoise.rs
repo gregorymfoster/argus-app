@@ -159,6 +159,33 @@ pub fn weight(amount: f64) -> f32 {
     1.0 - (1.0 - a) * (1.0 - a)
 }
 
+/// Auto Denoise: give an AI-made Recipe for a RAW the Denoise Amount its measured noise
+/// calls for ([`crate::noise::auto_amount`] of the noise the edit's Exposure shows), unless
+/// the Recipe already says (a person's or a hero's Denoise, even 0, always wins). The noise
+/// fit is the `noise` Fact, measured once per Photo. Returns the Amount set, if any.
+pub fn auto_fill(
+    lib: &crate::library::Library,
+    photo: &Photo,
+    recipe: &mut Recipe,
+) -> Result<Option<f64>> {
+    if photo.kind != "raw" || recipe.global.other.contains_key("denoise") {
+        return Ok(None);
+    }
+    let facts = crate::analyzers::facts(lib, photo, &["noise"])?;
+    let Some(model) = facts.get("noise").and_then(crate::analyzers::noise::read) else {
+        return Ok(None);
+    };
+    let amount = crate::noise::auto_amount(crate::noise::visible(&model, recipe.global.exposure));
+    if amount <= 0.0 {
+        return Ok(None);
+    }
+    recipe
+        .global
+        .other
+        .insert("denoise".into(), serde_json::json!(amount));
+    Ok(Some(amount))
+}
+
 /// Where `photo`'s denoised base lives: `cache/denoise/` in its Library, named by the
 /// original's content hash (which also names its preview). None for non-RAW Photos.
 pub fn base_file(photo: &Photo) -> Option<PathBuf> {
@@ -179,14 +206,46 @@ pub fn ready(photo: &Photo) -> Option<PathBuf> {
     base_file(photo).filter(|f| f.is_file())
 }
 
-/// After a Recipe is saved: when it asks for Denoise and the Photo's base doesn't exist
-/// yet, queue the `denoise` job, ahead of everything when the person set it (they are
-/// looking at the Photo), else with other background work.
+/// After a Recipe is saved: when it asks for Denoise and the base doesn't exist yet, queue
+/// the `denoise` job ahead of everything, if the person is looking: they saved it, or it is
+/// the Photo on their screen (an Agent edit or an accepted Suggestion there). Any other AI
+/// edit's Amount (Auto Denoise sets one on every noisy RAW) waits until the person opens the
+/// Photo ([`queue_on_open`]) or exports it: a 61 MP base is about 330 MB and half a minute of
+/// the Mac's GPU, too much to make for a whole party Shoot nobody looks at.
 pub fn queue_if_needed(
     lib: &mut crate::library::Library,
     photo: crate::library::PhotoId,
     recipe: &serde_json::Value,
     author: crate::library::Author,
+) -> Result<()> {
+    let looking = author == crate::library::Author::Person
+        || lib.setting(FOCUSED)?.and_then(|v| v.as_i64()) == Some(photo);
+    if !looking {
+        return Ok(());
+    }
+    queue_base(lib, photo, recipe)
+}
+
+/// Setting holding the Photo the person has open ([`queue_on_open`]).
+const FOCUSED: &str = "focused_photo";
+
+/// The person opened `photo`: remember it as the one on screen, and if its Recipe has a
+/// Denoise Amount and the base is missing, make it now, ahead of the Queue.
+pub fn queue_on_open(
+    lib: &mut crate::library::Library,
+    photo: crate::library::PhotoId,
+) -> Result<()> {
+    lib.set_setting(FOCUSED, &serde_json::json!(photo))?;
+    let Some(r) = lib.read_recipe(photo)? else {
+        return Ok(());
+    };
+    queue_base(lib, photo, &r.recipe)
+}
+
+fn queue_base(
+    lib: &mut crate::library::Library,
+    photo: crate::library::PhotoId,
+    recipe: &serde_json::Value,
 ) -> Result<()> {
     let on = recipe["global"]["denoise"]
         .as_f64()
@@ -200,13 +259,11 @@ pub fn queue_if_needed(
     if base_file(&p).is_none_or(|f| f.is_file()) {
         return Ok(());
     }
-    let priority =
-        (author == crate::library::Author::Person).then_some(crate::jobs::PRIORITY_FOCUS);
     crate::jobs::enqueue(
         lib,
         "denoise",
         &serde_json::json!({ "photo_id": photo }),
-        priority,
+        Some(crate::jobs::PRIORITY_FOCUS),
         None,
     )?;
     Ok(())
