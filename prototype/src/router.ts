@@ -11,6 +11,8 @@ export type Route =
   | { name: 'moments'; id?: string; pass?: number }
   // Export mode (⌘4).
   | { name: 'export' }
+  // Work mode (⌘5): Prepare, Run it all and the Queue in full.
+  | { name: 'work' }
   | { name: 'look' }
   | { name: 'edit'; id: string }
   | { name: 'people'; id?: string };
@@ -25,7 +27,7 @@ function parse(hash: string): Route {
   if (name === 'moments' || name === 'bursts') return arg ? { name: 'moments', id: arg } : { name: 'moments' };
   if (name === 'people') return arg ? { name, id: arg } : { name };
   if (name === 'library') return { name: 'cull' };
-  if (name === 'cull' || name === 'look' || name === 'import' || name === 'export') return { name };
+  if (name === 'cull' || name === 'look' || name === 'import' || name === 'export' || name === 'work') return { name };
   return { name: 'import' };
 }
 

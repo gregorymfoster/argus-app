@@ -114,3 +114,46 @@ mod tests {
         assert!(!parse_pmset(""));
     }
 }
+
+/// Holds the Mac awake (no idle sleep) while set, as `caffeinate -i` does: Prepare and Run
+/// it all keep going while the person is away (Greg, 2026-11-02). A closed lid still sleeps
+/// a MacBook that drives no display; the Work screen says so. Dropping it lets the Mac sleep.
+#[derive(Default)]
+pub struct Awake {
+    child: Option<std::process::Child>,
+}
+
+impl Awake {
+    pub fn set(&mut self, on: bool) {
+        if on == self.child.is_some() {
+            return;
+        }
+        if on {
+            if !cfg!(target_os = "macos") || std::env::var_os("ARGUS_NO_CAFFEINATE").is_some() {
+                return;
+            }
+            // `-w` ends it with this process too, so a crash never leaves the Mac awake.
+            self.child = std::process::Command::new("caffeinate")
+                .args(["-i", "-w", &std::process::id().to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok();
+        } else if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// Whether it holds the Mac awake now.
+    pub fn on(&self) -> bool {
+        self.child.is_some()
+    }
+}
+
+impl Drop for Awake {
+    fn drop(&mut self) {
+        self.set(false);
+    }
+}

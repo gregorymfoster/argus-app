@@ -47,7 +47,12 @@ use std::time::Duration;
 ///   likely keeper from the Shoot's hand edits ([`crate::pre_edit`], no model), queued when the
 ///   person saves an edit of a RAW and when the AI's stars refresh; with `every` (Lock look) for
 ///   every frame that isn't a Reject
+/// - `backup` {place, shoot_id?, verify?, why?}: copy the Library to a Backup place
+///   ([`crate::library::Place`]), or with `verify` re-read the copy; progress in MB. Runs at
+///   most [`BACKUP_SLICE`] at a time and queues the rest, so a first backup of a big Library
+///   never holds the AI work up for hours
 pub const KINDS: &[&str] = &[
+    "backup",
     "learn_edits",
     "rank_presets",
     "tag_photos",
@@ -63,6 +68,9 @@ pub const KINDS: &[&str] = &[
     "check_shoot",
     "render_previews",
 ];
+
+/// The longest one `backup` job copies before it queues the rest.
+pub const BACKUP_SLICE: Duration = Duration::from_secs(10 * 60);
 
 /// Priorities: what the person asked for right now goes first.
 pub const PRIORITY_MATCH: i64 = 40;
@@ -247,6 +255,11 @@ pub struct QueueConfig {
     /// Edit head for frames unlike them (lab notebook E10). Off: the first shipped rule
     /// (Greg, 2026-10-24: "turn it on, with an off switch").
     pub shoot_match_smart: bool,
+    /// The Shoot being prepared ([`crate::prepare`]): its jobs go first and skip the idle
+    /// and overnight holds.
+    pub preparing: bool,
+    /// "Cull now": Prepare carries on at the queue's own level instead of Full.
+    pub prepare_gentle: bool,
 }
 
 impl Default for QueueConfig {
@@ -263,6 +276,8 @@ impl Default for QueueConfig {
             idle_only: true,
             go_ahead: false,
             shoot_match_smart: true,
+            preparing: false,
+            prepare_gentle: false,
         }
     }
 }
@@ -409,6 +424,30 @@ pub fn enqueue(
             "download_model".to_string(),
             PRIORITY_MATCH,
         ),
+        "backup" => {
+            let place = args
+                .get("place")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error("backup needs place".into()))?
+                .to_string();
+            let name = lib
+                .backup_place(&place)
+                .map(|p| p.name)
+                .unwrap_or_else(|_| place.clone());
+            let verify = args.get("verify").and_then(Value::as_bool) == Some(true);
+            (
+                shoot(&if verify {
+                    format!("Checking the backup on {name}")
+                } else {
+                    format!("Backing up to {name}")
+                }),
+                format!(
+                    "backup:{place}:{}:{verify}",
+                    id("shoot_id").map_or("all".into(), |s| s.to_string())
+                ),
+                PRIORITY_OTHER,
+            )
+        }
         "render_previews" => (
             shoot("Previews"),
             format!("render_previews:{}", id("shoot_id").unwrap_or(0)),
@@ -464,8 +503,26 @@ pub fn run_next_holding(
     min_priority: i64,
     held: &[&str],
 ) -> Result<Option<Job>> {
+    run_next_claim(tools, compute, min_priority, held, &[])
+}
+
+/// [`run_next_holding`], with `first`'s jobs (the Shoot being prepared) first and free of
+/// the holds, save [`crate::prepare::LATER`].
+pub fn run_next_claim(
+    tools: &Tools,
+    compute: Compute,
+    min_priority: i64,
+    held: &[&str],
+    first: &[ShootId],
+) -> Result<Option<Job>> {
     let mut lib = Library::open(tools.library())?;
-    let Some(job) = lib.claim_job_holding(min_priority, held, PRIORITY_FOCUS)? else {
+    let claim = crate::library::Claim {
+        min_priority,
+        held,
+        held_below: PRIORITY_FOCUS,
+        first: (!first.is_empty()).then_some((first, crate::prepare::LATER)),
+    };
+    let Some(job) = lib.claim_with(&claim)? else {
         return Ok(None);
     };
     drop(lib);
@@ -598,6 +655,55 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             )?;
             serde_json::to_value(report).map_err(|e| Error(format!("cull: {e}")))
         }
+        "backup" => {
+            #[derive(Deserialize)]
+            struct A {
+                place: String,
+                shoot_id: Option<ShootId>,
+                #[serde(default)]
+                verify: bool,
+                why: Option<String>,
+            }
+            let a: A = args(job)?;
+            let lib = Library::open(tools.library())?;
+            let progress = Library::open(tools.library())?;
+            let id = job.id;
+            const MB: u64 = 1 << 20;
+            let why = a.why.clone().unwrap_or_else(|| {
+                if a.verify {
+                    "Monthly check".into()
+                } else if a.shoot_id.is_some() {
+                    "After Import".into()
+                } else {
+                    "Backup".into()
+                }
+            });
+            let report = lib.run_backup(
+                &a.place,
+                a.shoot_id,
+                a.verify,
+                &why,
+                Some(BACKUP_SLICE),
+                &|done, total| {
+                    let _ =
+                        progress.job_progress(id, (done / MB) as i64, total.div_ceil(MB) as i64);
+                },
+            )?;
+            if !report.done {
+                // The rest goes back on the Queue, behind whatever is waiting.
+                let mut lib = lib;
+                let mut next = job.args.clone();
+                next["why"] = json!(why);
+                enqueue(
+                    &mut lib,
+                    "backup",
+                    &next,
+                    Some(job.priority),
+                    Some(&format!("backup-rest:{}", job.id)),
+                )?;
+            }
+            serde_json::to_value(report).map_err(|e| Error(format!("backup: {e}")))
+        }
         "render_previews" => {
             #[derive(Deserialize)]
             struct A {
@@ -729,6 +835,9 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
                 photo_id: PhotoId,
                 #[serde(default)]
                 precompute: bool,
+                /// Prepare's: for a likely keeper, Pick or not yet.
+                #[serde(default)]
+                keeper: bool,
             }
             let a: A = args(job)?;
             let lib = Library::open(tools.library())?;
@@ -745,7 +854,7 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             }
             // A Pick's precompute: only for a frame noisy enough to want Denoise, still a Pick.
             // Otherwise: undone or turned off since it was queued, nothing to do.
-            if a.precompute && !crate::denoise::wants_precompute(&lib, &photo, &recipe)? {
+            if a.precompute && !crate::denoise::wants_precompute(&lib, &photo, &recipe, a.keeper)? {
                 return Ok(
                     json!({ "photo_id": a.photo_id, "skipped": "clean frame or no longer a Pick" }),
                 );
@@ -803,6 +912,10 @@ struct ShootArgs {
     /// Model takes for every Photo that isn't a Reject, not only the likely keepers.
     #[serde(default)]
     all: bool,
+    /// Prepare ([`crate::prepare`]): also queue a denoised base for each target that is
+    /// noisy enough to want one.
+    #[serde(default)]
+    prepare: bool,
 }
 
 /// Stars from which a frame counts as a likely keeper. The cull's Taste gives kept frames
@@ -913,6 +1026,7 @@ fn suggest_shoot(tools: &Tools, job: &Job) -> Result<Value> {
     let mut queued = Vec::new();
     let mut skipped = 0;
     let total = targets.len() as i64;
+    let keepers: Vec<PhotoId> = targets.iter().map(|t| t.0).collect();
     for (i, (photo, pick)) in targets.into_iter().enumerate() {
         if !a.redo && has_fresh(&lib, photo)? {
             skipped += 1;
@@ -929,6 +1043,9 @@ fn suggest_shoot(tools: &Tools, job: &Job) -> Result<Value> {
         let (id, _) = enqueue(&mut lib, "suggest", &args, Some(priority), None)?;
         queued.push(id);
         lib.job_progress(job.id, i as i64 + 1, total)?;
+    }
+    if a.prepare {
+        crate::denoise::queue_keepers(&mut lib, &keepers)?;
     }
     Ok(json!({ "queued": queued, "skipped": skipped, "on_open": on_open }))
 }
@@ -1144,6 +1261,8 @@ pub enum Gate {
         min_priority: i64,
         /// Kinds passed over now ([`held_kinds`]).
         held: &'static [&'static str],
+        /// The Shoots being prepared: their jobs first, free of `held`.
+        first: Vec<ShootId>,
     },
 }
 
@@ -1163,11 +1282,40 @@ pub fn gate(lib: &Library, cfg: &QueueConfig) -> Gate {
     };
     let why_full = boost(cfg);
     let backlog = model_backlog(lib).unwrap_or(usize::MAX);
+    // Run it all, and Prepare unless the person said Cull now, go at Full: the person has
+    // stepped away and asked for the hard work now (Greg, 2026-11-02).
+    let asked = cfg.go_ahead || (cfg.preparing && !cfg.prepare_gentle);
     Gate::Run {
-        compute: why_full.map_or(cfg.compute, |_| Compute::Full),
+        compute: if asked {
+            Compute::Full
+        } else {
+            why_full.map_or(cfg.compute, |_| Compute::Full)
+        },
         min_priority,
         held: held_kinds(cfg, why_full, backlog),
+        first: if cfg.preparing {
+            crate::prepare::shoots(lib).unwrap_or_default()
+        } else {
+            Vec::new()
+        },
     }
+}
+
+/// How often the worker looks for Backup places due to run.
+const DUE_EVERY: Duration = Duration::from_secs(5 * 60);
+
+/// Queue the backups that are due now ([`Library::backups_due`]).
+pub fn queue_due_backups(lib: &mut Library) -> Result<usize> {
+    let due = lib.backups_due()?;
+    for (place, verify) in &due {
+        let mut args =
+            json!({ "place": place, "why": if *verify { "Monthly check" } else { "Scheduled" } });
+        if *verify {
+            args["verify"] = json!(true);
+        }
+        enqueue(lib, "backup", &args, Some(PRIORITY_KEYWORDS), None)?;
+    }
+    Ok(due.len())
 }
 
 pub struct Worker {
@@ -1200,6 +1348,9 @@ impl Worker {
                     }
                 };
                 let mut open: Option<(PathBuf, Tools)> = None;
+                // Holds the Mac awake while Prepare or Run it all has work.
+                let mut awake = power::Awake::default();
+                let mut last_due: Option<std::time::Instant> = None;
                 while !flag.load(Ordering::Relaxed) {
                     let Some(library) = current() else {
                         sleep(Duration::from_secs(2));
@@ -1213,7 +1364,7 @@ impl Worker {
                         open = Some((library.clone(), make(library.clone())));
                     }
                     let tools = &open.as_ref().expect("set above").1;
-                    let Ok(lib) = Library::open(&library) else {
+                    let Ok(mut lib) = Library::open(&library) else {
                         sleep(Duration::from_secs(2));
                         continue;
                     };
@@ -1228,8 +1379,20 @@ impl Worker {
                             },
                         );
                     }
+                    // Backup places due on their own (daily, on connect, the monthly check),
+                    // looked at every few minutes.
+                    if last_due.is_none_or(|t: std::time::Instant| t.elapsed() >= DUE_EVERY) {
+                        last_due = Some(std::time::Instant::now());
+                        if let Err(e) = queue_due_backups(&mut lib) {
+                            crate::logs::note(&format!("argus backups: {e}"));
+                        }
+                    }
                     // Nothing queued (the usual idle state): no power, heat or model checks.
                     if !lib.has_queued_jobs().unwrap_or(true) {
+                        awake.set(false);
+                        if cfg.preparing {
+                            let _ = crate::prepare::settle(&lib);
+                        }
                         // "Run now" lasts until the queue is empty.
                         if cfg.go_ahead && lib.queue_summary().is_ok_and(|q| q.running.is_none()) {
                             let _ = set_config(
@@ -1248,14 +1411,25 @@ impl Worker {
                         compute,
                         min_priority,
                         held,
+                        first,
                     } = gate(&lib, &cfg)
                     else {
+                        awake.set(false);
                         drop(lib);
                         sleep(Duration::from_secs(2));
                         continue;
                     };
+                    awake.set(crate::prepare::wants_awake(&cfg, true));
                     drop(lib);
-                    match run_next_holding(tools, compute, min_priority, held) {
+                    let ran = run_next_claim(tools, compute, min_priority, held, &first);
+                    if cfg.preparing {
+                        if let Ok(lib) = Library::open(&library) {
+                            if let Err(e) = crate::prepare::settle(&lib) {
+                                crate::logs::note(&format!("argus prepare: {e}"));
+                            }
+                        }
+                    }
+                    match ran {
                         Ok(Some(_)) => sleep(rest(compute)),
                         Ok(None) => sleep(Duration::from_secs(2)),
                         Err(e) => {

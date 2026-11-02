@@ -50,6 +50,9 @@ export function ImportDialog(props: ImportProps) {
  * ones unticked; the local model suggests a Shoot name. A card's photos are copied into
  * the Library; a folder can be copied or left in place. Every wait shows a progress bar.
  */
+/** Seconds a card's Import and prepare waits before starting by itself. */
+const AUTO_START_S = 20;
+
 function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
   const [cards, setCards] = useState<Card[] | null>(null);
   const [folder, setFolder] = useState<string | null>(null);
@@ -259,7 +262,8 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
       else next.add(path);
       return next;
     });
-  const run = async () => {
+  // `walkedAway`: it started by itself, so it lands in Work mode; pressed by hand, in the grid.
+  const run = async (walkedAway = false) => {
     if (!folder || chosen.size === 0) return;
     setBusy(true);
     setNote(null);
@@ -267,7 +271,7 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
       // Format what's in the field now, not the preview, which may lag a keystroke behind.
       const shoot = name.trim() ? await formatShootName(name, firstCapture).catch(() => name.trim()) : null;
       const shoots = shootsToImport ? await Promise.all(shootsToImport.map(async (g) => ({ ...g, shoot_name: await formatShootName(g.shoot_name, null).catch(() => g.shoot_name) }))) : undefined;
-      const r = await liveImport(folder, shoot, autoCull, files, rawOnly, copy, estimate?.original_bytes, autoTone, suggest, shoots);
+      const r = await liveImport(folder, shoot, autoCull, files, rawOnly, copy, estimate?.original_bytes, autoTone, suggest, shoots, walkedAway ? '#/work' : '#/cull');
       if (r.shoot_id == null) setNote(`Nothing new: all ${r.duplicates} photos are already in the Library.`);
     } catch (e) {
       setNote(String(e));
@@ -290,6 +294,30 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
   const namedBy = typeof naming === 'object' && naming.by === 'ai' && !typed ? `Named by ${modelName(model?.model ?? model?.label ?? 'AI')} from ${Math.min(4, fresh.length || photos.length)} photos` : null;
   const into = savedAs && libraryRoot ? `into ${tidy(libraryRoot)}/originals/${savedAs}/` : null;
   const canImport = !!folder && files.length > 0 && !busy && !scanning && !tooBig;
+  // A card with Suggest edits on imports and prepares in one go: plug the card in and walk away
+  // (Greg, 2026-11-02). It starts by itself after 20 s unless touched, and then opens Work mode.
+  const prepareCard = isCard && suggest;
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [held, setHeld] = useState<string | null>(null);
+  // Opening the dialog again arms it again.
+  useEffect(() => {
+    if (!open) setHeld(null);
+  }, [open]);
+  useEffect(() => {
+    if (!open || !prepareCard || !canImport || !scan || held === folder) return setCountdown(null);
+    setCountdown(AUTO_START_S);
+    const t = setInterval(() => setCountdown((c) => (c == null ? c : c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [open, prepareCard, canImport, scan, held, folder]);
+  useEffect(() => {
+    if (countdown === 0) {
+      setCountdown(null);
+      setHeld(folder);
+      void run(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [countdown]);
+  const stopCountdown = () => countdown != null && setHeld(folder);
 
   // Remember folders Greg imports from, for the From menu.
   useEffect(() => {
@@ -327,10 +355,17 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
         onPointerDownOutside={(e) => e.preventDefault()}
         onInteractOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => {
+          if (countdown != null) {
+            e.preventDefault();
+            stopCountdown();
+            return;
+          }
           if (!menu) return;
           e.preventDefault();
           setMenu(null);
         }}
+        onPointerDownCapture={stopCountdown}
+        onKeyDownCapture={(e) => e.key !== 'Escape' && e.key !== 'Enter' && stopCountdown()}
       >
         <header className="imp-head">
           <DialogTitle className="imp-title">Import</DialogTitle>
@@ -641,6 +676,11 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
               <div style={{ width: 320 }}>
                 <ProgressBar label={copy ? 'Copying and building previews' : 'Building previews'} done={importTask?.done} total={importTask?.total} eta={importTask?.eta_s} testId="import-progress" />
               </div>
+            ) : countdown != null ? (
+              // While it counts down, the countdown takes the estimate's place so the bar keeps its width.
+              <span className="mono faint imp-countdown" data-testid="import-countdown">
+                Starts by itself in 0:{String(countdown).padStart(2, '0')} · esc to stop
+              </span>
             ) : (
               estimate && (
                 <span className={`mono imp-space ${tooBig ? 'too-big' : ''}`} data-testid="import-space">
@@ -660,8 +700,8 @@ function LiveImportDialog({ open, autoCull, setAutoCull }: ImportProps) {
             <Button variant="ghost" onClick={() => go({ name: 'cull' })} disabled={busy} data-testid="import-cancel">
               Cancel <Kbd quiet>esc</Kbd>
             </Button>
-            <Button variant="default" onClick={run} disabled={!canImport} data-testid="import-start">
-              {busy ? 'Importing…' : shootsToImport ? `Import ${files.length} into ${shootsToImport.length} Shoots` : `Import ${files.length}`} {!busy && <Kbd>↵</Kbd>}
+            <Button variant="default" onClick={() => void run()} disabled={!canImport} data-testid="import-start" title={prepareCard ? 'Import, then prepare: previews, AI flags, edits and denoise for the likely keepers' : undefined}>
+              {busy ? 'Importing…' : `${prepareCard ? 'Import and prepare' : 'Import'} ${files.length}${shootsToImport ? ` into ${shootsToImport.length} Shoots` : ''}`} {!busy && <Kbd>↵</Kbd>}
             </Button>
           </div>
         </footer>

@@ -1,4 +1,4 @@
-// What the mode switch needs (Library ⌘1, Cull ⌘2, Edit ⌘3, Export ⌘4; mocked as MO-*):
+// What the mode switch needs (Library ⌘1, Cull ⌘2, Edit ⌘3, Export ⌘4, Work ⌘5; mocked as MO-*):
 // each mode's progress and where Edit opens. Edit and Export work on the Picks (Greg,
 // 2026-11-01: "Picks only").
 
@@ -7,7 +7,7 @@ import { moments, type Moment } from '../domain/moments';
 import { verdictOf, type State } from '../store/library';
 import type { Photo } from '../domain/types';
 
-export type Mode = 'library' | 'cull' | 'edit' | 'export';
+export type Mode = 'library' | 'cull' | 'edit' | 'export' | 'work';
 
 /** The open Shoot's Picks, in capture order. */
 export const picksOf = (state: State): Photo[] => PHOTOS.slice(0, state.imported).filter((p) => verdictOf(state, p.id) === 'pick');

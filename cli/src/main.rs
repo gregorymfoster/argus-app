@@ -693,15 +693,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let pause = || std::thread::sleep(std::time::Duration::from_secs(2));
             loop {
                 let cfg = jobs::config(&lib).unwrap_or_default();
-                let (c, min, held) = if drain {
-                    (jobs::effective_compute(&cfg), i64::MIN, &[][..])
+                let (c, min, held, first) = if drain {
+                    (jobs::effective_compute(&cfg), i64::MIN, &[][..], Vec::new())
                 } else {
                     match jobs::gate(&lib, &cfg) {
                         Gate::Run {
                             compute,
                             min_priority,
                             held,
-                        } => (compute, min_priority, held),
+                            first,
+                        } => (compute, min_priority, held, first),
                         Gate::Wait(why) if once => {
                             eprintln!("argus work: {why}; nothing started (--drain runs anyway)");
                             break;
@@ -712,7 +713,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 };
-                match jobs::run_next_holding(&tools, compute.unwrap_or(c), min, held)? {
+                let ran = jobs::run_next_claim(&tools, compute.unwrap_or(c), min, held, &first)?;
+                if !first.is_empty() {
+                    argus_engine::prepare::settle(&lib)?;
+                }
+                match ran {
                     Some(job) => println!("{}", serde_json::to_string(&job)?),
                     // --drain runs everything now, so an empty pick means the queue is done.
                     None if once || drain => {

@@ -117,9 +117,9 @@ function remember(key: string, value: string | null) {
 }
 
 /** Open another Shoot. The UI's data is loaded once at start, so this reloads. */
-export function openShoot(id: string) {
+export function openShoot(id: string, hash = '#/cull') {
   remember(SHOOT_KEY, id);
-  location.hash = '#/cull';
+  location.hash = hash;
   location.reload();
 }
 
@@ -270,7 +270,7 @@ export interface ImportReport {
  * `shoots` (a card split into Shoots), each is imported as its own Shoot, in order, and the
  * first one opens.
  */
-export async function liveImport(folder: string, shoot: string | null, cullAfter: boolean, files?: string[], rawOnly = false, copy?: boolean, bytes?: number, auto = false, suggest = cullAfter, shoots?: { shoot_name: string; files: string[] }[]): Promise<ImportReport> {
+export async function liveImport(folder: string, shoot: string | null, cullAfter: boolean, files?: string[], rawOnly = false, copy?: boolean, bytes?: number, auto = false, suggest = cullAfter, shoots?: { shoot_name: string; files: string[] }[], landOn = '#/cull'): Promise<ImportReport> {
   if (bytes) noteImportStarted(bytes, copy ?? true);
   const before = new Set((await call<EngineShoot[]>('list_shoots')).map((s) => s.id));
   const what = shoots?.length ? { shoots } : { ...(shoot ? { shoot_name: shoot } : {}), ...(files ? { files } : {}) };
@@ -279,14 +279,14 @@ export async function liveImport(folder: string, shoot: string | null, cullAfter
     await new Promise((r) => setTimeout(r, 300));
     const fresh = (await call<EngineShoot[]>('list_shoots').catch(() => [])).find((s) => !before.has(s.id) && s.photos > 0);
     if (fresh) {
-      openShoot(String(fresh.id));
+      openShoot(String(fresh.id), landOn);
       return new Promise(() => {}); // the page reloads
     }
     const r = await call<{ running: boolean; report?: ImportReport; error?: string }>('import_result').catch(() => ({ running: true }) as { running: boolean; report?: ImportReport; error?: string });
     if (r.running) continue;
     if (r.error) throw new Error(r.error);
     if (r.report?.shoot_id != null) {
-      openShoot(String(r.report.shoot_id));
+      openShoot(String(r.report.shoot_id), landOn);
       return new Promise(() => {});
     }
     if (r.report) return r.report;

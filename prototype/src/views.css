@@ -171,6 +171,11 @@
 .export-v2 .ex-row > .k { width: 110px; flex: none; color: var(--text-3); }
 .export-v2 .ex-path { flex: 1 1 auto; min-width: 0; height: 26px; line-height: 24px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg); font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .export-v2 .ex-note { font-size: 11px; color: var(--text-3); }
+/* Long folders lose their start, not the Shoot folder at the end. */
+.export-v2 .ex-path-tail { direction: rtl; text-align: left; }
+.export-v2 .ex-num { flex: none; width: 90px; appearance: textfield; -moz-appearance: textfield; }
+.export-v2 .ex-num::-webkit-inner-spin-button, .export-v2 .ex-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.export-v2 .ex-example { flex: 1 1 auto; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .export-v2 .ex-foot { display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 12px 0 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-3); white-space: nowrap; min-width: 0; }
 .export-v2 .ex-foot .facts { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .export-v2 .ex-foot .grow { flex: 1 1 0; }
@@ -190,7 +195,7 @@
 .burst-cell figcaption .grow { flex: 1 1 0; }
 .burst-empty { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-size: 12px; color: var(--text-2); background: var(--canvas); padding: 0 24px; text-align: center; }
 
-/* Modes (Library ⌘1, Cull ⌘2, Edit ⌘3, Export ⌘4; mocked as MO-*, Greg 2026-11-01): a quiet
+/* Modes (Library ⌘1, Cull ⌘2, Edit ⌘3, Export ⌘4, Work ⌘5; mocked as MO-*, Greg 2026-11-01): a quiet
    group at the start of every header, one chip on the mode you're in, each pass's progress. */
 .mode-switch { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .mode-switch button { height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: none; border-radius: 6px; background: transparent; color: var(--text-2); font-size: 12.5px; cursor: default; white-space: nowrap; transition: background var(--fast), color var(--fast); }
@@ -198,10 +203,10 @@
 .mode-switch button.on { background: var(--chip); color: var(--text); }
 .mode-switch .count { font-size: 10.5px; color: var(--text-3); }
 /* Tight bars drop the counts first, then the Library grid's Shoot name (the sidebar shows it). */
-@container (max-width: 1200px) { .mode-switch .count { display: none; } }
+@container (max-width: 1300px) { .mode-switch .count { display: none; } }
 .mode-switch .mode-icon { display: none; flex: none; }
 /* Tighter still: the other modes fold to icons (the tip names them), the open one keeps its name. */
-@container (max-width: 1300px) { .mode-switch .mode-icon { display: block; } .mode-switch button:not(.on) .mode-label { display: none; } .mode-switch button:not(.on) { padding: 0 7px; } }
+@container (max-width: 1400px) { .mode-switch .mode-icon { display: block; } .mode-switch button:not(.on) .mode-label { display: none; } .mode-switch button:not(.on) { padding: 0 7px; } }
 @container (max-width: 860px) { .mode-switch .mode-label { display: none; } .mode-switch button { padding: 0 7px; } }
 @container (max-width: 1100px) { .cull-head h1 { display: none; } }
 
@@ -235,6 +240,7 @@
 /* Export mode: the Export dialog's presets and settings on a screen, the Photos between them. */
 .export-v2.export-mode { width: auto !important; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .export-v2.export-mode .ex-body { flex: 1 1 auto; max-height: none; min-height: 0; }
+.export-v2.export-mode .ex-row > .k { width: 80px; }
 .export-v2.export-mode .ex-form { width: 360px; flex: none; overflow-y: auto; border-left: 1px solid var(--border); }
 .export-photos { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
 .export-warn { height: 34px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
@@ -286,3 +292,44 @@
 .moment-band.multi { flex: none; }
 .moment-band.multi .moment-band-frames { flex: none; container-type: normal; }
 .moment-band.multi .moment-band-frames .burst-cell { width: 100%; }
+
+/* Work mode (⌘5, mocked in the one-sitting page): Prepare, Run it all, the Queue and the Mac in full. */
+.wm-body { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+.wm-top { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.wm-ready { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 320px; }
+.wm-eyebrow { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.wm-big { font-size: 15px; font-weight: 600; color: var(--text); }
+.wm-big.done { color: var(--done); }
+.wm-mainbar { margin-top: 6px; max-width: 520px; }
+.wm-pills { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.wm-pill { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 999px; background: var(--fill); color: var(--text-2); font-size: 11.5px; white-space: nowrap; }
+.wm-pill.ok { color: var(--done); }
+.wm-pill.warn { color: var(--shoot); }
+.wm-callout, .wm-runall { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--raised); font-size: 12.5px; }
+.wm-runall { border-color: var(--border-hover); }
+.wm-h { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.wm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; align-items: start; }
+.wm-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); min-width: 0; font-size: 12px; }
+.wm-card-head { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.wm-stage, .wm-job, .wm-time-row { display: grid; align-items: center; gap: 8px; min-height: 22px; }
+.wm-stage { grid-template-columns: minmax(0, 1.4fr) minmax(60px, 1fr) 52px 64px; }
+.wm-stage-name { color: var(--text-2); }
+.wm-stage > :first-child, .wm-job > .trunc, .wm-time-row > .trunc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wm-stage.running .wm-stage-name { color: var(--text); }
+.wm-stage.done .wm-stage-name { color: var(--text-3); }
+.wm-stage.later, .wm-stage.none { opacity: 0.6; }
+.job-bar.done > span { background: var(--done); }
+.wm-num { text-align: right; font-size: 11px; white-space: nowrap; }
+.wm-time { display: flex; flex-direction: column; gap: 4px; }
+.wm-time-row { grid-template-columns: minmax(0, 1fr) minmax(80px, 1.4fr) 72px; }
+.wm-time-track { display: flex; height: 6px; border-radius: 2px; background: var(--press); overflow: hidden; }
+.wm-time-track .spent { background: var(--text-3); }
+.wm-time-track .left { background: var(--accent); }
+.wm-sparks { display: flex; flex-direction: column; gap: 6px; }
+.wm-spark { display: grid; grid-template-columns: 72px minmax(0, 1fr) 104px; align-items: center; gap: 8px; }
+.wm-job { grid-template-columns: 8px minmax(0, 1fr) minmax(60px, 0.8fr) 56px; }
+.wm-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--text-3); }
+.wm-dot.on { background: var(--accent); }
+.imp-countdown { font-size: 11.5px; white-space: nowrap; }
+.finish-list { margin: 0 0 12px; padding-left: 16px; list-style: disc; display: flex; flex-direction: column; gap: 4px; color: var(--text-2); }
+.finish-foot { display: flex; align-items: center; gap: 8px; }

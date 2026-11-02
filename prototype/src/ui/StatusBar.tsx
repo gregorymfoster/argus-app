@@ -7,7 +7,8 @@
 
 import { createContext, Fragment, useContext, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDownToLine, ArrowUpCircle, Download, Sparkles, Upload } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowUpCircle, Download, Play, Sparkles, Upload } from 'lucide-react';
+import { clockIn, heldCount, runAll, usePrepare } from '../data/prepare';
 import { MeterLine } from './Meter';
 import { QueuePopover, queueLine, useQueueOrDemo } from './Queue';
 import { useExportProgress } from './Export';
@@ -67,8 +68,42 @@ function WorkItems() {
   const q = useQueueOrDemo();
   const { state } = useLibrary();
   const exporting = useExportProgress();
+  const prep = usePrepare();
   if (!q) return null;
   const items: [string, ReactNode][] = [];
+  // Prepare (a new Shoot's heavy work, up front): one line with when it's ready. It opens the
+  // Background work panel like the Queue's line, whose foot goes to Work mode (⌘5).
+  const p = prep?.prepare;
+  if (p && p.state !== 'done') {
+    const stages = p.stages.filter((s) => !s.later && s.total > 0);
+    const done = stages.reduce((a, s) => a + s.done, 0);
+    const total = stages.reduce((a, s) => a + s.total, 0);
+    const label = p.state === 'battery' ? 'Prepare waits for the charger' : p.state === 'paused' ? 'Prepare paused' : p.eta_s ? `Ready ${clockIn(p.eta_s)}` : 'Preparing';
+    items.push([
+      'prepare',
+      <QueuePopover q={q}>
+        <button className="sb-item live" data-testid="status-prepare" title={`${p.shoot_names.join(', ')}: Work mode (⌘5) has it in full`}>
+          <Activity size={12} className="sb-icon on" />
+          <span className="sb-label">{label}</span>
+          {total > 0 && (
+            <span className="job-bar sb-bar">
+              <span style={{ width: `${(100 * done) / total}%` }} />
+            </span>
+          )}
+        </button>
+      </QueuePopover>,
+    ]);
+  } else if (heldCount(prep) > 0 && !q.run_now && !q.paused) {
+    // Work held for idle or overnight: the always-there Run it all (Greg, 2026-11-02).
+    items.push([
+      'run-all',
+      <button className="sb-item" onClick={() => void runAll()} data-testid="status-run-all" title={`Run ${heldCount(prep)} waiting jobs now, at Full (⇧⌘R)`}>
+        <Play size={12} className="sb-icon" />
+        <span className="sb-label">Run it all</span>
+        {prep?.held.eta_s ? <span className="sb-eta">{eta(prep.held.eta_s)}</span> : null}
+      </button>,
+    ]);
+  }
   if (state.importing && state.importTotal) {
     const label = (state.importLabel ?? 'Importing').startsWith('Importing') ? 'Importing' : (state.importLabel ?? 'Importing');
     items.push(['import', <Work q={q} icon={<Upload size={12} className="sb-icon" />} label={label} done={state.importDone ?? state.imported} total={state.importTotal} eta_s={state.importEta ?? null} testid="status-import" />]);
@@ -83,7 +118,8 @@ function WorkItems() {
   }
   // The Queue (Suggestions, culls, previews, Keywords): only while it has something to say.
   const r = q.running;
-  if (r || q.queued > 0 || q.failed > 0) {
+  // While Prepare runs its line stands for the Queue's.
+  if (!items.some(([k]) => k === 'prepare') && (r || q.queued > 0 || q.failed > 0)) {
     const label = q.paused ? 'Background work paused' : r ? r.label : q.queued ? queueLine(q) : `${q.failed} failed, open to retry`;
     const more = r || q.paused ? q.queued : 0;
     items.push(['queue', <Work q={q} icon={<Sparkles size={12} className="sb-icon" />} label={label} done={r?.done} total={r && r.total > 0 ? r.total : undefined} eta_s={r && !r.waiting && !q.paused ? q.eta_s : null} more={more} testid="queue-progress" title={r?.waiting ? `Waiting: ${plain(r.waiting)}` : 'Background work'} />]);

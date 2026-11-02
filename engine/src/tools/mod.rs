@@ -10,6 +10,7 @@
 //! and the helpers only they use, so a new tool goes into one area file. `AREAS` lists the
 //! areas in spec order; helpers several areas share stay here.
 
+mod backup;
 mod culling;
 mod edit;
 mod exports;
@@ -235,6 +236,7 @@ const AREAS: &[(Specs, Call)] = &[
     (queue::specs, Tools::call_queue),
     (usage::specs, Tools::call_usage),
     (exports::specs, Tools::call_exports),
+    (backup::specs, Tools::call_backup),
     (masks::specs, Tools::call_masks),
 ];
 

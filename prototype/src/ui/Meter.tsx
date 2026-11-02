@@ -35,15 +35,15 @@ const NAME: Record<Key, string> = { local_model: 'Local model', claude: 'Claude'
 const zero: Rates = { cpu_pct: 0, mem_bytes: 0, watts: null, gpu_pct: null, procs: 0 };
 
 /** Local model and Claude together: "the AI". */
-function ai(g: Groups): Rates {
+export function ai(g: Groups): Rates {
   const a = g.local_model ?? zero;
   const b = g.claude ?? zero;
   const add = (x: number | null, y: number | null) => (x == null && y == null ? null : (x ?? 0) + (y ?? 0));
   return { cpu_pct: a.cpu_pct + b.cpu_pct, mem_bytes: a.mem_bytes + b.mem_bytes, watts: add(a.watts, b.watts), gpu_pct: add(a.gpu_pct, b.gpu_pct), procs: a.procs + b.procs };
 }
 
-const gb = (b: number) => (b >= 10e9 ? `${Math.round(b / 1e9)} GB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
-const pct = (p: number) => `${p < 10 ? p.toFixed(1) : Math.round(p)}%`;
+export const gb = (b: number) => (b >= 10e9 ? `${Math.round(b / 1e9)} GB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
+export const pct = (p: number) => `${p < 10 ? p.toFixed(1) : Math.round(p)}%`;
 const watts = (w: number | null) => (w == null ? '–' : `${w < 10 ? w.toFixed(1) : Math.round(w)} W`);
 const wh = (j: number) => (j >= 3600 ? `${(j / 3600).toFixed(1)} Wh` : `${Math.round(j)} J`);
 const mins = (s: number) => (s >= 60 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`);
@@ -77,14 +77,14 @@ function demo(): Meter {
 
 /** The meter: every 2 s while the panel is open (the engine samples faster while someone
  *  looks), every 10 s for the sidebar line with only the points its sparkline draws. */
-function useMeter(open: boolean): Meter | null {
+export function useMeter(open: boolean): Meter | null {
   const m = usePoll<Meter>(LIVE ? 'resource_usage' : null, open ? { watch: true } : { watch: false, points: 90 }, open ? 2000 : 10000);
   const [d] = useState(() => (LIVE ? null : demo()));
   return LIVE ? (m ?? null) : d;
 }
 
 /** A tiny line of one number over time. */
-function Spark({ values, max, w = 64, h = 14 }: { values: number[]; max: number; w?: number; h?: number }) {
+export function Spark({ values, max, w = 64, h = 14 }: { values: number[]; max: number; w?: number; h?: number }) {
   if (values.length < 2) return <svg width={w} height={h} className="meter-spark" aria-hidden="true" />;
   const top = Math.max(max, 1e-6);
   const pts = values.map((v, i) => `${((i / (values.length - 1)) * w).toFixed(1)},${(h - 1 - (Math.min(v, top) / top) * (h - 2)).toFixed(1)}`).join(' ');

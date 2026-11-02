@@ -111,10 +111,22 @@ try {
   check(!(await dialog.isVisible()), 'Esc closes Import');
   await p.goto('http://localhost:5198/?library=live#/import');
   await dialog.waitFor();
+  // The card is chosen by itself. With Suggest edits on it reads Import and prepare and starts
+  // by itself after 20 s; touching the dialog stops the countdown.
+  await p.getByTestId('import-countdown').waitFor({ timeout: 30000 }).catch(() => {});
+  await p.screenshot({ path: `${out}mac-import-countdown.png` });
+  check(/Import and prepare/.test(await p.getByTestId('import-start').innerText()), `a card offers Import and prepare (${await p.getByTestId('import-start').innerText()})`);
+  check(await p.getByTestId('import-countdown').isVisible(), `Import and prepare counts down to starting by itself (${(await dialog.innerText()).replace(/\s+/g, ' ').slice(-300)})`);
   await p.getByTestId('import-source').click();
   await p.getByTestId('import-card').first().click();
   await p.getByTestId('import-tile').first().waitFor({ timeout: 30000 });
+  check(!(await p.getByTestId('import-countdown').isVisible()), 'touching the dialog stopped the countdown');
   await p.getByTestId('import-name').fill('Boat Trip');
+  // Plain Import here: Prepare's Full-speed AI work would race live.mjs's cull and model
+  // checks below (it expects held work to stay held). Prepare is covered by engine tests and
+  // the shots' smoke-work-mode.
+  await p.getByTestId('import-suggest').click();
+  check(!(await p.getByTestId('import-countdown').isVisible()) && /^Import \d/.test(await p.getByTestId('import-start').innerText()), 'without Suggest edits it is a plain Import, no countdown');
   await p.getByTestId('import-start').click();
   await dialog.waitFor({ state: 'hidden', timeout: 120000 });
   // The Shoot opens while the Import runs; wait for its last Photo.

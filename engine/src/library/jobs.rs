@@ -66,6 +66,34 @@ pub struct QueueSummary {
     pub eta_s: Option<f64>,
 }
 
+/// The Shoot a job works on, in SQL: its `shoot_id` argument, or its Photo's Shoot.
+const JOB_SHOOT: &str = "COALESCE(json_extract(args, '$.shoot_id'), (SELECT shoot_id FROM photos WHERE photos.id = json_extract(args, '$.photo_id')))";
+
+/// How the queue picks its next job ([`Library::claim_with`]).
+pub struct Claim<'a> {
+    /// Only jobs of at least this priority (the open Photo's, on battery).
+    pub min_priority: i64,
+    /// Kinds passed over, unless at least `held_below` priority.
+    pub held: &'a [&'a str],
+    pub held_below: i64,
+    /// Shoots whose jobs go first and skip `held`, save the kinds listed with them.
+    pub first: Option<(&'a [super::ShootId], &'a [&'a str])>,
+}
+
+/// One kind of a Shoot's jobs ([`Library::shoot_jobs`]).
+#[derive(Debug, Clone, Serialize)]
+pub struct ShootJobs {
+    pub kind: String,
+    pub queued: i64,
+    pub running: i64,
+    pub done: i64,
+    pub failed: i64,
+    /// Seconds the done ones took.
+    pub seconds: f64,
+    pub first_created: String,
+    pub last_finished: Option<String>,
+}
+
 const COLS: &str = "id, kind, args, priority, label, status, done, total, result, error, created_at, started_at, finished_at";
 
 fn job(r: &Row) -> rusqlite::Result<Job> {
@@ -190,18 +218,44 @@ impl Library {
         held: &[&str],
         held_below: i64,
     ) -> Result<Option<Job>> {
-        let held_list = held
-            .iter()
-            .map(|k| format!("'{}'", k.replace('\'', "")))
-            .collect::<Vec<_>>()
-            .join(",");
-        // SQLite takes an empty `IN ()`: then nothing is held.
-        let hold = format!(" AND (priority >= ?2 OR kind NOT IN ({held_list}))");
+        self.claim_with(&Claim {
+            min_priority,
+            held,
+            held_below,
+            first: None,
+        })
+    }
+
+    /// Claim the next job as `c` says: the open Photo's first, then the `first` Shoot's
+    /// (Prepare), then by priority.
+    pub fn claim_with(&mut self, c: &Claim) -> Result<Option<Job>> {
+        let list = |kinds: &[&str]| {
+            kinds
+                .iter()
+                .map(|k| format!("'{}'", k.replace('\'', "")))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let (first, first_held) = c.first.map_or((String::new(), String::new()), |(s, k)| {
+            (
+                s.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                list(k),
+            )
+        });
+        // SQLite takes an empty `IN ()`: then nothing is held. The first Shoot's jobs skip
+        // the holds, save its own `first_held` kinds.
+        let hold = format!(
+            " AND (priority >= ?2 OR kind NOT IN ({}) OR ({JOB_SHOOT} IN ({first}) AND kind NOT IN ({first_held})))",
+            list(c.held)
+        );
         let tx = self.db.transaction().map_err(db_err)?;
         let next: Option<Job> = tx
             .query_row(
-                &format!("SELECT {COLS} FROM jobs WHERE status = 'queued' AND priority >= ?1{hold} ORDER BY priority DESC, id LIMIT 1"),
-                params![min_priority, held_below],
+                &format!("SELECT {COLS} FROM jobs WHERE status = 'queued' AND priority >= ?1{hold} ORDER BY priority >= ?2 DESC, IFNULL({JOB_SHOOT} IN ({first}), 0) DESC, priority DESC, id LIMIT 1"),
+                params![c.min_priority, c.held_below],
                 job,
             )
             .optional()
@@ -222,6 +276,50 @@ impl Library {
         j.status = JobStatus::Running;
         j.started_at = Some(now);
         Ok(Some(j))
+    }
+
+    /// A Shoot's jobs created since `since` (an RFC 3339 time), by kind: how many are
+    /// queued, running, done or failed, and the seconds the finished ones took.
+    pub fn shoot_jobs(&self, shoot: super::ShootId, since: &str) -> Result<Vec<ShootJobs>> {
+        let mut stmt = self
+            .db
+            .prepare(&format!(
+                "SELECT kind,
+                    SUM(status = 'queued'), SUM(status = 'running'), SUM(status = 'done'),
+                    SUM(status = 'failed'),
+                    SUM(CASE WHEN status = 'done' THEN (julianday(finished_at) - julianday(started_at)) * 86400 ELSE 0 END),
+                    MIN(created_at), MAX(finished_at)
+                 FROM jobs WHERE {JOB_SHOOT} = ?1 AND created_at >= ?2 AND status != 'cancelled'
+                 GROUP BY kind"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![shoot, since], |r| {
+                Ok(ShootJobs {
+                    kind: r.get(0)?,
+                    queued: r.get(1)?,
+                    running: r.get(2)?,
+                    done: r.get(3)?,
+                    failed: r.get(4)?,
+                    seconds: r.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+                    first_created: r.get(6)?,
+                    last_finished: r.get(7)?,
+                })
+            })
+            .map_err(db_err)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db_err)
+    }
+
+    /// Queued jobs that are not the open Photo's, by kind: what "Run it all" would run.
+    pub fn queued_by_kind(&self, below: i64) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT kind, COUNT(*) FROM jobs WHERE status = 'queued' AND priority < ?1 GROUP BY kind")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([below], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db_err)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db_err)
     }
 
     pub fn job_progress(&self, id: JobId, done: i64, total: i64) -> Result<()> {

@@ -50,6 +50,11 @@ claude mcp add argus -- /path/to/argus/target/release/argus mcp --library /Users
 | `import_folder` | Import a folder, or just the chosen `files` in it, as one new Shoot. A RAW+JPEG frame is one Photo (the RAW, with its JPEG kept beside it, or skipped with `raw_only`) (dedupes, never writes to originals) |
 | `estimate_import` | How much disk an Import would take before running it: the originals' size, whether they'd be copied into the Library, the estimated previews, the total and the free space. Reads file sizes only |
 | `library_storage` | Where the Library folder is and what each part takes on disk (originals inside and outside it, previews, cache, database, Backups), how many originals are missing, and the free space |
+| `backup_places` | The Library's Backup places (copies on another disk or in the Google Drive or iCloud Drive folder): connected, free space, Photos in each copy and waiting, history; plus how many Photos have two copies elsewhere |
+| `find_backup_places` | Folders on this Mac that would make good Backup places: cloud app folders, iCloud Drive and connected disks |
+| `estimate_backup` | How big a first backup to a folder would be, whether it fits, and roughly how long it takes to write |
+| `add_backup_place` / `update_backup_place` / `remove_backup_place` | Set up, change or stop a Backup place (its copy is never deleted) |
+| `run_backup` | Queue a backup now (`id`, or every connected place; `shoot_id` for one Shoot; `verify` to re-read the copy) |
 | `library_settings` | Read or change the Library's settings: `preview_long_edge` and `preview_quality` for the previews Import makes |
 | `rebuild_previews` | Re-make every Photo's preview at the current `library_settings` (about a second per RAW) |
 | `clear_cache` | Delete what the Library can rebuild (its cache and unused previews); returns the bytes freed |

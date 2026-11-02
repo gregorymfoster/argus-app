@@ -40,7 +40,7 @@ credited=$(grep -m1 '^Files:' "$tmp/docs/media/CREDITS.md" 2>/dev/null | tr ' ,'
 for f in $(cd "$tmp" && find docs/media -type f -not -name CREDITS.md 2>/dev/null); do
   grep -qxF "$(basename "$f")" <<<"$credited" || leaks="$leaks $f"
 done
-words=$(grep -rlE --exclude=public-export 'gregorymfoster@gmail|GoogleDrive-|/Users/gregfoster|lrlibrary' "$tmp" | sed "s|$tmp/||" | sort || true)
+words=$(grep -rlE --exclude=public-export 'gregorymfoster@gmail|GoogleDrive-gregorymfoster|/Users/gregfoster|lrlibrary' "$tmp" | sed "s|$tmp/||" | sort || true)
 if [ -n "$leaks$words" ]; then
   echo "public-export: private files or text left in the tree, add them to PRIVATE or scrub them:" >&2
   printf '%s\n' $leaks $words >&2

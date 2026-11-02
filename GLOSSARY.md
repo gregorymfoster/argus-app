@@ -97,8 +97,12 @@ The thin bar along the bottom of the window in every mode: the Resource meter an
 _Avoid_: Footer, activity center, tray
 
 **Backup**:
-A whole copy of a Library's database (Verdicts, Recipes, Looks), kept in the Library's `backups/` folder. Argus makes one a day and before every upgrade. Originals and previews are never in it.
+A whole copy of a Library's database (Verdicts, Recipes, Looks), kept in the Library's `backups/` folder. Argus makes one a day and before every upgrade. Originals and previews are never in it. In the UI it is a "Database backup", to tell it from a Backup place.
 _Avoid_: Snapshot, archive
+
+**Backup place**:
+A folder outside the Library where Argus keeps a copy of it, such as an external disk, a network disk, or the Google Drive or iCloud Drive app's folder (ADR 0017). The copy has the Library's own layout and opens as a Library. Each place copies Edits only, Originals and edits, or Everything, and runs after each Import, daily, when connected, or by hand. It never deletes. Settings › Storage and backup lists the places.
+_Avoid_: Destination, target, sync
 
 **Remove**:
 Taking Photos or a whole Shoot out of the Library, as Lightroom's Remove does. Everything that belongs to them goes to the Library's `trash.db` for 30 days, so Undo or Restore puts them back exactly. The originals stay where they are unless the person also chooses to move them to the Trash.
@@ -267,6 +271,22 @@ _Avoid_: Smart sync, auto sync, style transfer
 **Queue**:
 The AI work waiting to run in the background (Suggestions, "apply to the rest", culls), kept in the Library so it survives a quit, and worked at the Compute level. Each item in it is a job of one kind (`jobs::KINDS`, the `jobs` table, `enqueue_job`).
 _Avoid_: Tasks, jobs list, pipeline
+
+**Prepare**:
+The heavy work for a new Shoot done up front, so the person can walk away and come back to a Shoot where nothing waits (Greg, 2026-11-02): previews, the Analyzers, the cull, then model Suggestions and a denoised base for every likely keeper. Import starts it by itself. Its jobs go first in the Queue, skip the idle and overnight holds and run at Full while the Mac is kept awake; "Cull now" drops it to the Compute level. Keywords and the backup wait for Finish (`engine::prepare`, `prepare_shoot`, `prepare_status`).
+_Avoid_: Processing, baking, ingest
+
+**Run it all**:
+The standing "do the hard work now" action (⇧⌘R): every job the Queue is holding for idle time or overnight runs now at Full, keeping the Mac awake, until the Queue is empty (`set_queue` `run_now`).
+_Avoid_: Run now, force run, boost
+
+**Finish**:
+The last step of a Shoot: Keywords and a backup to every connected Backup place, run now like Run it all, beside the Export (`finish_shoot`).
+_Avoid_: Wrap up, close Shoot
+
+**Work mode**:
+The full-screen mode (⌘5) for the Queue: Prepare's stages and when it will be ready, a timeline, what the Mac is doing, the running and waiting jobs, Run it all and Finish. The Status bar's Background work popover is its quick look.
+_Avoid_: Queue screen, activity, jobs view
 
 **Mask**:
 A region of a Photo (subject, face, skin, hair, sky, background, chosen parts of one person, or one drawn by the person as a brush, linear or radial shape) that a local adjustment applies to. A Recipe stores how a Mask is made, never its pixels. A People Mask is Lightroom's Select People: any of face skin, body skin, eyes, teeth, hair or the whole person, for one person or everyone. A Mask can also be a range: the tones (Luminance range) or colours (Color range) of the Photo as it renders. Like Lightroom's, a Mask combines more Masks into itself as components, each one added, subtracted or intersected, and has an Amount (0 to 200%) that scales its whole local adjustment.

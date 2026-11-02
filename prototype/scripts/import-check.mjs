@@ -102,7 +102,7 @@ try {
   await p.keyboard.press('Escape');
   check(await p.getByTestId('import-dialog').isVisible(), 'Esc closes a menu, not the dialog');
   await p.getByTestId('import-uncheck-all').click();
-  check(/Import 0\b/.test(await p.getByTestId('import-start').innerText()), 'Untick all unticks them');
+  check(/Import (and prepare )?0\b/.test(await p.getByTestId('import-start').innerText()), 'Untick all unticks them');
   await p.getByTestId('import-check-all').click();
   await p.getByTestId('import-auto-tone').click();
   // Back to the Splits (the moved photo stays moved), and import them as two Shoots.

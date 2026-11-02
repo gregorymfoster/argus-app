@@ -66,6 +66,13 @@ pub struct Storage {
     pub previews: Usage,
     /// Safe to clear at any time: rebuildable files and previews no Photo uses.
     pub cache: Usage,
+    /// The part of `cache` that is AI Denoise's bases, and the most it may hold.
+    pub denoise_cache: Usage,
+    pub denoise_cap: u64,
+    /// Folders outside the Library that originals are read from, most Photos first, and
+    /// how many of them aren't there now.
+    pub elsewhere_folders: Vec<String>,
+    pub elsewhere_offline: usize,
     pub database: Usage,
     /// Automatic copies of the database (Verdicts, Recipes, Looks; never photos).
     pub backups: Usage,
@@ -259,11 +266,15 @@ impl Library {
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
             .map_err(db_err)?;
         let mut photos = 0;
+        let mut folders: HashMap<PathBuf, usize> = HashMap::new();
         for row in rows {
             let (stored, bytes) = row.map_err(db_err)?;
             photos += 1;
             let path = self.resolve(&stored);
             if Path::new(&stored).is_absolute() {
+                if let Some(dir) = path.parent() {
+                    *folders.entry(dir.to_path_buf()).or_default() += 1;
+                }
                 elsewhere.add(Usage {
                     bytes: bytes as u64,
                     files: 1,
@@ -291,7 +302,17 @@ impl Library {
                 });
             }
         }
+        let mut by_count: Vec<(PathBuf, usize)> = folders.into_iter().collect();
+        by_count.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let elsewhere_offline = by_count.iter().filter(|(d, _)| !d.is_dir()).count();
         Ok(Storage {
+            denoise_cache: usage(&self.root.join(CACHE_DIR).join("denoise")),
+            denoise_cap: crate::denoise::CACHE_CAP,
+            elsewhere_folders: by_count
+                .into_iter()
+                .map(|(d, _)| d.display().to_string())
+                .collect(),
+            elsewhere_offline,
             library: self.root.clone(),
             photos,
             originals_in_library: usage(&self.root.join(ORIGINALS_DIR)),
@@ -498,7 +519,7 @@ impl Library {
     }
 }
 
-fn list_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(super) fn list_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

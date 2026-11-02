@@ -53,6 +53,8 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "description": "Then queue an AI cull, edit Suggestions, and suggested captions and Keywords for the new Shoot" },
                 "auto": { "type": "boolean",
                     "description": "Then run Auto (as auto_edit) on every new Photo, as one undoable batch" },
+                "prepare": { "type": "boolean",
+                    "description": "Then Prepare the new Shoot: its heavy AI work (Suggestions and denoise for likely keepers) runs now at Full, ahead of other Shoots and past the idle holds, keeping the Mac awake; see prepare_status. Default: as cull" },
                 "provider": { "type": "string", "description": "ollama, claude-code or claude-api; default ARGUS_PROVIDER, else ollama" } } }),
             read_only: false,
         },
@@ -204,6 +206,7 @@ impl Tools {
             "import_folder" => {
                 let a: ImportFolder = parse(args)?;
                 let folder = Path::new(&a.folder);
+                let since = crate::library::time::now();
                 let report = lib.import(
                     folder,
                     &ImportOptions {
@@ -247,6 +250,36 @@ impl Tools {
                         eprintln!("argus import: Auto failed: {e}");
                     }
                 }
+                // The new Shoot goes to every Backup place set to back up after Import.
+                if let Some(shoot) = report.shoot_id {
+                    let after: Vec<String> = lib
+                        .backup_places()?
+                        .into_iter()
+                        .filter(|p| {
+                            p.when == crate::library::BackupWhen::AfterImport && p.available()
+                        })
+                        .map(|p| p.id)
+                        .collect();
+                    let name = lib
+                        .shoots()?
+                        .into_iter()
+                        .find(|s| s.id == shoot)
+                        .map(|s| s.name);
+                    for id in after {
+                        super::backup::queue_backups(
+                            &mut lib,
+                            &super::backup::RunBackup {
+                                id: Some(id),
+                                shoot_id: Some(shoot),
+                                why: Some(match &name {
+                                    Some(n) => format!("Import · {n}"),
+                                    None => "Import".into(),
+                                }),
+                                ..Default::default()
+                            },
+                        )?;
+                    }
+                }
                 // Queued here rather than by the caller, so the app can leave the dialog
                 // (and reload into the new Shoot) while the Import still runs.
                 if let Some(shoot) = report.shoot_id {
@@ -271,6 +304,9 @@ impl Tools {
                         // person comes back to edit.
                         let priority = (*kind == "tag_photos").then_some(jobs::PRIORITY_KEYWORDS);
                         jobs::enqueue(&mut lib, kind, &args, priority, None)?;
+                    }
+                    if a.prepare.unwrap_or(a.suggest.unwrap_or(a.cull)) {
+                        crate::prepare::start(&mut lib, shoot, &since)?;
                     }
                 }
                 one(report)
@@ -391,6 +427,9 @@ struct ImportFolder {
     auto: bool,
     /// The model the queued cull and Suggestions use (default: ARGUS_PROVIDER, else Ollama).
     provider: Option<String>,
+    /// Then Prepare the new Shoot ([`crate::prepare`]): its heavy work now, at Full, keeping
+    /// the Mac awake (default: as `suggest`).
+    prepare: Option<bool>,
 }
 
 #[derive(Deserialize)]

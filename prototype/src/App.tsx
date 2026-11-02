@@ -19,7 +19,8 @@ import { go, useRoute } from './router';
 import { refreshEditStamps } from './data/editedThumbs';
 import { Sidebar } from './ui/Sidebar';
 import { Palette, VariantsPanel, type Command } from './ui/Overlays';
-import { ExportDialog } from './ui/Export';
+import { ExportDialog, exportWithPrevious } from './ui/Export';
+import { picksOf } from './data/modes';
 import { TipProvider } from './ui/kit';
 import { Toaster } from '@/components/ui/sonner';
 import { SlowCalls } from './ui/SlowCalls';
@@ -30,6 +31,8 @@ import { CompareScreen } from './screens/Compare';
 import { PeopleScreen } from './screens/People';
 import { CullModeScreen } from './screens/CullMode';
 import { ExportScreen } from './screens/ExportMode';
+import { WorkScreen } from './screens/WorkMode';
+import { runAll, usePrepare, useReadyNotice } from './data/prepare';
 import { goMode } from './ui/ViewBar';
 import type { Mode } from './data/modes';
 import { LookScreen } from './screens/Look';
@@ -173,6 +176,7 @@ export function App() {
 
   const commands: Command[] = useMemo(() => [
       { label: 'Export Picks…', hint: '⌘E', run: () => setExporting(true) },
+      { label: 'Export Picks with Previous', hint: '⌥⇧⌘E', run: () => exportWithPrevious(picksOf(state)) },
       { label: 'Settings…', hint: '⌘,', run: () => openSettings() },
       { label: 'Keyboard shortcuts', hint: '⌘/', run: () => openSettings('keys') },
       {
@@ -193,15 +197,20 @@ export function App() {
       ...(SHOOT.id !== 'none' && !inCollection() ? [{ label: `Remove ${SHOOT.name} from Library…`, run: () => askRemove({ shoot: { id: SHOOT.id, name: SHOOT.name, count: state.imported } }) }] : []),
     ], [state, dispatch]);
   useHotkeys(['mod+e', 'mod+shift+e'], () => setExporting(true), { preventDefault: true });
+  // Lightroom's Export with Previous: last settings, no dialog.
+  useHotkeys('mod+alt+shift+e', () => exportWithPrevious(picksOf(state)), { preventDefault: true }, [state]);
   useHotkeys('mod+shift+i', () => go({ name: 'import' }), { preventDefault: true });
+  // Run it all: every held job now at Full, from anywhere (Greg, 2026-11-02: "a big 'run all the hard work' button").
+  useHotkeys('mod+shift+r', () => void runAll().then(() => toast('Running it all: every waiting job, at Full', { id: 'argus' })), { preventDefault: true });
+  useReadyNotice(usePrepare(), (text) => toast(text, { id: 'argus-ready', action: { label: 'Cull', onClick: () => goMode('cull', state, dispatch) } }));
   // In the app the menu's Settings… item owns ⌘,; in a browser this does.
   useHotkeys('mod+comma', () => openSettings(), { preventDefault: true, enableOnFormTags: true });
   // ⌘/ lists every shortcut, as Lightroom's Help › Keyboard Shortcuts does; ? as in Linear and Gmail.
   useHotkeys(['mod+slash', 'shift+slash'], () => openSettings('keys'), { preventDefault: true });
-  // Modes, as Lightroom Classic's ⌥⌘1 Library, ⌥⌘2 Develop: ⌘1 Library, ⌘2 Cull, ⌘3 Edit, ⌘4 Export.
-  const MODES: Mode[] = ['library', 'cull', 'edit', 'export'];
+  // Modes, as Lightroom Classic's ⌥⌘1 Library, ⌥⌘2 Develop: ⌘1 Library, ⌘2 Cull, ⌘3 Edit, ⌘4 Export, ⌘5 Work.
+  const MODES: Mode[] = ['library', 'cull', 'edit', 'export', 'work'];
   const inHand = route.name === 'loupe' || route.name === 'edit' ? route.id : undefined;
-  useHotkeys(['mod+1', 'mod+2', 'mod+3', 'mod+4'], (e) => goMode(MODES[Number(e.key) - 1], state, dispatch, inHand), { preventDefault: true }, [state, inHand]);
+  useHotkeys(['mod+1', 'mod+2', 'mod+3', 'mod+4', 'mod+5'], (e) => goMode(MODES[Number(e.key) - 1], state, dispatch, inHand), { preventDefault: true }, [state, inHand]);
   const screen: Screen = route.name;
   const sidebar = route.name === 'import' || route.name === 'cull' || route.name === 'people';
 
@@ -230,6 +239,9 @@ export function App() {
       break;
     case 'export':
       body = <ExportScreen />;
+      break;
+    case 'work':
+      body = <WorkScreen />;
       break;
     case 'look':
       body = <LookScreen onExport={() => setExporting(true)} />;

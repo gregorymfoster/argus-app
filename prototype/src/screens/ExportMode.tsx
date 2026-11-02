@@ -17,6 +17,8 @@ import { Kbd, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { EmptyState } from '../ui/Empty';
 import { Button } from '@/components/ui/button';
 import { StatusFoot } from '../ui/StatusBar';
+import { FinishShoot } from '../ui/Finish';
+import { LIVE } from '../data/live';
 
 export function ExportScreen() {
   const { state } = useLibrary();
@@ -85,6 +87,7 @@ export function ExportScreen() {
               <span className="mono faint view-meta">{SHOOT.name}</span>
               <span className="grow" />
               <span className="faint view-meta wide-only">{facts}</span>
+              <FinishShoot shootId={LIVE ? Number(SHOOT.id) || null : 1} shootName={SHOOT.name} />
               <Button size="sm" variant="default" onClick={start} disabled={!n || running} data-testid="export-start">
                 <Download size={12} /> Export {n} <Kbd>⌘↵</Kbd>
               </Button>

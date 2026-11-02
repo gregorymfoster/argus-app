@@ -3,7 +3,7 @@
 // them; any screen's header can.
 
 import type { ReactNode } from 'react';
-import { Columns2, Download, Layers, LayoutGrid, Library as LibraryIcon, SlidersHorizontal, Square, type LucideIcon } from 'lucide-react';
+import { Activity, Columns2, Download, Layers, LayoutGrid, Library as LibraryIcon, SlidersHorizontal, Square, type LucideIcon } from 'lucide-react';
 import { go } from '../router';
 import { useLibrary } from '../store/library';
 import { cullProgress, currentPass, editTarget, isEdited, picksOf, type Mode } from '../data/modes';
@@ -32,7 +32,7 @@ export function ViewSwitch({ view, id, compareIds }: { view: View; id?: string; 
   );
 }
 
-/** Go to a mode, as ⌘1 to ⌘4 and the mode switch do. `current` is the Photo in hand. */
+/** Go to a mode, as ⌘1 to ⌘5 and the mode switch do. `current` is the Photo in hand. */
 export function goMode(mode: Mode, state: ReturnType<typeof useLibrary>['state'], dispatch: ReturnType<typeof useLibrary>['dispatch'], current?: string) {
   if (mode === 'library') return go({ name: 'cull' });
   if (mode === 'cull') {
@@ -40,6 +40,7 @@ export function goMode(mode: Mode, state: ReturnType<typeof useLibrary>['state']
     return go({ name: 'moments', ...(current ? { id: current } : {}), ...(pass > 1 ? { pass } : {}) });
   }
   if (mode === 'export') return go({ name: 'export' });
+  if (mode === 'work') return go({ name: 'work' });
   const id = editTarget(state, current);
   if (id) return go({ name: 'edit', id });
   dispatch({ type: 'toast', text: 'No Picks yet: keep some in Cull (⌘2) first' });
@@ -57,6 +58,7 @@ export function ModeSwitch({ mode, current }: { mode: Mode; current?: string }) 
     { m: 'cull', label: 'Cull', Icon: Layers, keys: '⌘2', count: cull.total ? `${cull.done}/${cull.total}` : undefined, tip: 'Keep the best of each moment, side by side' },
     { m: 'edit', label: 'Edit', Icon: SlidersHorizontal, keys: '⌘3', count: picks.length ? `${edited}/${picks.length}` : undefined, tip: 'Edit the Picks' },
     { m: 'export', label: 'Export', Icon: Download, keys: '⌘4', tip: 'Export the Picks' },
+    { m: 'work', label: 'Work', Icon: Activity, keys: '⌘5', tip: 'The heavy work: Prepare, Run it all, the Queue and the Mac' },
   ];
   return (
     <span className="mode-switch" role="group" aria-label="Mode" data-testid="mode-switch">

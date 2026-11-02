@@ -27,7 +27,10 @@ import { Select } from '@/components/ui/select';
 type Format = 'jpeg' | 'heic' | 'tiff' | 'original';
 type Naming = 'shoot' | 'sequence' | 'original';
 /** Full, a long edge in px, `short-N` a short edge, `mp-N` megapixels. */
-type Size = 'full' | '4096' | '2048' | '1080' | 'short-1080' | 'mp-12';
+type Size = 'full' | '7680' | '4096' | '2048' | '1080' | 'short-1080' | 'mp-12' | `${number}`;
+/** The long edges the Size menu lists; any other number is a Custom long edge. */
+const LISTED_EDGES = ['7680', '4096', '2048', '1080'];
+const isCustom = (size: Size) => /^\d+$/.test(size) && !LISTED_EDGES.includes(size);
 /** Lightroom's Output sharpening for screen. */
 type Sharpen = 'off' | 'low' | 'standard' | 'high';
 
@@ -40,7 +43,19 @@ interface Settings {
   size: Size;
   sharpen: Sharpen;
   reveal: boolean;
+  /** Lightroom's "Remove Location Info": GPS stays out of rendered files unless unticked. */
+  removeLocation: boolean;
+  /** The last Custom long edge, so picking Custom again brings it back. */
+  customEdge: number;
+  /** sRGB, or Display P3 for Apple screens (JPEG and HEIC). */
+  colorSpace: ColorSpace;
+  /** Lightroom's Watermark: a line of text in a corner, on when `on`. */
+  watermark: { on: boolean; text: string; corner: Corner; size: number; opacity: number };
+  /** Import the files into Apple Photos when done, into an album named after the Shoot. */
+  addToPhotos: boolean;
 }
+type ColorSpace = 'srgb' | 'display_p3';
+type Corner = 'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'center';
 
 interface Preset {
   id: string;
@@ -49,6 +64,9 @@ interface Preset {
 }
 
 const BUILT_IN: Preset[] = [
+  // Measured on Greg's A7R V frames (2026-11-02, docs/export.md): past quality 85 the file
+  // grows fast for little visible gain, and a full 61 MP frame at 85 is still only ~6 MB.
+  { id: 'recommended', label: 'Recommended · JPEG 85 full', set: { format: 'jpeg', size: 'full', quality: 85, sharpen: 'off', colorSpace: 'srgb' } },
   { id: 'full', label: 'Full size JPEG', set: { format: 'jpeg', size: 'full', quality: 92 } },
   { id: 'web', label: 'Web · 2048 px', set: { format: 'jpeg', size: '2048', quality: 85 } },
   { id: 'social', label: 'Instagram · 1080 short edge', set: { format: 'jpeg', size: 'short-1080', quality: 85, sharpen: 'standard' } },
@@ -57,9 +75,9 @@ const BUILT_IN: Preset[] = [
   { id: 'lightroom', label: 'To Lightroom · RAW + XMP', set: { format: 'original' } },
 ];
 // What a preset carries: file settings, never where the files go.
-const PRESET_KEYS: (keyof Settings)[] = ['format', 'size', 'quality', 'naming', 'sharpen'];
+const PRESET_KEYS: (keyof Settings)[] = ['format', 'size', 'quality', 'naming', 'sharpen', 'colorSpace'];
 
-const DEFAULTS: Settings = { folder: '~/Pictures/Argus/Exports', shootFolder: true, naming: 'shoot', format: 'jpeg', quality: 92, size: 'full', sharpen: 'off', reveal: false };
+const DEFAULTS: Settings = { folder: '~/Pictures/Argus/Exports', shootFolder: true, naming: 'shoot', format: 'jpeg', quality: 85, size: 'full', sharpen: 'off', reveal: false, removeLocation: true, customEdge: 6000, colorSpace: 'srgb', watermark: { on: false, text: '©', corner: 'bottom_right', size: 3, opacity: 0.6 }, addToPhotos: false };
 const KEY = 'argus-export';
 const PRESETS_KEY = 'argus-export-presets';
 
@@ -80,7 +98,10 @@ function write(key: string, v: unknown) {
   }
 }
 
-const load = (): Settings => ({ ...DEFAULTS, ...read<Partial<Settings>>(KEY, {}) });
+const load = (): Settings => {
+  const saved = read<Partial<Settings>>(KEY, {});
+  return { ...DEFAULTS, ...saved, watermark: { ...DEFAULTS.watermark, ...saved.watermark } };
+};
 
 /** Where exports go and what happens after, as Settings › Export shows them. */
 export type ExportPlace = Pick<Settings, 'folder' | 'shootFolder' | 'reveal'>;
@@ -98,7 +119,8 @@ function summary(s: Partial<Settings>): string {
   const format = s.format === 'tiff' ? 'TIFF' : s.format === 'original' ? 'Original' : `${s.format === 'heic' ? 'HEIC' : 'JPEG'}${s.quality ? ` ${s.quality}` : ''}`;
   const size = !s.size || s.size === 'full' ? 'full size' : sizeLabel(s.size);
   const sharp = s.sharpen && s.sharpen !== 'off' ? ` · sharpen ${s.sharpen}` : '';
-  return s.format === 'original' ? format : `${format} · ${size}${sharp}`;
+  const p3 = s.colorSpace === 'display_p3' ? ' · P3' : '';
+  return s.format === 'original' ? format : `${format} · ${size}${sharp}${p3}`;
 }
 
 function sizeLabel(size: Size): string {
@@ -131,15 +153,48 @@ function example(s: Settings, file: string, total: number): string {
   return `${name}.${ext}`;
 }
 
-/** Rough size and time per Photo, for the footer, before anything has run. A7R-size frames. */
-function estimate(s: Settings): { bytes: number | null; secs: number } {
-  const px = s.size === 'full' ? 42e6 : s.size.startsWith('mp-') ? Number(s.size.slice(3)) * 1e6 : s.size.startsWith('short-') ? Number(s.size.slice(6)) ** 2 * 1.5 : (Number(s.size) ** 2 * 2) / 3;
-  if (s.format === 'original') return { bytes: null, secs: 0.3 };
-  if (s.format === 'tiff') return { bytes: px * 3, secs: 1.6 };
-  const jpeg = px * (0.1 + ((s.quality - 50) / 50) * 0.35);
-  return { bytes: s.format === 'heic' ? jpeg * 0.6 : jpeg, secs: (s.size === 'full' ? 1.3 : 0.6) + (s.format === 'heic' ? 0.4 : 0) };
+/** A Photo's pixels when the Library knows them; dummy data and unknowns are A7R V frames. */
+const pixelsOf = (p?: Photo): [number, number] => p?.pixels ?? [9504, 6336];
+/** The pixels a Photo leaves at, for a size choice. Never upscales, as the engine. */
+export function outPixels(size: Size, [w, h]: [number, number]): [number, number] {
+  const long = Math.max(w, h);
+  const ratio = long / Math.max(1, Math.min(w, h));
+  const want = size === 'full' ? long : size.startsWith('mp-') ? Math.sqrt(Number(size.slice(3)) * 1e6 * ratio) : size.startsWith('short-') ? Number(size.slice(6)) * ratio : Number(size);
+  const k = Math.min(1, want / long);
+  return [Math.round(w * k), Math.round(h * k)];
 }
-
+/** Bytes per pixel the last real export of this format and quality came out at, so
+ *  estimates match this person's Photos after one export. */
+const LEARNED_KEY = 'argus-export-bpp';
+const learnedKey = (s: Pick<Settings, 'format' | 'quality'>) => (s.format === 'jpeg' || s.format === 'heic' ? `${s.format}-${s.quality}` : s.format);
+/** Rough size and time for one Photo, before anything has run. */
+export function estimate(s: Pick<Settings, 'format' | 'quality' | 'size'>, pixels: [number, number]): { bytes: number | null; secs: number; out: [number, number] } {
+  const out = outPixels(s.size, pixels);
+  const px = out[0] * out[1];
+  const secs = 0.35 + (px / 1e6) * 0.02 + (s.format === 'heic' ? 0.4 : 0);
+  if (s.format === 'original') return { bytes: null, secs: 0.3, out: pixels };
+  const learned = read<Record<string, number>>(LEARNED_KEY, {})[learnedKey(s)];
+  if (learned) return { bytes: px * learned, secs, out };
+  if (s.format === 'tiff') return { bytes: px * 3, secs: secs + 0.3, out };
+  const jpeg = px * jpegBpp(s.quality);
+  return { bytes: s.format === 'heic' ? jpeg * 0.6 : jpeg, secs, out };
+}
+/** Bytes per pixel of Argus JPEGs by quality, measured on A7R V frames (docs/export.md). */
+const JPEG_BPP: [number, number][] = [[50, 0.03], [75, 0.057], [80, 0.069], [85, 0.086], [90, 0.12], [95, 0.203], [100, 0.42]];
+function jpegBpp(q: number): number {
+  const i = JPEG_BPP.findIndex(([at]) => at >= q);
+  if (i <= 0) return JPEG_BPP[Math.max(0, i)][1];
+  const [[q0, b0], [q1, b1]] = [JPEG_BPP[i - 1], JPEG_BPP[i]];
+  return b0 + ((b1 - b0) * (q - q0)) / (q1 - q0);
+}
+function learn(s: Settings, bytesOut: number, px: number) {
+  if (s.format === 'original' || !bytesOut || !px) return;
+  const all = read<Record<string, number>>(LEARNED_KEY, {});
+  const k = learnedKey(s);
+  const bpp = bytesOut / px;
+  // A running average, so one odd frame (a black sky) doesn't swing it.
+  write(LEARNED_KEY, { ...all, [k]: all[k] ? all[k] * 0.7 + bpp * 0.3 : bpp });
+}
 function bytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
   if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;
@@ -250,6 +305,7 @@ async function startExport(photos: Photo[], s: Settings) {
   };
   update();
   showToast();
+  const paths: string[] = [];
   for (const [i, p] of photos.entries()) {
     if (stop) {
       r.cancelled = true;
@@ -259,7 +315,7 @@ async function startExport(photos: Photo[], s: Settings) {
     update();
     if (LIVE) {
       try {
-        const out = await call<{ exported: { path: string }[]; failed: { error: string }[] }>('export_photos', {
+        const out = await call<{ exported: { path: string; bytes?: number; width?: number; height?: number }[]; failed: { error: string }[] }>('export_photos', {
           photo_ids: [Number(p.id)],
           folder: s.folder,
           shoot_folder: s.shootFolder,
@@ -268,11 +324,19 @@ async function startExport(photos: Photo[], s: Settings) {
           ...(s.format === 'jpeg' || s.format === 'heic' ? { quality: s.quality } : {}),
           ...(s.format === 'original' ? {} : sizeArgs(s.size)),
           ...(s.format !== 'original' && s.sharpen !== 'off' ? { sharpen: s.sharpen } : {}),
+          ...(s.format !== 'original' && !s.removeLocation ? { keep_location: true } : {}),
+          ...(s.format !== 'original' && s.format !== 'tiff' && s.colorSpace !== 'srgb' ? { color_space: s.colorSpace } : {}),
+          ...(s.format !== 'original' && s.watermark.on && s.watermark.text.trim()
+            ? { watermark: { text: s.watermark.text.trim(), corner: s.watermark.corner, size: s.watermark.size, opacity: s.watermark.opacity } }
+            : {}),
           sequence_start: i + 1,
           sequence_total: total,
         });
         if (out.failed.length) r.failed.push({ file: p.file, error: out.failed[0].error });
-        const path = out.exported[0]?.path;
+        const x = out.exported[0];
+        if (x?.bytes && x.width && x.height) learn(s, x.bytes, x.width * x.height);
+        const path = x?.path;
+        if (path) paths.push(path);
         if (path) r.folder = path.slice(0, path.lastIndexOf('/'));
       } catch (e) {
         r.failed.push({ file: p.file, error: String((e as Error).message ?? e) });
@@ -288,6 +352,25 @@ async function startExport(photos: Photo[], s: Settings) {
   update();
   showToast();
   if (LIVE && s.reveal && r.folder && r.done > r.failed.length) void reveal(r.folder);
+  if (s.addToPhotos && s.format !== 'original' && paths.length) void toPhotos(paths, shootFolder());
+}
+
+/** Hand the exported files to Apple Photos, with a notice either way. */
+async function toPhotos(paths: string[], album: string) {
+  const id = 'export-photos';
+  toast(`Adding ${paths.length} to Apple Photos…`, { id, duration: Infinity });
+  try {
+    await call('add_to_apple_photos', { paths, album });
+    toast(`Added ${paths.length} to Apple Photos, album ${album}`, { id, duration: 6000 });
+  } catch (e) {
+    toast(`Couldn't add to Apple Photos: ${String((e as Error).message ?? e).replace(/^Error: /, '')}`, { id, duration: 10000 });
+  }
+}
+
+/** Lightroom's Export with Previous: the last settings, straight to the background run. */
+export function exportWithPrevious(photos: Photo[]) {
+  if (!photos.length) return void toast('No Picks to export', { id: 'export' });
+  void startExport(photos, load());
 }
 
 /** `ids`: the Photos to export (a selection); the Shoot's Picks when omitted. */
@@ -352,8 +435,13 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
   };
 
   const n = photos.length;
-  const est = estimate(s);
-  const total = est.bytes != null ? est.bytes * n : null;
+  // Summed over the actual Photos (portraits, crops, small JPEGs), not n times one guess.
+  const ests = photos.map((p) => estimate(s, pixelsOf(p)));
+  const est = { secs: ests.reduce((a, e) => a + e.secs, 0) };
+  const total = s.format === 'original' || !n ? null : ests.reduce((a, e) => a + (e.bytes ?? 0), 0);
+  const each = total != null && n ? total / n : null;
+  const first = ests[0]?.out;
+  const tight = total != null && free != null && total > free * 0.9;
   const where = `${s.folder}${s.shootFolder ? `/${shootFolder()}` : ''}`;
   const go = () => {
     if (!n || running) return;
@@ -408,8 +496,8 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
               <h3>Location</h3>
               <div className="ex-row">
                 <span className="k">Folder</span>
-                <span className="ex-path mono" title={where}>
-                  {where}
+                <span className="ex-path ex-path-tail mono" title={where}>
+                  {`\u200E${where}\u200E`}
                 </span>
                 <Button
                   size="sm"
@@ -433,6 +521,13 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
                   Open in Finder when done
                 </label>
               )}
+              {s.format !== 'original' && (
+                <label className="ex-row">
+                  <span className="k" />
+                  <Checkbox checked={s.addToPhotos} onCheckedChange={(c) => set({ addToPhotos: c === true })} data-testid="export-to-photos" />
+                  Add to Apple Photos, in the Shoot's album
+                </label>
+              )}
             </section>
 
             <section className="ex-sec">
@@ -448,12 +543,17 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
                     { value: 'sequence', label: 'Shoot_Number' },
                     { value: 'original', label: 'Original' },
                   ]}
-                  className="w-[180px]"
+                  className="w-[180px] shrink-0"
                 />
-                <span className="mono faint" style={{ fontSize: 11 }} data-testid="export-example">
-                  {photos[0] ? example(s, photos[0].file, n) : ''}
-                </span>
               </div>
+              {photos[0] && (
+                <div className="ex-row">
+                  <span className="k" />
+                  <span className="ex-example mono faint" data-testid="export-example" title={example(s, photos[0].file, n)}>
+                    {example(s, photos[0].file, n)}
+                  </span>
+                </div>
+              )}
             </section>
 
             <section className="ex-sec">
@@ -472,8 +572,24 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
                   ]}
                   className="w-[140px]"
                 />
-                {s.format !== 'original' && <span className="v-chip">sRGB</span>}
+                {s.format === 'tiff' && <span className="v-chip">sRGB</span>}
               </div>
+              {(s.format === 'jpeg' || s.format === 'heic') && (
+                <div className="ex-row">
+                  <span className="k">Color</span>
+                  <Select
+                    label="Color space"
+                    value={s.colorSpace}
+                    onValueChange={(colorSpace) => set({ colorSpace: colorSpace as ColorSpace })}
+                    items={[
+                      { value: 'srgb', label: 'sRGB' },
+                      { value: 'display_p3', label: 'Display P3' },
+                    ]}
+                    className="w-[140px] shrink-0"
+                  />
+                  <span className="ex-note trunc">{s.colorSpace === 'srgb' ? 'Safe everywhere' : 'Wider color on Apple screens'}</span>
+                </div>
+              )}
               {(s.format === 'jpeg' || s.format === 'heic') && (
                 <div className="ex-row">
                   <span className="k">Quality</span>
@@ -488,18 +604,40 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
                   <span className="k">Size</span>
                   <Select
                     label="Size"
-                    value={s.size}
-                    onValueChange={(size) => set({ size })}
+                    value={isCustom(s.size) ? 'custom' : s.size}
+                    onValueChange={(size) => set({ size: size === 'custom' ? (`${s.customEdge}` as Size) : (size as Size) })}
                     items={[
                       { value: 'full', label: 'Full size' },
+                      { value: '7680', label: 'Long edge 7680 px (8K)' },
                       { value: '4096', label: 'Long edge 4096 px' },
                       { value: '2048', label: 'Long edge 2048 px' },
                       { value: '1080', label: 'Long edge 1080 px' },
                       { value: 'short-1080', label: 'Short edge 1080 px' },
                       { value: 'mp-12', label: '12 megapixels' },
+                      { value: 'custom', label: 'Custom long edge…' },
                     ]}
-                    className="w-[180px]"
+                    className="w-[180px] shrink-0"
                   />
+                </div>
+              ) : null}
+              {s.format !== 'original' && isCustom(s.size) ? (
+                <div className="ex-row">
+                  <span className="k">Long edge</span>
+                  <input
+                    className="ex-path ex-num mono"
+                    type="number"
+                    min={64}
+                    max={20000}
+                    step={1}
+                    defaultValue={s.customEdge}
+                    aria-label="Custom long edge in pixels"
+                    data-testid="export-custom-edge"
+                    onChange={(e) => {
+                      const v = Math.round(Number(e.target.value));
+                      if (v >= 64 && v <= 20000) set({ size: `${v}` as Size, customEdge: v });
+                    }}
+                  />
+                  <span className="ex-note">px, never upscaled</span>
                 </div>
               ) : null}
               {s.format !== 'original' ? (
@@ -526,22 +664,106 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
               )}
             </section>
 
+            {s.format !== 'original' && (
+              <section className="ex-sec" data-testid="export-watermark">
+                <h3>Watermark</h3>
+                <label className="ex-row">
+                  <span className="k" />
+                  <Checkbox checked={s.watermark.on} onCheckedChange={(c) => set({ watermark: { ...s.watermark, on: c === true } })} data-testid="export-watermark-on" />
+                  Add a watermark
+                </label>
+                {s.watermark.on && (
+                  <>
+                    <div className="ex-row">
+                      <span className="k">Text</span>
+                      <input className="ex-path" value={s.watermark.text} placeholder="© Your Name" aria-label="Watermark text" data-testid="export-watermark-text" onChange={(e) => set({ watermark: { ...s.watermark, text: e.target.value } })} />
+                    </div>
+                    <div className="ex-row">
+                      <span className="k">Place</span>
+                      <Select
+                        label="Watermark place"
+                        value={s.watermark.corner}
+                        onValueChange={(corner) => set({ watermark: { ...s.watermark, corner: corner as Corner } })}
+                        items={[
+                          { value: 'bottom_right', label: 'Bottom right' },
+                          { value: 'bottom_left', label: 'Bottom left' },
+                          { value: 'top_right', label: 'Top right' },
+                          { value: 'top_left', label: 'Top left' },
+                          { value: 'center', label: 'Center' },
+                        ]}
+                        className="w-[140px] shrink-0"
+                      />
+                    </div>
+                    <div className="ex-row">
+                      <span className="k">Size</span>
+                      <Slider style={{ width: 160 }} min={1} max={10} step={0.5} value={[s.watermark.size]} onValueChange={([v]) => set({ watermark: { ...s.watermark, size: v } })} aria-label="Watermark size" />
+                      <span className="mono ex-note">{s.watermark.size}%</span>
+                    </div>
+                    <div className="ex-row">
+                      <span className="k">Opacity</span>
+                      <Slider style={{ width: 160 }} min={10} max={100} step={5} value={[Math.round(s.watermark.opacity * 100)]} onValueChange={([v]) => set({ watermark: { ...s.watermark, opacity: v / 100 } })} aria-label="Watermark opacity" />
+                      <span className="mono ex-note">{Math.round(s.watermark.opacity * 100)}%</span>
+                    </div>
+                  </>
+                )}
+              </section>
+            )}
+
             <section className="ex-sec">
               <h3>Metadata</h3>
-              <div className="ex-row">
-                <span className="k">Include</span>
-                <span>Camera, lens and capture time</span>
-              </div>
-              <label className="ex-row">
-                <span className="k" />
-                <Checkbox checked disabled />
-                Remove location <span className="ex-note">(always)</span>
-              </label>
+              {s.format === 'original' ? (
+                <div className="ex-row">
+                  <span className="k">Include</span>
+                  <span>Everything the camera wrote (the original is copied untouched)</span>
+                </div>
+              ) : (
+                <>
+                  <div className="ex-row">
+                    <span className="k">Include</span>
+                    <span>Camera, lens, capture time, Keywords and caption</span>
+                  </div>
+                  <label className="ex-row">
+                    <span className="k" />
+                    <Checkbox checked={s.removeLocation} onCheckedChange={(c) => set({ removeLocation: c === true })} data-testid="export-remove-location" />
+                    Remove location
+                  </label>
+                </>
+              )}
             </section>
+
+            {mode && (
+            <section className="ex-sec" data-testid="export-estimate">
+              <h3>Estimate</h3>
+              {s.format !== 'original' && first && (
+                <div className="ex-row">
+                  <span className="k">Each file</span>
+                  <span className="mono">
+                    {n > 1 && ests.some((e) => e.out[0] !== first[0] || e.out[1] !== first[1]) ? 'up to ' : ''}
+                    {Math.max(...ests.map((e) => Math.max(...e.out)))} px{each != null ? ` · about ${bytes(each)}` : ''}
+                  </span>
+                </div>
+              )}
+              <div className="ex-row">
+                <span className="k">All {n}</span>
+                <span className="mono">
+                  {total != null ? `about ${bytes(total)} · ` : ''}about {duration(est.secs)}
+                </span>
+              </div>
+              {free != null && (
+                <div className="ex-row">
+                  <span className="k">Free</span>
+                  <span className="mono" style={tight ? { color: 'var(--reject)' } : undefined}>
+                    {bytes(free)}
+                    {tight ? ' · not enough room' : ''}
+                  </span>
+                </div>
+              )}
+            </section>
+            )}
           </fieldset>
   );
   useHotkeys('mod+enter', () => go(), { enabled: !!mode, preventDefault: true, enableOnFormTags: true }, [n, running, s, photos]);
-  const facts = `${n} ${n === 1 ? 'photo' : 'photos'}${total != null ? ` · about ${bytes(total)}` : ''} · about ${duration(est.secs * n)}${free != null ? ` · ${bytes(free)} free` : ''}`;
+  const facts = `${n} ${n === 1 ? 'photo' : 'photos'}${total != null ? ` · about ${bytes(total)}` : ''} · about ${duration(est.secs)}${free != null ? ` · ${bytes(free)} free` : ''}`;
   if (mode)
     return (
       <div className="export-v2 export-mode" data-testid="export-mode">
@@ -575,10 +797,9 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
         <div className="ex-foot">
           <span className="facts mono">
             {n} {n === 1 ? 'photo' : 'photos'}
-            {total != null && ` · about ${bytes(total)}`} · about {duration(est.secs * n)}
-            {free != null && ` · ${bytes(free)} free`}
+            {total != null && each != null && ` · about ${bytes(total)}${n > 1 ? ` (${bytes(each)} each)` : ''}`} · about {duration(est.secs)}
+            {free != null && <span style={tight ? { color: 'var(--reject)' } : undefined}>{` · ${bytes(free)} free`}</span>}
           </span>
-          <span className="facts">Runs in the background, with progress in a notice</span>
           <span className="grow" />
           <Button size="sm" onClick={() => onOpenChange(false)}>
             Cancel <Kbd>esc</Kbd>

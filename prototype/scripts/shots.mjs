@@ -286,6 +286,32 @@ await shot('10-settings-library', '#/cull', {
     await p.waitForTimeout(300);
   },
 });
+await shot('10-settings-storage', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Control+Comma');
+    await p.getByTestId('settings-storage').click();
+    await p.getByTestId('storage-settings').waitFor();
+    await p.waitForTimeout(300);
+  },
+});
+await shot('10-settings-backup-place', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Control+Comma');
+    await p.getByTestId('settings-storage').click();
+    await p.getByTestId('backup-place').first().click();
+    await p.getByTestId('backup-detail').waitFor();
+    await p.waitForTimeout(300);
+  },
+});
+await shot('10-settings-add-backup', '#/cull', {
+  act: async (p) => {
+    await p.keyboard.press('Control+Comma');
+    await p.getByTestId('settings-storage').click();
+    await p.getByTestId('add-backup').click();
+    await p.getByTestId('backup-estimate').waitFor();
+    await p.waitForTimeout(300);
+  },
+});
 for (const id of ['general', 'import', 'export']) {
   await shot(`10-settings-${id}`, '#/cull', {
     act: async (p) => {
@@ -726,6 +752,36 @@ await check('smoke-modes', async () => {
   await p.keyboard.press('Backspace');
   await p.waitForTimeout(150);
   if (!(await p.getByTestId('export-start').textContent())?.includes(`Export ${tiles - 1}`)) throw new Error('⌫ did not leave a Photo out');
+  // Remove location really toggles, and the Estimate follows the Size (Greg 2026-11-02).
+  const loc = p.getByTestId('export-remove-location');
+  const was = await loc.getAttribute('data-state');
+  await loc.click();
+  if ((await loc.getAttribute('data-state')) === was) throw new Error('Remove location did not toggle');
+  await loc.click();
+  const est = () => p.getByTestId('export-estimate').textContent();
+  const full = await est();
+  await p.getByRole('combobox', { name: 'Size' }).click();
+  await p.getByRole('option', { name: /7680/ }).click();
+  await p.waitForTimeout(100);
+  if (!(await est())?.includes('7680 px') || (await est()) === full) throw new Error(`8K size did not change the Estimate: ${await est()}`);
+  await p.getByRole('combobox', { name: 'Size' }).click();
+  await p.getByRole('option', { name: /Custom/ }).click();
+  await p.getByTestId('export-custom-edge').fill('3000');
+  await p.waitForTimeout(100);
+  if (!(await est())?.includes('3000 px')) throw new Error(`Custom long edge did not reach the Estimate: ${await est()}`);
+  await p.locator('.ex-form').screenshot({ path: `${out}05h-export-custom-size.png` });
+  // Watermark, Display P3 and Apple Photos are there to set (Greg 2026-11-02).
+  await p.getByTestId('export-watermark-on').click();
+  await p.getByTestId('export-watermark-text').fill('© Greg Foster');
+  await p.getByRole('combobox', { name: 'Color space' }).click();
+  await p.getByRole('option', { name: 'Display P3' }).click();
+  await p.getByTestId('export-to-photos').click();
+  await p.waitForTimeout(100);
+  if (!(await p.getByTestId('export-watermark-text').inputValue()).includes('Greg')) throw new Error('watermark text did not stick');
+  await p.locator('.ex-form').evaluate((el) => (el.scrollTop = el.scrollHeight));
+  await p.locator('.ex-form').screenshot({ path: `${out}05i-export-advanced.png` });
+  await p.getByRole('combobox', { name: 'Size' }).click();
+  await p.getByRole('option', { name: 'Full size' }).click();
   await ctx.close();
 });
 
@@ -1306,7 +1362,8 @@ await check('smoke-import-path-no-spaces', async () => {
 
 await check('smoke-queue-drag-reorders', async () => {
   const { p, ctx } = await page('#/cull');
-  await p.locator('[data-testid="status-bar"] [data-testid="queue-progress"]').first().click();
+  // The demo Shoot is preparing: its Status bar line opens the same Background work panel.
+  await p.locator('[data-testid="status-bar"] [data-testid="status-prepare"]').first().click();
   await p.getByTestId('queue-popover').waitFor();
   const labels = () => p.getByTestId('queue-jobs').locator('.job-label').allTextContents();
   const before = await labels();
@@ -1340,19 +1397,38 @@ await check('smoke-meter-shows-ai-usage', async () => {
 // its left, and each screen's own footer sits in its middle instead of a second bar.
 await check('smoke-status-bar-every-mode', async () => {
   const { p, ctx } = await page('#/cull');
-  for (const [mode, hash, foot] of [['Library', '#/cull', /Pick/], ['Cull', '#/moments', /Keep/], ['Edit', '#/edit/p3', null], ['Export', '#/export', /Leave out/], ['Loupe', '#/loupe/p3', null]]) {
+  for (const [mode, hash, foot] of [['Library', '#/cull', /Pick/], ['Cull', '#/moments', /Keep/], ['Edit', '#/edit/p3', null], ['Export', '#/export', /Leave out/], ['Work', '#/work', /Walk away/], ['Loupe', '#/loupe/p3', null]]) {
     await p.evaluate((h) => (location.hash = h), hash);
     await p.waitForTimeout(600);
     const bar = p.getByTestId('status-bar');
     if ((await bar.count()) !== 1) throw new Error(`${mode}: ${await bar.count()} Status bars`);
     if (!(await bar.getByTestId('meter').isVisible())) throw new Error(`${mode}: no AI meter in the Status bar`);
-    if (!(await bar.getByTestId('queue-progress').isVisible())) throw new Error(`${mode}: no Background work in the Status bar`);
+    // The demo Shoot is preparing, so Prepare's line stands for the Queue's.
+    if (!(await bar.getByTestId('status-prepare').isVisible())) throw new Error(`${mode}: no Prepare (Background work) in the Status bar`);
     const box = await bar.boundingBox();
     if (Math.round(box.y + box.height) !== 900 || box.x !== 0 || box.width !== 1440) throw new Error(`${mode}: the Status bar isn't across the window bottom (${JSON.stringify(box)})`);
     if (foot && !foot.test(await bar.locator('.status-mid').innerText())) throw new Error(`${mode}: the screen's footer isn't in the Status bar`);
     if (await p.locator('footer.view-foot, footer.panel-foot').count()) throw new Error(`${mode}: a second footer bar`);
     await p.screenshot({ path: `${out}16-status-${mode.toLowerCase()}.png`, clip: { x: 0, y: 900 - 60, width: 1440, height: 60 } });
   }
+  await ctx.close();
+});
+
+await check('smoke-work-mode', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.keyboard.press('ControlOrMeta+5');
+  await p.getByTestId('work-screen').waitFor();
+  if ((await p.getByTestId('work-stage').count()) < 5) throw new Error('Work mode: no Prepare stages');
+  if (!/Ready at/.test(await p.getByTestId('work-ready').innerText())) throw new Error('Work mode: no "Ready at" time');
+  if (!(await p.getByTestId('work-run-all-button').isVisible())) throw new Error('Work mode: no Run it all');
+  await p.screenshot({ path: `${out}17-work-mode.png` });
+  await p.keyboard.press('Escape');
+  await p.waitForTimeout(400);
+  if (!(await p.evaluate(() => location.hash)).startsWith('#/cull')) throw new Error('Work mode: Esc did not go back to the Library');
+  await p.evaluate(() => (location.hash = '#/export'));
+  await p.getByTestId('finish-open').click();
+  await p.getByTestId('finish-popover').waitFor();
+  await p.screenshot({ path: `${out}17-finish.png` });
   await ctx.close();
 });
 

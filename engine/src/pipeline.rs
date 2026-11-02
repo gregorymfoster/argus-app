@@ -804,6 +804,49 @@ impl Finish {
     }
 }
 
+/// The RGB primaries a render comes out in. Everything in Argus is sRGB except a Display P3
+/// export, which swaps the camera matrix so colours past sRGB (sunset reds, neon, foliage)
+/// survive; the transfer curve is sRGB's in both, as Apple's Display P3 profile has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Primaries {
+    #[default]
+    Srgb,
+    DisplayP3,
+}
+
+/// Linear sRGB to linear Display P3 (both D65).
+pub const SRGB_TO_P3: [[f32; 3]; 3] = [
+    [0.822_462, 0.177_538, 0.0],
+    [0.033_194, 0.966_806, 0.0],
+    [0.017_083, 0.072_397, 0.910_520],
+];
+
+impl Primaries {
+    /// The camera-to-output matrix, from the camera-to-sRGB one.
+    pub fn from_camera(self, camera_to_srgb: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+        match self {
+            Primaries::Srgb => camera_to_srgb,
+            Primaries::DisplayP3 => mul33(&SRGB_TO_P3, &camera_to_srgb),
+        }
+    }
+
+    /// An 8-bit sRGB image in these primaries (for sources that are already sRGB, such as
+    /// JPEG originals: same colours, re-encoded, no wider gamut).
+    pub fn from_srgb8(self, data: &mut [u8]) {
+        if self == Primaries::Srgb {
+            return;
+        }
+        let lin: Vec<f32> = (0..256).map(|i| srgb_decode(i as f32 / 255.0)).collect();
+        data.par_chunks_mut(3).for_each(|p| {
+            let l = [lin[p[0] as usize], lin[p[1] as usize], lin[p[2] as usize]];
+            for (o, row) in p.iter_mut().zip(SRGB_TO_P3.iter()) {
+                *o = to8(srgb_encode(row[0] * l[0] + row[1] * l[1] + row[2] * l[2]));
+            }
+        });
+    }
+}
+
 /// Encoded 0..1 to 8-bit.
 #[inline]
 pub fn to8(v: f32) -> u8 {

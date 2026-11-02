@@ -36,6 +36,7 @@ pub mod export;
 pub mod framing;
 pub mod geometry;
 pub mod heal;
+pub mod icc;
 pub mod jobs;
 pub mod lens;
 pub mod lens_blur;
@@ -54,6 +55,7 @@ pub mod people;
 pub mod pipeline;
 pub mod power;
 pub mod pre_edit;
+pub mod prepare;
 pub mod preset_rank;
 pub mod presets;
 mod preview;
@@ -76,6 +78,7 @@ pub mod technical;
 pub mod tools;
 pub mod usage;
 pub mod variant;
+pub mod watermark;
 pub mod white_balance;
 
 use std::path::Path;
@@ -158,6 +161,8 @@ pub struct DevelopOptions {
     /// What the Mask models found in this Photo (cached by the Library). When None and the
     /// Recipe has an AI Mask, the render analyses itself.
     pub analysis: Option<std::sync::Arc<masks::Analysis>>,
+    /// The RGB primaries the 8-bit output is in: sRGB, or Display P3 for wide-gamut export.
+    pub primaries: pipeline::Primaries,
 }
 
 impl Default for DevelopOptions {
@@ -167,6 +172,7 @@ impl Default for DevelopOptions {
             look: pipeline::Look::DEFAULT,
             recipe: recipe::Recipe::default(),
             analysis: None,
+            primaries: pipeline::Primaries::Srgb,
         }
     }
 }
@@ -329,7 +335,12 @@ pub fn develop(raw: &RawPhoto, opts: &DevelopOptions) -> RgbImage {
     use pipeline::*;
     use rayon::prelude::*;
     if let Some(d) = opts.long_edge.and_then(|t| Demosaiced::new(raw, t)) {
-        return d.finish(&opts.look, &opts.recipe, opts.analysis.as_deref());
+        return d.finish_in(
+            &opts.look,
+            &opts.recipe,
+            opts.analysis.as_deref(),
+            opts.primaries,
+        );
     }
     let (cw, ch) = raw.crop_size();
     let adjust = opts.recipe.render_adjust();
@@ -345,10 +356,18 @@ pub fn develop(raw: &RawPhoto, opts: &DevelopOptions) -> RgbImage {
             scale: 1.0,
             lens: lens::Lens::new(raw.lens.clone()),
         };
-        return d.finish(&opts.look, &opts.recipe, opts.analysis.as_deref());
+        return d.finish_in(
+            &opts.look,
+            &opts.recipe,
+            opts.analysis.as_deref(),
+            opts.primaries,
+        );
     }
     // Full resolution: demosaic one row at a time straight into colour+tone+quantize.
-    let fin = Finish::new(camera_to_srgb_matrix(raw.xyz_to_cam), &opts.look, &adjust);
+    let to_rgb = opts
+        .primaries
+        .from_camera(camera_to_srgb_matrix(raw.xyz_to_cam));
+    let fin = Finish::new(to_rgb, &opts.look, &adjust);
     let mosaic = normalize_white_balance(raw); // stages 1+2
     let mut data = vec![0u8; cw * ch * 3];
     let profile = raw.lens.as_ref().map(|p| (p, lens::which(p, &adjust)));
@@ -439,7 +458,20 @@ impl Demosaiced {
         recipe: &recipe::Recipe,
         analysis: Option<&masks::Analysis>,
     ) -> RgbImage {
+        self.finish_in(look, recipe, analysis, pipeline::Primaries::Srgb)
+    }
+
+    /// [`Demosaiced::finish`] with the output in `primaries` (Display P3 for wide-gamut
+    /// export): colours past sRGB survive instead of clipping at the camera matrix.
+    pub fn finish_in(
+        &self,
+        look: &pipeline::Look,
+        recipe: &recipe::Recipe,
+        analysis: Option<&masks::Analysis>,
+        primaries: pipeline::Primaries,
+    ) -> RgbImage {
         use pipeline::*;
+        let to_rgb = primaries.from_camera(self.camera_to_srgb);
         let adjust = recipe.render_adjust();
         // Lens corrections first, on the frame as the sensor saw it.
         let corrected = self
@@ -449,21 +481,14 @@ impl Demosaiced {
         if recipe.needs_masks() {
             let (rgb, w, h) =
                 orient_pixels(base.to_vec(), self.width, self.height, self.orientation);
-            let data = local::finish(
-                &rgb,
-                (w, h, self.scale),
-                self.camera_to_srgb,
-                look,
-                recipe,
-                analysis,
-            );
+            let data = local::finish(&rgb, (w, h, self.scale), to_rgb, look, recipe, analysis);
             return RgbImage {
                 width: w,
                 height: h,
                 data,
             };
         }
-        let fin = Finish::new(self.camera_to_srgb, look, &adjust);
+        let fin = Finish::new(to_rgb, look, &adjust);
         let data = finish_pixels(base, self.width, self.height, &fin, &adjust, self.scale);
         orient(data, self.width, self.height, self.orientation)
     }

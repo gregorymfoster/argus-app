@@ -24,6 +24,10 @@ export interface Storage {
   missing: number;
   previews: Usage;
   cache: Usage;
+  denoise_cache?: Usage;
+  denoise_cap?: number;
+  elsewhere_folders?: string[];
+  elsewhere_offline?: number;
   database: Usage;
   backups: Usage;
   total: Usage;
@@ -54,7 +58,11 @@ const demoStorage = (): Storage => ({
   originals_elsewhere: { bytes: 11.2 * GB, files: 232 },
   missing: 232,
   previews: { bytes: 1.06 * GB, files: 1412 },
-  cache: { bytes: 0.31 * GB, files: 96 },
+  cache: { bytes: 6.31 * GB, files: 96 },
+  denoise_cache: { bytes: 6.0 * GB, files: 21 },
+  denoise_cap: 20 * 1024 ** 3,
+  elsewhere_folders: ['/Volumes/gf-storage/2021/2021-06-12_Tahoe', '/Volumes/gf-storage/2021/2021-07-04_Lake'],
+  elsewhere_offline: 2,
   database: { bytes: 0.04 * GB, files: 2 },
   backups: { bytes: 0.21 * GB, files: 14 },
   total: { bytes: 60.02 * GB, files: 2704 },

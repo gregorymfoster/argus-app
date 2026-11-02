@@ -4,6 +4,7 @@
 
 use crate::library::{read_jpeg_upright, Library, Photo};
 use crate::masks::Analysis;
+use crate::pipeline::Primaries;
 use crate::recipe::Recipe;
 use crate::{
     decode, develop, develop_rgb8_scaled, Demosaiced, DevelopOptions, Error, Result, RgbImage,
@@ -80,7 +81,18 @@ pub fn render_photo(
     long_edge: Option<usize>,
     analysis: Option<Arc<Analysis>>,
 ) -> Result<RgbImage> {
-    let mut img = develop_photo(photo, recipe, long_edge, analysis)?;
+    render_photo_in(photo, recipe, long_edge, analysis, Primaries::Srgb)
+}
+
+/// [`render_photo`] with the output in `primaries` (Export's Display P3).
+pub fn render_photo_in(
+    photo: &Photo,
+    recipe: &Recipe,
+    long_edge: Option<usize>,
+    analysis: Option<Arc<Analysis>>,
+    primaries: Primaries,
+) -> Result<RgbImage> {
+    let mut img = develop_photo(photo, recipe, long_edge, analysis, primaries)?;
     crate::heal::apply(&mut img, &recipe.spots);
     let mut img = crate::geometry::apply(img, &recipe.crop);
     crate::effects::post_crop(&mut img, &recipe.render_adjust());
@@ -92,6 +104,7 @@ fn develop_photo(
     recipe: &Recipe,
     long_edge: Option<usize>,
     analysis: Option<Arc<Analysis>>,
+    primaries: Primaries,
 ) -> Result<RgbImage> {
     let path = Path::new(&photo.path);
     if !path.exists() {
@@ -118,7 +131,12 @@ fn develop_photo(
                         }
                         None => d,
                     };
-                    Ok(d.finish(&crate::pipeline::Look::DEFAULT, recipe, analysis.as_deref()))
+                    Ok(d.finish_in(
+                        &crate::pipeline::Look::DEFAULT,
+                        recipe,
+                        analysis.as_deref(),
+                        primaries,
+                    ))
                 }
                 None => match &base {
                     Some(b) => {
@@ -141,9 +159,14 @@ fn develop_photo(
                         drop(raw);
                         let (den, ..) = crate::denoise::base_at(b, None)?;
                         let d = blended(&d, &den, amount)?;
-                        Ok(d.finish(&crate::pipeline::Look::DEFAULT, recipe, analysis.as_deref()))
+                        Ok(d.finish_in(
+                            &crate::pipeline::Look::DEFAULT,
+                            recipe,
+                            analysis.as_deref(),
+                            primaries,
+                        ))
                     }
-                    None => full_size(path, recipe, analysis),
+                    None => full_size(path, recipe, analysis, primaries),
                 },
             }
         }
@@ -162,23 +185,26 @@ fn develop_photo(
                 data: rgb.into_raw(),
             };
             let scale = src.width.max(src.height) as f32 / full;
-            Ok(develop_rgb8_scaled(
-                &src,
-                recipe,
-                analysis.as_deref(),
-                scale,
-            ))
+            let mut out = develop_rgb8_scaled(&src, recipe, analysis.as_deref(), scale);
+            primaries.from_srgb8(&mut out.data);
+            Ok(out)
         }
         other => Err(Error(format!("can't render a {other} Photo yet"))),
     }
 }
 
-fn full_size(path: &Path, recipe: &Recipe, analysis: Option<Arc<Analysis>>) -> Result<RgbImage> {
+fn full_size(
+    path: &Path,
+    recipe: &Recipe,
+    analysis: Option<Arc<Analysis>>,
+    primaries: Primaries,
+) -> Result<RgbImage> {
     Ok(develop(
         &decode(path)?,
         &DevelopOptions {
             recipe: recipe.clone(),
             analysis,
+            primaries,
             ..Default::default()
         },
     ))

@@ -46,6 +46,7 @@ pub fn must_finish<T: Send + 'static>(
 
 mod agent;
 mod analyzers;
+mod backup_places;
 mod commands;
 mod compute;
 mod crop_offer;

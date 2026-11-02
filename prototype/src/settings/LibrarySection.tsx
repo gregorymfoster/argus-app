@@ -1,5 +1,5 @@
-// Settings › Library: where the Library lives (open, new, move, recent), what it takes on
-// disk, clearing the cache, preview size, and finding missing originals. Lightroom's
+// Settings › Library: where the Library lives (open, new, move, recent), preview size, and
+// finding missing originals. Disk use and backups are in Settings › Storage and backup. Lightroom's
 // Catalog Settings and File Handling, in one page (ADR 0011).
 
 import { useCallback, useEffect, useState } from 'react';
@@ -9,7 +9,6 @@ import { pickFolder } from '../data/backend';
 import { LIVE } from '../data/live';
 import {
   bytes,
-  clearCache,
   createLibrary,
   forgetLibrary,
   libraryInfo,
@@ -26,6 +25,7 @@ import {
 } from '../data/libraries';
 import { Seg } from '../ui/kit';
 import { RemovedSection } from './RemovedSection';
+import { openSettings } from './Settings';
 
 const SIZES = [
   { value: '1024', label: '1024' },
@@ -118,13 +118,6 @@ export function LibrarySection() {
   if (!info || !disk) return <p className="muted">{error ?? 'Reading the Library…'}</p>;
 
   const s = disk.settings;
-  const parts = [
-    { label: 'Originals in the Library', u: disk.originals_in_library, color: 'var(--text)' },
-    { label: 'Previews', u: disk.previews, color: 'var(--pick)' },
-    { label: 'Cache', u: disk.cache, color: 'var(--shoot)' },
-    { label: 'Edits and backups', u: { bytes: disk.database.bytes + disk.backups.bytes, files: 0 }, color: 'var(--done)' },
-  ];
-  const whole = disk.total.bytes + (disk.free_bytes ?? 0) || 1;
   const others = info.recent.filter((r) => r.path !== info.current);
   const previewsChanged = edge != null && edge !== s.preview_long_edge;
 
@@ -168,30 +161,18 @@ export function LibrarySection() {
       )}
 
       <h3>Disk</h3>
-      <div className="lib-bar" role="img" aria-label="Disk use">
-        {parts.map((p) => (
-          <span key={p.label} style={{ width: `${(p.u.bytes / whole) * 100}%`, background: p.color }} />
-        ))}
-      </div>
-      <div className="lib-grid">
-        {parts.map((p) => (
-          <div key={p.label} style={{ display: 'contents' }}>
-            <span className="lib-swatch" style={{ background: p.color }} />
-            <span>{p.label}</span>
-            <span className="mono">{bytes(p.u.bytes)}</span>
-          </div>
-        ))}
-        <span className="lib-swatch lib-free" />
-        <span className="muted">Free on this disk</span>
+      <div className="lib-row">
+        <span className="mono">{bytes(disk.total.bytes)}</span>
+        <span className="muted">in the Library folder ·</span>
         <span className="mono muted" data-testid="free-space">
           {bytes(disk.free_bytes)}
         </span>
+        <span className="muted">free on this disk</span>
+        <span className="grow" />
+        <Button size="sm" variant="ghost" onClick={() => openSettings('storage')}>
+          Storage and backup…
+        </Button>
       </div>
-      {disk.originals_elsewhere.files > 0 && (
-        <p className="faint lib-note">
-          {disk.originals_elsewhere.files} originals ({bytes(disk.originals_elsewhere.bytes)}) are read from folders outside the Library and aren't counted.
-        </p>
-      )}
       {disk.missing > 0 && (
         <div className="lib-row lib-warn">
           <span>
@@ -203,25 +184,6 @@ export function LibrarySection() {
           </Button>
         </div>
       )}
-      <div className="lib-row">
-        <span>Cache</span>
-        <span className="faint">Rebuildable files Argus can delete any time</span>
-        <span className="grow" />
-        <Button
-          size="sm"
-          onClick={() =>
-            run('Clearing', async () => {
-              const freed = await clearCache();
-              toast(`Freed ${bytes(freed.bytes)}`);
-              await refresh();
-            })
-          }
-          disabled={!!busy || disk.cache.bytes === 0}
-          data-testid="clear-cache"
-        >
-          Clear {bytes(disk.cache.bytes)}
-        </Button>
-      </div>
 
       <h3>Previews</h3>
       <div className="lib-row">

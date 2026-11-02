@@ -27,6 +27,7 @@ libc = "0.2"
 jpeg-encoder = { version = "0.7.1", features = ["simd"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "tiff"] }
 tract-onnx = "0.23"
+ab_glyph = "0.2"
 
 # Core ML for AI Denoise on the Mac (ADR 0015).
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -177,6 +177,28 @@ fn jpegs_are_named_by_shoot_keep_capture_metadata_and_drop_location() {
 }
 
 #[test]
+fn keep_location_copies_gps_only_when_asked() {
+    let l = library("Places");
+    let out = l.tmp.path().join("Exports");
+    let lat = |args: Value| {
+        let mut a = json!({ "photo_ids": [l.ids[0]], "folder": out, "long_edge": 64 });
+        a.as_object_mut()
+            .unwrap()
+            .extend(args.as_object().unwrap().clone());
+        let r = json1(&l.tools, "export_photos", a);
+        let e = read_exif(&paths(&r)[0]);
+        let model = e.get_field(exif::Tag::Model, exif::In::PRIMARY).is_some();
+        assert!(model, "capture metadata still travels");
+        e.get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY)
+            .map(|f| f.display_value().to_string())
+    };
+    assert_eq!(lat(json!({})), None, "removed by default");
+    assert_eq!(lat(json!({ "keep_location": false })), None);
+    let kept = lat(json!({ "keep_location": true })).expect("location kept when asked");
+    assert!(kept.starts_with("39"), "{kept}");
+}
+
+#[test]
 fn exporting_again_never_overwrites_and_leaves_no_temp_files() {
     let l = library("2026-10-18_Tahoe");
     let out = l.tmp.path().join("out");
@@ -314,6 +336,12 @@ fn short_edge_megapixels_and_output_sharpening() {
     assert!((mw * mh).abs_diff(20_000) < 600, "megapixels {mw}x{mh}");
     let (uw, uh, _) = export(json!({ "short_edge": 10_000 }));
     assert_eq!((uw, uh), (w, h), "never upscales");
+    let (lw, lh, _) = export(json!({ "long_edge": 7680 }));
+    assert_eq!(
+        (lw, lh),
+        (w, h),
+        "8K long edge on a smaller Photo is full size"
+    );
 
     // Sharpening adds detail: more difference between neighbouring pixels.
     let energy = |p: &Path| {
@@ -366,5 +394,116 @@ fn heic_is_named_heic_or_says_it_needs_a_mac() {
             left.iter().all(|n| !n.ends_with(".heic")),
             "no half-made file: {left:?}"
         );
+    }
+}
+
+#[test]
+fn display_p3_embeds_the_profile_and_reencodes_colour() {
+    let l = library("Wide");
+    let out = l.tmp.path().join("Exports");
+    let export = |space: &str| {
+        let r = json1(
+            &l.tools,
+            "export_photos",
+            json!({ "photo_ids": [l.ids[0]], "folder": out.join(space), "long_edge": 160,
+                    "shoot_folder": false, "color_space": space }),
+        );
+        std::fs::read(&paths(&r)[0]).unwrap()
+    };
+    let srgb = export("srgb");
+    let p3 = export("display_p3");
+    let has_icc = |b: &[u8]| b.windows(12).any(|w| w == b"ICC_PROFILE\0");
+    assert!(!has_icc(&srgb), "sRGB files carry no profile");
+    assert!(has_icc(&p3), "Display P3 files carry their profile");
+    let at = p3.windows(12).position(|w| w == b"ICC_PROFILE\0").unwrap() + 14;
+    let icc = &p3[at..];
+    let size = u32::from_be_bytes(icc[..4].try_into().unwrap()) as usize;
+    assert_eq!(&icc[36..40], b"acsp");
+    assert_eq!(icc[..size], argus_engine::icc::display_p3()[..]);
+    // The same colours in wider primaries: P3 numbers are less saturated than sRGB's.
+    let spread = |b: &[u8]| {
+        let img = image::load_from_memory(b).unwrap().to_rgb8();
+        img.pixels()
+            .map(|p| (p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2])) as u64)
+            .sum::<u64>()
+    };
+    assert!(
+        spread(&p3) < spread(&srgb),
+        "{} vs {}",
+        spread(&p3),
+        spread(&srgb)
+    );
+    // The EXIF still reads with the profile in front of it.
+    let e = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(&p3))
+        .unwrap();
+    assert!(e.get_field(exif::Tag::Model, exif::In::PRIMARY).is_some());
+}
+
+#[test]
+fn a_watermark_lands_in_its_corner_and_nowhere_else() {
+    let l = library("Marked");
+    let out = l.tmp.path().join("Exports");
+    let export = |args: Value| {
+        let mut a =
+            json!({ "photo_ids": [l.ids[0]], "folder": out, "shoot_folder": false, "quality": 95 });
+        a.as_object_mut()
+            .unwrap()
+            .extend(args.as_object().unwrap().clone());
+        let r = json1(&l.tools, "export_photos", a);
+        assert_eq!(r["failed"], json!([]), "{r}");
+        image::open(&paths(&r)[0]).unwrap().to_rgb8()
+    };
+    let plain = export(json!({}));
+    let marked =
+        export(json!({ "watermark": { "text": "© Greg Foster", "size": 8, "opacity": 1.0 } }));
+    let (w, h) = plain.dimensions();
+    // How much each quadrant changed.
+    let diff = |x0: u32, y0: u32| {
+        let mut d = 0u64;
+        for y in y0..y0 + h / 2 {
+            for x in x0..x0 + w / 2 {
+                let (a, b) = (plain.get_pixel(x, y), marked.get_pixel(x, y));
+                d += (0..3)
+                    .map(|c| (a[c] as i64 - b[c] as i64).unsigned_abs())
+                    .sum::<u64>();
+            }
+        }
+        d / (w as u64 * h as u64 / 4)
+    };
+    let br = diff(w / 2, h / 2);
+    assert!(br > 3, "bottom right changed by {br}");
+    for (name, d) in [("top left", diff(0, 0)), ("top right", diff(w / 2, 0))] {
+        assert!(d * 4 < br, "{name} changed by {d}, bottom right {br}");
+    }
+}
+
+#[test]
+fn apple_photos_script_quotes_paths_and_albums() {
+    let s = argus_engine::export::apple_photos_script(
+        &[PathBuf::from("/x/a \"b\".jpg"), PathBuf::from("/x/c.jpg")],
+        Some("2026-10-18_Boat-Trip"),
+    );
+    assert!(
+        s.contains(r#"import {POSIX file "/x/a \"b\".jpg", POSIX file "/x/c.jpg"}"#),
+        "{s}"
+    );
+    assert!(
+        s.contains(r#"make new album named "2026-10-18_Boat-Trip""#),
+        "{s}"
+    );
+    let none = argus_engine::export::apple_photos_script(&[PathBuf::from("/x/c.jpg")], None);
+    assert!(!none.contains("album"), "{none}");
+    if !cfg!(target_os = "macos") {
+        let l = library("Photos");
+        let err = l
+            .tools
+            .call(
+                "add_to_apple_photos",
+                json!({ "paths": [l.src.join("DSC00.JPG")] }),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs macOS"), "{err}");
     }
 }

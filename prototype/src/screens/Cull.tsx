@@ -343,7 +343,7 @@ function TileMenuItems({ p, stars, onStars, onSet, menu: menuOf }: Pick<TileProp
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem disabled={!LIVE} onSelect={() => revealInFinder({ photo_id: Number(p.id) }).catch((e) => toast(String(e).replace(/^Error: /, ''), { id: 'argus' }))}>
-        <Folder size={13} /> Show original in Finder <MenuKeys keys={['⌘', '⇧', 'R']} />
+        <Folder size={13} /> Show original in Finder <MenuKeys keys={['⌘', 'R']} />
       </ContextMenuItem>
       <ContextMenuItem onSelect={menu.onExport}>
         <Download size={13} /> {menu.others > 0 && menu.selected ? `Export ${menu.others + 1} Photos…` : 'Export…'}
@@ -764,7 +764,8 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   useSettingsKeys(current?.id ?? null, [...sel]);
   useHotkeys('mod+shift+a', () => current && copyEdit(current.id, [...sel].filter((id) => id !== current.id)), { preventDefault: true }, [current, sel, state]);
   useHotkeys('mod+l', () => current && menuFor(current).onAsk(), { preventDefault: true }, [current, visible]);
-  useHotkeys('mod+shift+r', () => current && LIVE && void revealInFinder({ photo_id: Number(current.id) }).catch(() => {}), { preventDefault: true }, [current]);
+  // ⌘R as Lightroom Classic's Show in Finder; ⇧⌘R is Run it all.
+  useHotkeys('mod+r', () => current && LIVE && void revealInFinder({ photo_id: Number(current.id) }).catch(() => {}), { preventDefault: true }, [current]);
 
 
   const clickTile = (i: number, p: Photo, e: React.MouseEvent) => {

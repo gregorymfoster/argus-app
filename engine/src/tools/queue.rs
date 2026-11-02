@@ -50,7 +50,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "set_queue",
-            description: "Set how hard the background queue works: compute gentle (default, leaves the Mac to the person), balanced or full; pause it; how many idle minutes before it goes to full on its own (0 = never); whether it goes to full overnight (1:00-7:00); whether the Photo open in Loupe or Edit jumps the queue; how many Suggestions each Photo gets (1-5); run_on_battery to always run background work on battery (off by default); run_anyway to run on battery until the Mac is next plugged in; idle_only (on by default) to hold model work (Suggestions, culls) until the Mac is idle and plugged in, or overnight; run_now to run it anyway until the queue is empty; and shoot_match_smart (on by default) for the Shoot match that reads the Shoot's hand edits as a Gaussian process and leans on the Edit head for unfamiliar frames (off: the first rule, a similarity-weighted mean).",
+            description: "Set how hard the background queue works: compute gentle (default, leaves the Mac to the person), balanced or full; pause it; how many idle minutes before it goes to full on its own (0 = never); whether it goes to full overnight (1:00-7:00); whether the Photo open in Loupe or Edit jumps the queue; how many Suggestions each Photo gets (1-5); run_on_battery to always run background work on battery (off by default); run_anyway to run on battery until the Mac is next plugged in; idle_only (on by default) to hold model work (Suggestions, culls) until the Mac is idle and plugged in, or overnight; run_now (Run it all) to run every held job now at Full, keeping the Mac awake, until the queue is empty; and shoot_match_smart (on by default) for the Shoot match that reads the Shoot's hand edits as a Gaussian process and leans on the Edit head for unfamiliar frames (off: the first rule, a similarity-weighted mean).",
             input_schema: json!({ "type": "object", "properties": {
                 "compute": { "type": "string", "enum": ["gentle", "balanced", "full"] },
                 "paused": { "type": "boolean" },
@@ -63,6 +63,25 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                 "idle_only": { "type": "boolean" },
                 "run_now": { "type": "boolean" },
                 "shoot_match_smart": { "type": "boolean" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "prepare_shoot",
+            description: "Prepare a Shoot (Import does this by itself): its heavy AI work, Suggestions and a denoised base for every likely keeper, runs now at Full, ahead of other Shoots and past the idle and overnight holds, keeping the Mac awake; on battery it waits for the charger unless run_anyway. stop:true lifts it; gentle:true is Cull now (carries on at the queue's own level so the app stays quick). Returns prepare_status.",
+            input_schema: json!({ "type": "object", "properties": {
+                "shoot_id": id, "stop": { "type": "boolean" }, "gentle": { "type": "boolean" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "prepare_status",
+            description: "How Prepare stands: null when no Shoot is preparing, else shoot_ids, shoot_names, photos, keepers, state (running, battery, paused, done), eta_s, gentle, and stages [{label, kinds, done, total, eta_s, state, progress?}] in order: Previews, Faces focus level, Stacks and AI flags, Edits for likely keepers, Denoise noisy keepers, then Keywords and Backup (left for Finish). last_done is the last finished Prepare (finished_at, stages) for the ready notification. held is what Run it all would run: jobs by kind and eta_s.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+            read_only: true,
+        },
+        ToolSpec {
+            name: "finish_shoot",
+            description: "Finish a Shoot: queue its captions and Keywords and a backup to every connected Backup place (run_backup), and run them now at Full like Prepare. Exports are separate (export_photos). Returns {tag_job, backups: [{place, job_id, created}]} plus prepare_status; backups is empty when no place is connected.",
+            input_schema: json!({ "type": "object", "required": ["shoot_id"], "properties": { "shoot_id": id } }),
             read_only: false,
         },
         ToolSpec {
@@ -155,6 +174,49 @@ impl Tools {
                 jobs::set_config(&lib, &c)?;
                 one(queue_status(&lib)?)
             }
+            "prepare_shoot" => {
+                let a: PrepareShoot = parse(args)?;
+                if a.stop == Some(true) {
+                    crate::prepare::stop(&lib)?;
+                } else if let Some(s) = a.shoot_id {
+                    crate::prepare::start(&mut lib, s, &crate::library::time::now())?;
+                }
+                if let Some(g) = a.gentle {
+                    let mut c = jobs::config(&lib)?;
+                    c.prepare_gentle = g;
+                    jobs::set_config(&lib, &c)?;
+                }
+                one(prepare_status(&lib)?)
+            }
+            "prepare_status" => one(prepare_status(&lib)?),
+            "finish_shoot" => {
+                let a: ShootArg = parse(args)?;
+                let (tag, _) = jobs::enqueue(
+                    &mut lib,
+                    "tag_photos",
+                    &json!({ "shoot_id": a.shoot_id }),
+                    None,
+                    None,
+                )?;
+                let backups = super::backup::queue_backups(
+                    &mut lib,
+                    &super::backup::RunBackup {
+                        id: None,
+                        shoot_id: Some(a.shoot_id),
+                        verify: None,
+                        why: Some("Finish Shoot".into()),
+                        priority: None,
+                    },
+                )?;
+                // The finishing work runs now, like Run it all.
+                let mut c = jobs::config(&lib)?;
+                c.go_ahead = true;
+                jobs::set_config(&lib, &c)?;
+                let mut v = prepare_status(&lib)?;
+                v["tag_job"] = json!(tag);
+                v["backups"] = json!(backups);
+                one(v)
+            }
             "retry_failed" => {
                 let n = lib.retry_failed_jobs()?;
                 let mut v = queue_status(&lib)?;
@@ -188,6 +250,37 @@ struct ListJobs {
     status: Option<String>,
     kind: Option<String>,
     limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrepareShoot {
+    shoot_id: Option<crate::library::ShootId>,
+    stop: Option<bool>,
+    gentle: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShootArg {
+    shoot_id: crate::library::ShootId,
+}
+
+/// Prepare's state ([`crate::prepare::status`]), the last finished one, and what Run it all
+/// would run.
+fn prepare_status(lib: &Library) -> Result<Value> {
+    let mut held = serde_json::Map::new();
+    let mut eta = 0.0;
+    for (kind, n) in lib.queued_by_kind(jobs::PRIORITY_FOCUS)? {
+        let avg = lib.average_job_seconds(&kind)?.unwrap_or(30.0);
+        eta += n as f64 * avg;
+        held.insert(kind, json!(n));
+    }
+    Ok(json!({
+        "prepare": crate::prepare::status(lib)?,
+        "last_done": crate::prepare::last_done(lib)?,
+        "held": { "jobs": held, "eta_s": eta.round() },
+    }))
 }
 
 #[derive(Deserialize)]
@@ -234,6 +327,7 @@ fn queue_status(lib: &Library) -> Result<Value> {
     v["boost"] = json!(boost);
     v["idle_only"] = json!(c.idle_only);
     v["run_now"] = json!(c.go_ahead);
+    v["preparing"] = json!(c.preparing);
     v["shoot_match_smart"] = json!(c.shoot_match_smart);
     // Model work (Suggestions, culls) waits for the person to step away.
     let held = jobs::held_kinds(&c, boost, jobs::model_backlog(lib)?);

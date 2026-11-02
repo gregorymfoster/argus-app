@@ -31,7 +31,7 @@ if (!source) {
   process.exit(2);
 }
 // --only flags,zoom runs just those steps (each one navigates for itself), for a fast loop.
-const STEPS = ['grid', 'flags', 'zoom', 'cancel', 'cull', 'auto', 'export', 'agent', 'agent-batch', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views', 'keywords', 'search'];
+const STEPS = ['grid', 'flags', 'zoom', 'cancel', 'cull', 'auto', 'export', 'agent', 'agent-batch', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views', 'keywords', 'search', 'backup'];
 const onlyArg = process.argv.indexOf('--only');
 const only = onlyArg > 0 ? process.argv[onlyArg + 1]?.split(',').filter(Boolean) ?? [] : (process.env.LIVE_ONLY?.split(',').filter(Boolean) ?? []);
 const unknown = only.filter((s) => !STEPS.includes(s));
@@ -479,12 +479,24 @@ try {
     const exposure = async () => (await recipeOf(target)).exposure ?? 0;
     await p.getByRole('tab', { name: 'Edit', exact: true }).click(); // History is open
     const thumb = p.getByRole('slider', { name: 'Exposure', exact: true });
+    const versionCount = async () => (await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) })).length;
+    // Wait for what the check is about, not a fixed time: a busy box (ui-gate runs five checks
+    // side by side) took longer than the old fixed sleeps and failed these checks at random.
+    const until = async (ok, ms = 10000) => {
+      for (let t = 0; t < ms; t += 200) {
+        if (await ok()) return true;
+        await p.waitForTimeout(200);
+      }
+      return false;
+    };
     const nudge = async (n) => {
+      const had = await versionCount();
       await thumb.focus();
       for (let i = 0; i < n; i++) await p.keyboard.press('ArrowRight');
       await p.waitForTimeout(1700); // the drag rests, then saves
+      await until(async () => (await versionCount()) > had);
     };
-    const versionsBefore = (await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) })).length;
+    const versionsBefore = await versionCount();
     await nudge(4);
     const dragged = await exposure();
     await nudge(2);
@@ -493,15 +505,17 @@ try {
     check(dragged > 0 && second > dragged && drags.length === 2 && drags.every((v) => v.author === 'person' && /^Exposure /.test(v.label ?? '')), `two Exposure drags saved as two Versions (${drags.map((v) => v.label).join(', ')})`);
     await p.locator('.stage').click();
     await p.keyboard.press('ControlOrMeta+z');
-    await p.waitForTimeout(800);
+    await until(async () => (await exposure()) === dragged);
     check((await exposure()) === dragged, `⌘Z undid the last drag in the Library (exposure ${await exposure()}, want ${dragged})`);
     await p.keyboard.press('ControlOrMeta+z');
-    await p.waitForTimeout(800);
+    await until(async () => (await exposure()) === 0);
     check((await exposure()) === 0, `⌘Z again undid the first drag (exposure ${await exposure()})`);
     await p.keyboard.press('ControlOrMeta+Shift+z');
-    await p.waitForTimeout(800);
+    await until(async () => (await exposure()) === dragged);
     check((await exposure()) === dragged, `⇧⌘Z redid it (exposure ${await exposure()})`);
-    const label = await p.locator('.slider').filter({ has: p.locator('.slider-label', { hasText: /^Exposure$/ }) }).textContent();
+    const exposureSlider = p.locator('.slider').filter({ has: p.locator('.slider-label', { hasText: /^Exposure$/ }) });
+    await until(async () => !!(await exposureSlider.textContent())?.includes(dragged.toFixed(2)));
+    const label = await exposureSlider.textContent();
     check(label?.includes(dragged.toFixed(2)), `the slider shows what the Library has (${label})`);
   }
 
@@ -771,6 +785,40 @@ try {
     const picksShown = Number(await p.getByTestId('nav-picks').locator('.count').textContent());
     check(picksShown === everything.filter((x) => x.verdict === 'pick').length, `Picks shows every Pick in the Library (${picksShown})`);
     await p.screenshot({ path: `${out}live-picks.png` });
+  }
+
+  if (run('backup')) {
+    // Settings › Storage and backup on the real Library: the parts table, then a Backup
+    // place added through "Another folder…", backed up on the Queue, and its copy on disk.
+    await gotoGrid();
+    const disk = join(mkdtempSync(join(tmpdir(), 'argus-backup-')), 'disk');
+    mkdirSync(disk);
+    p.once('dialog', (d) => void d.accept(disk));
+    await p.keyboard.press('Control+Comma');
+    await p.getByTestId('settings-storage').click();
+    await p.getByTestId('storage-settings').waitFor();
+    check((await p.getByTestId('part-db').innerText()).includes('library.db'), 'Storage lists the Library database');
+    await p.getByTestId('add-backup').click();
+    await p.getByTestId('add-backup-place').waitFor();
+    await p.getByText('Another folder…').click();
+    await p.getByTestId('backup-estimate').waitFor({ timeout: 10000 });
+    await p.getByTestId('add-backup-go').click();
+    await p.getByTestId('backup-place').first().waitFor();
+    let st;
+    for (let i = 0; i < 60; i++) {
+      st = await api('/api/backup_places', { method: 'POST', body: '{}' });
+      if (st.places?.[0]?.last_ok) break;
+      await p.waitForTimeout(1000);
+    }
+    const place = st.places?.[0];
+    check(place?.last_ok && place.waiting === 0, `the first backup ran on the Queue (${place?.status}, ${place?.photos_in} Photos)`);
+    check(existsSync(join(place?.copy_dir ?? disk, 'library.db')), 'the copy holds library.db');
+    await p.getByTestId('backup-place').first().click();
+    await p.getByTestId('backup-detail').waitFor();
+    // The page asks again every 3 s.
+    await p.getByTestId('backup-detail').getByText('First backup').waitFor({ timeout: 8000 }).catch(() => {});
+    check((await p.getByTestId('backup-detail').innerText()).includes('First backup'), "the place's history shows the first backup");
+    await p.screenshot({ path: `${out}live-backup.png` });
   }
 
   await ctx.close();

@@ -7,12 +7,12 @@ pub(super) fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "export_photos",
-            description: "Export Photos into a folder on this Mac (created if missing), as Lightroom's Export does: JPEG, HEIC (macOS only) or TIFF rendered with each Photo's edits and Look, or the untouched original plus an XMP sidecar Lightroom reads. Names never contain spaces and nothing is overwritten (an existing name gets -2). JPEGs keep capture metadata but never location. Photos that fail are listed under failed; the rest still export.",
+            description: "Export Photos into a folder on this Mac (created if missing), as Lightroom's Export does: JPEG, HEIC (macOS only) or TIFF rendered with each Photo's edits and Look, or the untouched original plus an XMP sidecar Lightroom reads. Names never contain spaces and nothing is overwritten (an existing name gets -2). JPEGs and HEICs keep capture metadata; location only with keep_location. Photos that fail are listed under failed; the rest still export.",
             input_schema: json!({ "type": "object", "required": ["photo_ids", "folder"], "properties": {
                 "photo_ids": ids,
                 "folder": { "type": "string", "description": "Export location: an absolute path, or starting with ~/" },
                 "format": { "enum": ["jpeg", "heic", "tiff", "original"], "description": "Default jpeg; heic needs macOS" },
-                "long_edge": { "type": "integer", "minimum": 64, "description": "Pixels; full size if omitted" },
+                "long_edge": { "type": "integer", "minimum": 64, "description": "Pixels (7680 for 8K); full size if omitted; never upscales" },
                 "short_edge": { "type": "integer", "minimum": 64, "description": "Pixels on the short side instead (1080 for Instagram); never upscales" },
                 "megapixels": { "type": "number", "exclusiveMinimum": 0, "description": "Size by megapixels instead; never upscales" },
                 "sharpen": { "enum": ["low", "standard", "high"], "description": "Output sharpening for screen, as Lightroom's Export; off if omitted" },
@@ -22,7 +22,22 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                 "shoot_folder": { "type": "boolean", "description": "Put files in a folder named after their Shoot inside folder (default true)" },
                 "sequence_start": { "type": "integer", "minimum": 1, "description": "Number of the first Photo, for sequence names (default 1)" },
                 "sequence_total": { "type": "integer", "minimum": 1, "description": "Photos in the whole export, when it is split across calls (sets the digits)" },
+                "color_space": { "enum": ["srgb", "display_p3"], "description": "srgb (default) or display_p3: wider colour for Apple screens, with the profile embedded; JPEG and HEIC only" },
+                "watermark": { "type": "object", "required": ["text"], "description": "Text drawn on rendered files, as Lightroom's Watermark",
+                    "properties": { "text": { "type": "string" },
+                        "corner": { "enum": ["top_left", "top_right", "bottom_left", "bottom_right", "center"], "description": "Default bottom_right" },
+                        "size": { "type": "number", "minimum": 0.5, "maximum": 20, "description": "Text height, percent of the short edge (default 3)" },
+                        "opacity": { "type": "number", "minimum": 0, "maximum": 1, "description": "Default 0.6" } } },
+                "keep_location": { "type": "boolean", "description": "Keep the original's GPS location in rendered files (default false: removed, as Lightroom's Remove Location Info)" },
                 "record": { "type": "boolean", "description": "false keeps this export out of the usage log" } } }),
+            read_only: false,
+        },
+        ToolSpec {
+            name: "add_to_apple_photos",
+            description: "Import exported files (JPEG, HEIC or TIFF from export_photos) into Apple Photos on this Mac, optionally into an album (made if missing). macOS only; the first time, macOS asks to let Argus control Photos.",
+            input_schema: json!({ "type": "object", "required": ["paths"], "properties": {
+                "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                "album": { "type": "string", "description": "Album name, e.g. the Shoot's" } } }),
             read_only: false,
         },
     ]
@@ -41,6 +56,16 @@ impl Tools {
                 let a: ExportPhotos = parse(args)?;
                 export_photos(&lib, a)
             }
+            "add_to_apple_photos" => {
+                let a: AddToApplePhotos = parse(args)?;
+                let paths: Vec<std::path::PathBuf> =
+                    a.paths.iter().map(|p| export::expand_home(p)).collect();
+                if let Some(p) = paths.iter().find(|p| !p.is_file()) {
+                    return Err(Error(format!("no file at {}", p.display())));
+                }
+                export::add_to_apple_photos(&paths, a.album.as_deref())?;
+                one(json!({ "added": paths.len() }))
+            }
             other => Err(unknown_tool(other)),
         }
     }
@@ -58,6 +83,13 @@ fn export_photos(lib: &Library, a: ExportPhotos) -> Result<Vec<Part>> {
         quality: a.quality.unwrap_or(90),
         naming: a.naming.unwrap_or_default(),
         sequence_start: a.sequence_start.unwrap_or(1).max(1),
+        keep_location: a.keep_location.unwrap_or(false),
+        primaries: match a.color_space.as_deref() {
+            None | Some("srgb") => crate::pipeline::Primaries::Srgb,
+            Some("display_p3") => crate::pipeline::Primaries::DisplayP3,
+            Some(other) => return Err(Error(format!("unknown color_space {other}"))),
+        },
+        watermark: a.watermark.filter(|w| !w.text.trim().is_empty()),
     };
     let shoots: BTreeMap<ShootId, String> =
         lib.shoots()?.into_iter().map(|s| (s.id, s.name)).collect();
@@ -126,6 +158,16 @@ struct ExportPhotos {
     shoot_folder: Option<bool>,
     sequence_start: Option<usize>,
     sequence_total: Option<usize>,
+    keep_location: Option<bool>,
+    color_space: Option<String>,
+    watermark: Option<crate::watermark::Watermark>,
     /// False keeps this export out of the usage log (bench exports of the log itself).
     record: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddToApplePhotos {
+    paths: Vec<String>,
+    album: Option<String>,
 }

@@ -12,6 +12,7 @@ import { plain, useQueue, type QueueStatus } from '../data/suggestions';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
 import { openSettings } from '../settings/Settings';
+import { go } from '../router';
 import { Kbd, Seg } from './kit';
 import { eta, etaLeft } from './Progress';
 
@@ -273,13 +274,13 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
               <Coffee size={12} />
               <span className="grow">{queue.waiting_for_overnight ? 'Culls and big batches wait for overnight, so the Mac stays cool.' : 'Culls and Suggestions wait until you step away, or overnight, so the Mac stays yours.'}</span>
               <Button size="sm" onClick={() => void set({ run_now: true })} data-testid="queue-run-now">
-                Run now
+                Run it all <Kbd quiet>⇧⌘R</Kbd>
               </Button>
             </div>
           )}
           {queue.run_now && !queue.paused && (
             <p className="qp-note" data-testid="queue-idle">
-              Running AI work now, until the queue is empty.
+              Running it all at Full, keeping the Mac awake, until the queue is empty.
             </p>
           )}
           {queue.model_busy && (!r || r.waiting) && (
@@ -371,6 +372,16 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
             </>
           )}
           <span className="grow" />
+          <button
+            className="import-link"
+            onClick={() => {
+              setOpen(false);
+              go({ name: 'work' });
+            }}
+            data-testid="queue-open-work"
+          >
+            Work <Kbd>⌘5</Kbd>
+          </button>
           <button
             className="import-link"
             onClick={() => {

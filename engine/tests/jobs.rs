@@ -1791,3 +1791,123 @@ fn apply_preview_draws_paste_and_auto_without_saving_and_never_hangs() {
         stuck[0].error
     );
 }
+
+#[test]
+fn prepare_runs_the_new_shoots_heavy_work_first_and_past_the_idle_holds() {
+    let (tmp, tools, old, _) = library(1, false);
+    // The older Shoot's model work waits for an idle Mac, as before.
+    json1(&tools, "suggest_edits", json!({ "photo_ids": [old[0]] }));
+    let card = tmp.path().join("2026-11-02_Boat-Trip");
+    for i in 0..2 {
+        write_jpeg(&card.join(format!("b{i}.jpg")), i * 5 + 7);
+    }
+    let r = json1(
+        &tools,
+        "import_folder",
+        json!({ "folder": card, "prepare": true }),
+    );
+    let shoot = r["shoot_id"].as_i64().unwrap();
+    let s = json1(&tools, "prepare_status", json!({}));
+    assert_eq!(
+        s["prepare"]["shoot_ids"],
+        json!([shoot]),
+        "Import starts Prepare: {s}"
+    );
+    assert_eq!(s["prepare"]["state"], json!("running"));
+    let stages: Vec<_> = s["prepare"]["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["label"].clone())
+        .collect();
+    assert_eq!(stages[3], json!("Edits for likely keepers"));
+
+    let lib = Library::open(tools.library()).unwrap();
+    let cfg = jobs::config(&lib).unwrap();
+    assert!(cfg.preparing);
+    let jobs::Gate::Run { compute, first, .. } = jobs::gate(&lib, &cfg) else {
+        panic!("the queue waits")
+    };
+    assert_eq!(compute, Compute::Full, "Prepare runs at Full");
+    assert_eq!(first, vec![shoot]);
+    drop(lib);
+    // Even with every model kind held, the new Shoot's jobs run, the old one's wait.
+    let mut ran = Vec::new();
+    while let Some(j) =
+        jobs::run_next_claim(&tools, Compute::Gentle, i64::MIN, jobs::MODEL_KINDS, &first).unwrap()
+    {
+        ran.push((j.kind.clone(), j.args.clone()));
+        assert!(ran.len() < 50, "runs out");
+    }
+    assert!(ran.iter().any(|(k, _)| k == "suggest_shoot"), "{ran:?}");
+    assert_eq!(
+        ran.iter().filter(|(k, _)| k == "suggest").count(),
+        2,
+        "both new Photos get takes: {ran:?}"
+    );
+    assert!(
+        ran.iter().all(|(_, a)| a["photo_id"] != json!(old[0])),
+        "the old Shoot's Suggestions still wait: {ran:?}"
+    );
+    // Its keepers got a denoise job too (a clean JPEG skips it).
+    assert!(
+        ran.iter()
+            .any(|(k, a)| k == "denoise" && a["keeper"] == json!(true))
+            || ran.iter().all(|(k, _)| k != "denoise")
+    );
+
+    let lib = Library::open(tools.library()).unwrap();
+    assert!(
+        argus_engine::prepare::settle(&lib).unwrap(),
+        "done once its jobs are"
+    );
+    assert!(!jobs::config(&lib).unwrap().preparing);
+    drop(lib);
+    let s = json1(&tools, "prepare_status", json!({}));
+    assert!(s["prepare"].is_null());
+    assert_eq!(s["last_done"]["shoot_ids"], json!([shoot]));
+    assert_eq!(
+        s["held"]["jobs"]["suggest"],
+        json!(1),
+        "Run it all would run the old one: {s}"
+    );
+}
+
+#[test]
+fn cull_now_keeps_prepare_but_drops_it_to_the_queues_level() {
+    let (_t, tools, _, _) = library(1, false);
+    let shoot = json1(&tools, "list_shoots", json!({}))[0]["id"]
+        .as_i64()
+        .unwrap();
+    json1(&tools, "prepare_shoot", json!({ "shoot_id": shoot }));
+    let s = json1(&tools, "prepare_shoot", json!({ "gentle": true }));
+    assert_eq!(s["prepare"]["gentle"], json!(true));
+    let lib = Library::open(tools.library()).unwrap();
+    let cfg = jobs::config(&lib).unwrap();
+    let jobs::Gate::Run { compute, first, .. } = jobs::gate(&lib, &cfg) else {
+        panic!()
+    };
+    assert_eq!((compute, first), (cfg.compute, vec![shoot]));
+    drop(lib);
+    let s = json1(&tools, "prepare_shoot", json!({ "stop": true }));
+    assert!(s["prepare"].is_null());
+}
+
+#[test]
+fn finish_queues_keywords_and_reports_no_backup_place() {
+    let (_t, tools, _, _) = library(1, false);
+    let shoot = json1(&tools, "list_shoots", json!({}))[0]["id"]
+        .as_i64()
+        .unwrap();
+    let s = json1(&tools, "finish_shoot", json!({ "shoot_id": shoot }));
+    assert!(s["tag_job"].is_i64(), "{s}");
+    assert_eq!(
+        s["backups"],
+        json!([]),
+        "no place connected is not an error"
+    );
+    assert_eq!(
+        json1(&tools, "queue_status", json!({}))["run_now"],
+        json!(true)
+    );
+}

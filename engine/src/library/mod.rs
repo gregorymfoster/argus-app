@@ -16,6 +16,7 @@ mod looks;
 mod migrate;
 mod passes;
 mod people;
+mod places;
 mod previews;
 mod ratings;
 mod remove;
@@ -43,12 +44,16 @@ pub use import::{ImportOptions, ImportReport};
 pub fn exposure_of(data: &[u8]) -> Exposure {
     import::Exif::read(data).exposure
 }
-pub use jobs::{Job, JobId, JobStatus, QueueSummary};
+pub use jobs::{Claim, Job, JobId, JobStatus, QueueSummary, ShootJobs};
 pub use keywords::{Caption, KeywordCount, PhotoKeyword, TagReport, Tags};
 pub use looks::Look;
 pub use migrate::LATEST as SCHEMA_VERSION;
 pub use passes::{round_of, Round, MAX_PASS};
 pub use people::{FaceName, FaceRef, Person, PersonId};
+pub use places::{
+    find_places, Copies, Estimate as BackupEstimate, Found as FoundPlace, Kind as PlaceKind, Place,
+    PlaceStatus, Report as BackupReport, When as BackupWhen,
+};
 pub use previews::PreviewReport;
 pub use ratings::{BestPhoto, CullState};
 pub use remove::{Removal, RemoveReport, RestoreReport, TRASH_FILE};

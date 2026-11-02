@@ -13,11 +13,12 @@ import { COMPUTE_LABEL, COMPUTE_NOTE, dur } from '../ui/Queue';
 import { Kbd } from '../ui/kit';
 import { Switch } from '@/components/ui/switch';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
-import { ArrowUpCircle, Check, ChevronDown, Download, Keyboard, Library, RefreshCw, Settings2, Sparkles, Upload } from 'lucide-react';
+import { ArrowUpCircle, Check, ChevronDown, Download, HardDrive, Keyboard, Library, RefreshCw, Settings2, Sparkles, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ago, checkForUpdates, restartToUpdate, useUpdate } from '../data/updates';
 import { Seg } from '../ui/kit';
 import { LibrarySection } from './LibrarySection';
+import { StorageSection } from './StorageSection';
 import { Row } from './Row';
 import { MeaningRow } from './MeaningRow';
 import { GeneralSection } from './GeneralSection';
@@ -256,6 +257,7 @@ const KEYS: [string, [string, string][]][] = [
     ['⌘Z  ⇧⌘Z', 'Undo, Redo'],
     ['⇧⌘I', 'Import'],
     ['⌘E', 'Export'],
+    ['⌥⇧⌘E', 'Export with previous settings'],
     ['⌘+  ⌘−  ⌘0', 'Zoom the app'],
     ['⌘,', 'Settings'],
     ['⌘/  ?', 'This list'],
@@ -374,6 +376,7 @@ function UpdatesSection() {
 const SECTIONS: SettingsSection[] = [
   { id: 'general', title: 'General', icon: <Settings2 size={14} />, render: () => <GeneralSection /> },
   { id: 'library', title: 'Library', icon: <Library size={14} />, render: () => <LibrarySection /> },
+  { id: 'storage', title: 'Storage and backup', icon: <HardDrive size={14} />, render: () => <StorageSection /> },
   { id: 'ai', title: 'AI and Compute', icon: <Sparkles size={14} />, render: () => <AiSection /> },
   { id: 'import', title: 'Import', icon: <Download size={14} />, render: () => <ImportSection /> },
   { id: 'export', title: 'Export', icon: <Upload size={14} />, render: () => <ExportSection /> },

@@ -89,6 +89,13 @@ pub struct Options {
     /// JPEG quality, 50..100.
     pub quality: u8,
     pub naming: Naming,
+    /// Copy the original's location (its GPS IFD) into rendered files. Off by default:
+    /// Lightroom's "Remove Location Info", on unless the person unticks it.
+    pub keep_location: bool,
+    /// Display P3 for JPEG and HEIC (TIFF stays sRGB); the profile travels in the file.
+    pub primaries: crate::pipeline::Primaries,
+    /// A text watermark drawn on rendered files (never on an Original).
+    pub watermark: Option<crate::watermark::Watermark>,
     /// The number of the first Photo in a `sequence` (callers exporting one Photo per call
     /// pass its position).
     pub sequence_start: usize,
@@ -274,11 +281,16 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
                     crate::denoise::compute(item.photo, &|_, _| {})?;
                 }
             }
-            let rendered = render::render_photo(
+            let primaries = match opts.format {
+                Format::Tiff => crate::pipeline::Primaries::Srgb,
+                _ => opts.primaries,
+            };
+            let rendered = render::render_photo_in(
                 item.photo,
                 item.recipe,
                 long_edge(item, opts),
                 item.masks.clone(),
+                primaries,
             );
             if let Some(f) = made {
                 let _ = std::fs::remove_file(f);
@@ -286,6 +298,9 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
             let mut img = rendered?;
             if let Some(s) = opts.sharpen {
                 sharpen(&mut img, s.amount());
+            }
+            if let Some(w) = &opts.watermark {
+                crate::watermark::apply(&mut img, w)?;
             }
             let ext = match opts.format {
                 Format::Jpeg => "jpg",
@@ -300,7 +315,13 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
                 Format::Tiff => encode_tiff(&img)?,
                 _ => {
                     let jpeg = render::encode_jpeg(&img, opts.quality.clamp(50, 100))?;
-                    let jpeg = with_xmp(&with_exif(&jpeg, &exif(item)), item);
+                    let jpeg = match primaries {
+                        crate::pipeline::Primaries::DisplayP3 => {
+                            crate::icc::with_icc(&jpeg, &crate::icc::display_p3())
+                        }
+                        crate::pipeline::Primaries::Srgb => jpeg,
+                    };
+                    let jpeg = with_xmp(&with_exif(&jpeg, &exif(item, opts.keep_location)), item);
                     if opts.format == Format::Heic {
                         heic(&jpeg, opts.quality.clamp(50, 100), &path)?
                     } else {
@@ -334,7 +355,7 @@ pub fn long_edge(item: &Item, opts: &Options) -> Option<usize> {
     let want = match (opts.short_edge, opts.megapixels) {
         (Some(s), _) => s as f64 * ratio,
         (None, Some(mp)) if mp > 0.0 => (mp * 1e6 * ratio).sqrt(),
-        _ => return opts.long_edge,
+        _ => opts.long_edge? as f64,
     };
     // Never upscale: a size past the Photo's own is full size.
     (want < full).then(|| want.round().max(64.0) as usize)
@@ -417,8 +438,8 @@ fn encode_tiff(img: &crate::RgbImage) -> Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
-/// Capture metadata worth keeping. Location (the GPS IFD), serial numbers and maker
-/// notes are never copied.
+/// Capture metadata worth keeping. Serial numbers and maker notes are never copied;
+/// location (the GPS IFD) only when the person asks ([`Options::keep_location`]).
 const KEEP_TAGS: &[exif::Tag] = &[
     exif::Tag::Make,
     exif::Tag::Model,
@@ -448,7 +469,7 @@ fn ascii(s: &str) -> exif::Value {
 /// The EXIF block (TIFF bytes) for an exported JPEG: the kept tags from the original,
 /// upright orientation (renders are already upright), and Argus as the software. A
 /// Photo whose original has no EXIF still gets its capture time and camera.
-fn exif(item: &Item) -> Vec<u8> {
+fn exif(item: &Item, keep_location: bool) -> Vec<u8> {
     let mut fields: Vec<exif::Field> = File::open(&item.photo.path)
         .ok()
         .and_then(|f| {
@@ -458,7 +479,11 @@ fn exif(item: &Item) -> Vec<u8> {
         })
         .map(|e| {
             e.fields()
-                .filter(|f| f.ifd_num == exif::In::PRIMARY && KEEP_TAGS.contains(&f.tag))
+                .filter(|f| {
+                    f.ifd_num == exif::In::PRIMARY
+                        && (KEEP_TAGS.contains(&f.tag)
+                            || (keep_location && f.tag.context() == exif::Context::Gps))
+                })
                 .cloned()
                 .collect()
         })
@@ -674,4 +699,74 @@ fn with_xmp(jpeg: &[u8], item: &Item) -> Vec<u8> {
     out.extend_from_slice(packet.as_bytes());
     out.extend_from_slice(&jpeg[at..]);
     out
+}
+
+/// AppleScript string literal.
+fn applescript_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The AppleScript that imports `paths` into Apple Photos, into `album` when given (made if
+/// missing). Photos copies the files into its own library; duplicates are skipped.
+pub fn apple_photos_script(paths: &[PathBuf], album: Option<&str>) -> String {
+    let files: Vec<String> = paths
+        .iter()
+        .map(|p| format!("POSIX file {}", applescript_str(&p.to_string_lossy())))
+        .collect();
+    let mut s = format!(
+        "tell application \"Photos\"\n  set imported to import {{{}}} skip check duplicates false\n",
+        files.join(", ")
+    );
+    if let Some(a) = album.map(str::trim).filter(|a| !a.is_empty()) {
+        let a = applescript_str(a);
+        s += &format!(
+            "  if not (exists album {a}) then make new album named {a}\n  if imported is not missing value then add imported to album {a}\n"
+        );
+    }
+    s += "end tell\n";
+    s
+}
+
+/// Import exported files into Apple Photos (macOS only). Waits up to 5 minutes: the first
+/// time, macOS asks the person to let Argus control Photos.
+pub fn add_to_apple_photos(paths: &[PathBuf], album: Option<&str>) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        return Err(Error("Adding to Apple Photos needs macOS".into()));
+    }
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut child = std::process::Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(apple_photos_script(paths, album))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| Error(format!("Apple Photos: can't run osascript: {e}")))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut e, &mut err);
+                }
+                let err = err.trim();
+                return Err(Error(
+                    if err.contains("-1743") || err.contains("Not authorized") {
+                        "Apple Photos: Argus isn't allowed to control Photos. Allow it in System Settings › Privacy & Security › Automation".into()
+                    } else {
+                        format!("Apple Photos: {err}")
+                    },
+                ));
+            }
+            Ok(None) if std::time::Instant::now() > deadline => {
+                let _ = child.kill();
+                return Err(Error("Apple Photos didn't answer in 5 minutes".into()));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+            Err(e) => return Err(Error(format!("Apple Photos: {e}"))),
+        }
+    }
 }

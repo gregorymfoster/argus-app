@@ -84,7 +84,7 @@ try {
   // Something in the queue to show: Suggestions for the Shoot, held paused.
   await api('enqueue_job', { kind: 'suggest_shoot', args: {} }).catch(() => {});
   await p.waitForTimeout(1500);
-  await p.getByTestId('queue-progress').click({ timeout: 5000 }).catch((e) => errors.push(`queue: ${e.message.split('\n')[0]}`));
+  await p.getByTestId('queue-progress').or(p.getByTestId('status-prepare')).first().click({ timeout: 5000 }).catch((e) => errors.push(`queue: ${e.message.split('\n')[0]}`));
   await p.waitForTimeout(600);
   await shot(p, 'V2-Queue');
   await p.keyboard.press('Escape');

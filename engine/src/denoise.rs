@@ -306,6 +306,29 @@ pub fn queue_precompute(
     Ok(())
 }
 
+/// Prepare ([`crate::prepare`]): queue a base for each likely keeper, Pick or not, behind
+/// its Suggestions. Same job as a Pick's precompute, so a later Pick doesn't queue it twice;
+/// it runs only for a frame noisy enough to want Denoise, and stops at the cache cap.
+pub fn queue_keepers(
+    lib: &mut crate::library::Library,
+    photos: &[crate::library::PhotoId],
+) -> Result<()> {
+    for &id in photos {
+        let Some(p) = lib.photo(id)? else { continue };
+        if base_file(&p).is_none_or(|f| f.is_file()) {
+            continue;
+        }
+        crate::jobs::enqueue(
+            lib,
+            "denoise",
+            &serde_json::json!({ "photo_id": id, "precompute": true, "keeper": true }),
+            Some(PRIORITY_PRECOMPUTE),
+            None,
+        )?;
+    }
+    Ok(())
+}
+
 /// Once per Library: queue precomputed bases for the Picks made before precomputing existed.
 pub fn backfill_picks(lib: &mut crate::library::Library) -> Result<()> {
     const DONE: &str = "denoise_precompute_backfill";
@@ -331,8 +354,15 @@ pub fn wants_precompute(
     lib: &crate::library::Library,
     photo: &Photo,
     recipe: &Recipe,
+    keeper: bool,
 ) -> Result<bool> {
-    if photo.verdict != crate::library::Verdict::Pick || base_file(photo).is_none() {
+    // Prepare's precompute is for a likely keeper: anything but a Reject.
+    let still = if keeper {
+        photo.verdict != crate::library::Verdict::Reject
+    } else {
+        photo.verdict == crate::library::Verdict::Pick
+    };
+    if !still || base_file(photo).is_none() {
         return Ok(false);
     }
     if let Some(v) = recipe.global.other.get("denoise").and_then(|v| v.as_f64()) {
