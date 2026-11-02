@@ -16,6 +16,7 @@ mod exports;
 mod keywords;
 mod library;
 mod looks;
+pub(crate) use looks::{pasted, synced};
 mod masks;
 mod people;
 mod presets;
@@ -274,6 +275,9 @@ struct AutoEdit {
     photo_ids: Option<Vec<PhotoId>>,
     shoot_id: Option<ShootId>,
     compute: Option<Compute>,
+    /// Also add the Quick fixes each Photo clearly needs, gently ([`crate::quick_fixes`]).
+    /// On unless false.
+    fixes: Option<bool>,
 }
 
 /// Lightroom's Auto ([`crate::auto`]) on many Photos: measured in parallel at the Compute
@@ -293,15 +297,13 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     if photos.is_empty() {
         return Err(Error("no Photos to Auto".into()));
     }
-    // What each Photo looks like apart from Auto's sliders: its Recipe over its Look.
-    let jobs: Vec<(Photo, Recipe, Recipe, _, _)> = photos
+    let jobs: Vec<(Photo, Recipe, AutoInput)> = photos
         .into_iter()
         .map(|p| {
             let own = current_recipe(lib, p.id)?;
-            let base = with_look(lib, &p, &crate::auto::cleared(&own))?;
-            let masks = render::masks_for(lib, &p, &base);
-            let head = crate::auto::head_input(lib, &p);
-            Ok((p, own, base, masks, head))
+            let mut input = auto_input(lib, &p, &own)?;
+            input.fixes = a.fixes.unwrap_or(true);
+            Ok((p, own, input))
         })
         .collect::<Result<_>>()?;
     let task =
@@ -311,24 +313,13 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     let stop = task.stop_flag();
     let results: Vec<(PhotoId, Result<Recipe>)> = pool.install(|| {
         jobs.par_iter()
-            .map(|(p, own, base, masks, head)| {
+            .map(|(p, _, input)| {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     return (p.id, Err(Error(crate::progress::STOPPED.into())));
                 }
-                let auto = crate::auto::auto_adjust_for(
-                    |s| {
-                        // The Look's sliders sit under Auto's, as they do under the person's.
-                        let r = Recipe {
-                            global: base.global.plus(s),
-                            ..base.clone()
-                        };
-                        render::render_photo(p, &r, Some(crate::auto::MEASURE_EDGE), masks.clone())
-                    },
-                    p.kind == "raw",
-                    head.as_ref(),
-                );
+                let r = auto_from(p, input);
                 task.tick();
-                (p.id, auto.map(|s| crate::auto::applied(own, &s)))
+                (p.id, r)
             })
             .collect()
     });
@@ -339,11 +330,22 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     for (id, r) in results {
         match r {
             Ok(mut r) => {
-                if let Some((p, ..)) = jobs.iter().find(|j| j.0.id == id) {
+                let mut added = Vec::new();
+                if let Some((p, own, _)) = jobs.iter().find(|j| j.0.id == id) {
                     crate::denoise::auto_fill(lib, p, &mut r)?;
+                    // The Quick fixes Auto added (not ones already on), for the UI to say so.
+                    let before = crate::quick_fixes::on(own);
+                    added = crate::quick_fixes::on(&r)
+                        .into_iter()
+                        .filter(|(f, _)| !before.iter().any(|(b, _)| b == f))
+                        .map(|(id, amount)| json!({ "id": id, "amount": amount }))
+                        .collect();
                 }
                 let version = lib.write_recipe(id, &r.to_value(), Author::Ai, Some(batch))?;
-                out.insert(id, json!({ "version": version, "global": r.global }));
+                out.insert(
+                    id,
+                    json!({ "version": version, "global": r.global, "fixes": added }),
+                );
             }
             Err(e) if e.0 == crate::progress::STOPPED => stopped.push(id),
             Err(e) => {
@@ -352,6 +354,85 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
         }
     }
     one(json!({ "batch_id": batch, "photos": out, "failed": failed, "stopped": stopped }))
+}
+
+/// What Auto needs to measure a Photo, read from the Library: its Recipe over its Look with
+/// Auto's sliders and Quick fixes cleared, its Masks and the Edit head's input.
+pub(crate) struct AutoInput {
+    /// The Photo's Recipe without its Quick fixes, and those fixes ([`crate::quick_fixes`]).
+    own: Recipe,
+    kept: Vec<(String, f64)>,
+    base: Recipe,
+    masks: Option<std::sync::Arc<crate::masks::Analysis>>,
+    head: Option<crate::auto::HeadInput>,
+    /// Faces and sky, for choosing Quick fixes.
+    scene: Option<std::sync::Arc<crate::masks::Analysis>>,
+    /// Add the Quick fixes the Photo needs (Greg, 2026-11-02). On by default.
+    pub fixes: bool,
+}
+
+pub(crate) fn auto_input(lib: &Library, p: &Photo, own: &Recipe) -> Result<AutoInput> {
+    let (own, kept) = crate::quick_fixes::strip(own)?;
+    let base = with_look(lib, p, &crate::auto::cleared(&own))?;
+    let masks = render::masks_for(lib, p, &base);
+    let head = crate::auto::head_input(lib, p);
+    let scene = match head.as_ref().and_then(|h| h.analysis.clone()) {
+        Some(a) => Some(a),
+        None => render::analysis(lib, p).ok(),
+    };
+    Ok(AutoInput {
+        own,
+        kept,
+        base,
+        masks,
+        head,
+        scene,
+        fixes: true,
+    })
+}
+
+/// Auto for a Photo: its sliders and the Quick fixes it needs on its Recipe, the sliders
+/// and fixes remembered per Photo and Recipe so the Apply popover's preview and the Apply
+/// after it measure each Photo once.
+pub(crate) fn auto_from(p: &Photo, input: &AutoInput) -> Result<Recipe> {
+    use crate::quick_fixes::Pick;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    type Memo = HashMap<(PhotoId, String), (crate::recipe::Adjust, Vec<Pick>)>;
+    static MEMO: std::sync::OnceLock<Mutex<Memo>> = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    // The preview path tells two Libraries' Photo 1 apart (the app can switch Libraries, and
+    // tests run many in one process).
+    let key = (
+        p.id,
+        format!("{}|{}", p.preview.display(), input.base.to_value()),
+    );
+    let hit = memo.lock().unwrap().get(&key).cloned();
+    // The Look's sliders sit under Auto's, as they do under the person's.
+    let render = |s: &crate::recipe::Adjust| {
+        let r = Recipe {
+            global: input.base.global.plus(s),
+            ..input.base.clone()
+        };
+        render::render_photo(p, &r, Some(crate::auto::MEASURE_EDGE), input.masks.clone())
+    };
+    let (auto, picks) = match hit {
+        Some(a) => a,
+        None => {
+            let a = crate::auto::auto_adjust_for(render, p.kind == "raw", input.head.as_ref())?;
+            // What the Photo needs, read off it as Auto left it.
+            let picks = crate::quick_fixes::pick(&render(&a)?, input.scene.as_deref(), &a);
+            let mut m = memo.lock().unwrap();
+            if m.len() > 4096 {
+                m.clear();
+            }
+            m.insert(key, (a.clone(), picks.clone()));
+            (a, picks)
+        }
+    };
+    let r = crate::auto::applied(&input.own, &auto);
+    let picks: &[Pick] = if input.fixes { &picks } else { &[] };
+    crate::quick_fixes::add(r, &input.kept, picks)
 }
 
 fn batch_or(lib: &mut Library, batch: Option<BatchId>, label: &str) -> Result<BatchId> {

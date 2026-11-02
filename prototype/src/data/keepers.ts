@@ -26,7 +26,10 @@ export function keepersAt(id: string | null, order: string[]) {
  * so it has no reason to move up. `reset` starts over (Keepers first was just chosen). */
 export function keepersOrder(next: string[], done: (id: string) => boolean, reset = false) {
   latest = next;
-  const base = held.length ? held : shown;
+  // The order on screen is the truth of what was passed: the held order lacks Rejects (the
+  // engine leaves them out), so a frame rejected behind the cursor would otherwise jump to the
+  // end, and a cursor on a fresh Reject would look lost and restart the whole order.
+  const base = at && shown.includes(at) ? shown : held.length ? held : shown;
   const was = base;
   if (reset || !at || !base.includes(at)) {
     held = next;

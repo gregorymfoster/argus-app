@@ -210,6 +210,7 @@
 .cull-mode > .panel { flex: 1 1 auto; min-width: 0; }
 .moment-rail { width: 232px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--border); }
 .rail-head { height: 40px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-size: 12px; color: var(--text-2); }
+.rail-filter { flex: none; padding: 0 10px 8px; }
 .rail-head .mono { font-size: 10.5px; }
 .rail-bar { width: auto; margin: 0 14px 8px; }
 .rail-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 6px 6px; display: flex; flex-direction: column; gap: 1px; }
@@ -274,3 +275,14 @@
 .burst-cell .v-chip.pick { background: var(--pick); border-color: var(--pick); color: var(--bg); }
 .burst-cell .v-chip.reject { background: var(--reject-bg); border-color: var(--reject-line); }
 .burst-cell .v-chip.needs { background: transparent; border: 1px dashed var(--border-strong); color: var(--text-2); }
+/* Pages of a big Stack: a bar above the Survey with dots per page (done ones green). */
+.page-bar { flex: none; display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 4px; font-size: 12px; color: var(--text-2); }
+.page-dots { display: inline-flex; align-items: center; gap: 5px; }
+.page-dot { width: 8px; height: 8px; padding: 0; border: none; border-radius: 999px; background: var(--border-strong); cursor: default; }
+.page-dot.done { background: var(--done); }
+.page-dot.final { background: transparent; box-shadow: inset 0 0 0 1.5px var(--pick); }
+.page-dot.on { outline: 1.5px solid var(--text); outline-offset: 2px; }
+/* Rows: a moment with more frames than columns wraps onto more lines of its band. */
+.moment-band.multi { flex: none; }
+.moment-band.multi .moment-band-frames { flex: none; container-type: normal; }
+.moment-band.multi .moment-band-frames .burst-cell { width: 100%; }

@@ -104,3 +104,42 @@ fn edit_recipe_takes_lens_corrections_as_a_word() {
         .set_value("lensCorrections", &"maybe".into(), false)
         .is_err());
 }
+
+/// Greg's Apply look hung for good (2026-11-02): a rayon worker held an image's lens lock
+/// while correcting in parallel, stole another render of the same image and waited on that
+/// lock forever. Many renders of one image, each asking for other corrections than the last,
+/// must all finish.
+#[test]
+fn parallel_renders_of_one_image_never_deadlock_on_its_lens() {
+    use rayon::prelude::*;
+    let Some(p) = fixture("raw-a7rv/DSC07745.ARW").or_else(|| fixture("raw/DSC04949.ARW")) else {
+        return;
+    };
+    let profile = std::sync::Arc::new(lens::read(&p).expect("profile"));
+    let shared = std::sync::Arc::new(lens::Lens::new(Some(profile)));
+    let (w, h) = (900, 600);
+    let rgb = std::sync::Arc::new(vec![0.5f32; w * h * 3]);
+    let ask = |on: &str| {
+        Recipe::from_value(&serde_json::json!({ "global": { "lensCorrections": on } }))
+            .unwrap()
+            .global
+    };
+    // All corrections, and the camera's own set (fewer on these bodies), so each call can
+    // differ from the one cached before it.
+    let (on, off) = (ask("on"), ask("camera"));
+    crate::must_finish(
+        120,
+        "200 renders of one image sharing its lens",
+        move || {
+            (0..200).into_par_iter().for_each(|i| {
+                // Nested parallel work around the call, as render_photo has, gives each waiting
+                // worker the chance to steal another render.
+                let a = if i % 2 == 0 { &on } else { &off };
+                rayon::join(
+                    || shared.corrected(&rgb, w, h, a),
+                    || shared.corrected(&rgb, w, h, if i % 3 == 0 { &off } else { &on }),
+                );
+            });
+        },
+    );
+}

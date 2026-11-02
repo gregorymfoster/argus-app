@@ -11,7 +11,7 @@ status:
 # What the Rust checks depend on: `scripts/cached` skips clippy and tests when none of it changed since they last passed (docs-only changes, re-runs after a failed push). ARGUS_NO_CACHE=1 forces them.
 rust_inputs := "--in Cargo.toml --in Cargo.lock --in engine --in cli --in fixtures --stat fixtures/raw --stat fixtures/raw-a7rv --stat fixtures/bench-raw --key 'rustc -vV' --key 'env | grep -e ^ARGUS_ -e ^RUSTFLAGS | sort'"
 
-# Format, lint and test everything (incl. golden images).
+# Format, lint and test everything (incl. golden images), plus lock-lint (no lock held across rayon work, docs/agents/concurrency.md).
 # Uses the `fast` profile (release speed, no LTO): a one-file engine edit rebuilds in seconds, not minutes.
 check:
     @scripts/cloud-ensure
@@ -19,7 +19,9 @@ check:
     scripts/cached clippy {{rust_inputs}} -- scripts/progress clippy -- cargo clippy --workspace --all-targets --profile fast -- -D warnings
     scripts/cached test {{rust_inputs}} --in scripts/test-parallel -- scripts/progress test -- scripts/test-parallel --workspace --profile fast
     scripts/cached install-sh --in scripts/release/install.sh --in scripts/release/install.test.sh --in scripts/release/stamp-install.sh -- scripts/release/install.test.sh
+    scripts/cached lock-lint --in engine/src --in cli/src --in app/src --in scripts/lock-lint.py -- python3 scripts/lock-lint.py
     scripts/cached design-lint --in prototype/src --in prototype/scripts/design-lint.mjs --in prototype/scripts/design-lint-baseline.json -- node prototype/scripts/design-lint.mjs
+    @scripts/progress slower
     @ls fixtures/raw/*.ARW >/dev/null 2>&1 || echo "warning: fixtures/raw is empty, so golden and RAW tests were SKIPPED (see CLAUDE.md for getting the RAWs)"
 
 # Render a RAW to out/<stem>.jpg (JPEG q90 by default) and print timings. e.g. `just render fixtures/raw/DSC03945.ARW --long-edge 2048`
@@ -55,6 +57,10 @@ shots-bless *names:
 layout:
     cd prototype && ../scripts/progress layout -- node scripts/layout.mjs
 
+# The heavy UI checks a release requires (cloud, ~5 min, side by side): `just layout`, every shot and smoke flow with the layout and stall checks, `shoot-look-check`, `framing-check` and `mac-e2e` in Chromium. A step that passed on the same app code is skipped on a rerun. On green it writes release/ui-gate.txt for this commit's prototype/ and engine/; commit and land it. `just release-candidate` refuses without a matching stamp.
+ui-gate:
+    scripts/progress ui-gate --stall 1200 -- scripts/ui-gate
+
 # Import from a fake card of the sample RAWs against the real engine (mock local model): source and New/All menus, time and space, the grid filling while it imports, and the width check on the real Library.
 import-check:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
@@ -64,6 +70,11 @@ import-check:
 shoot-look-check:
     scripts/progress build-cli -- cargo build --profile fast -p argus-cli
     cd prototype && ../scripts/progress shoot-look-check -- node scripts/shoot-look-check.mjs
+
+# Paste, Sync and Auto through the Apply popover against a real engine: drawn first, hand edits left out, untick, Return, one Undo, Esc.
+apply-edit-check:
+    scripts/progress build-cli -- cargo build --profile fast -p argus-cli
+    cd prototype && ../scripts/progress apply-edit-check -- node scripts/apply-edit-check.mjs
 
 # Crop & straighten against a real engine on Greg's edits: proposals, untick, Apply, the hand crop kept, one Undo.
 framing-check:
@@ -129,6 +140,8 @@ release-local version *mode:
 release-candidate version:
     #!/usr/bin/env bash
     set -euo pipefail
+    # The UI checks the Mac can't run must have passed on exactly this UI and engine (scripts/ui-gate).
+    scripts/ui-gate --verify
     just check
     scripts/cached prototype-npm --in prototype/package.json --in prototype/package-lock.json --out prototype/node_modules -- sh -c 'cd prototype && npm install --no-audit --no-fund --silent'
     # Same command as app/tauri.conf.json's beforeBuildCommand, so the release build then skips it.
@@ -139,6 +152,7 @@ release-candidate version:
     just release-local {{version}} --build-only
     if wait $e2e; then echo "mac-e2e passed"; else tail -n 30 out/logs/rc-mac-e2e.out; echo "release-candidate: mac-e2e failed (out/logs/mac-e2e.log), so don't publish {{version}}" >&2; exit 1; fi
     trap - EXIT
+    scripts/progress slower
     echo "release-candidate: {{version}} is built and checked; publish with just release-local {{version}} --publish-only"
 
 # Release in one go (Greg, 2026-10-20: one "ship it" covers build and publish): release-candidate, then publish, then a dry run of the stamped installer this release uploaded. Publishing is public, so run it only on Greg's word. The public-export sync stays a separate, looked-at step.

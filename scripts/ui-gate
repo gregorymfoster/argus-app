@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# The heavy UI checks a release needs, run in the cloud (Linux Chromium + the real engine),
+# kept out of `just check` so landing stays fast (2026-11-02, after layout and stall bugs
+# reached Greg in 0.1.17 because these checks existed but nothing made anyone run them).
+#
+#   scripts/ui-gate            run them all; on green, write release/ui-gate.txt (commit it)
+#   scripts/ui-gate --verify   what `just release-candidate` runs on the Mac: fails unless
+#                              release/ui-gate.txt was written for this exact UI and engine
+#
+# What it runs, side by side (about 4 minutes on the 4-core cloud box; 12+ one after another):
+#   layout                 every screen at 1024/1280/1500 px plus the ?stress=1 demo
+#                          (portraits, a 40-frame Stack, long names) in the states that broke:
+#                          no wrapped bars, overlapping tiles or cut-off labels
+#   shots                  every screen and smoke flow (4 at a time); each shot is also a layout
+#                          check, and an engine call with no answer fails it (data/backend.ts budgets)
+#   shoot-look-check       and framing-check: the many-Photo popovers on the real engine
+#   mac-e2e                the Mac's own release check (Import from a card, then live.mjs: flags,
+#                          cull, Auto, Agent, People...) in Chromium, so a break shows up here
+#                          and not on the Mac at release time (0.1.18 failed it there twice)
+#
+# A step that already passed on exactly this app (prototype/ minus its scripts, engine/, cli/)
+# with the same check script is skipped (scripts/cached, keys in out/cache/): after fixing one
+# flaky check, only that step runs again. That is not a retry: the skipped step passed on the
+# same code. ARGUS_NO_CACHE=1 runs everything. Each step logs to out/logs/ui-gate-NAME.out.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+STAMP=release/ui-gate.txt
+# What the gate vouches for: the UI and the engine it talks to.
+trees() { echo "prototype $(git rev-parse HEAD:prototype)"; echo "engine $(git rev-parse HEAD:engine)"; }
+
+if [ "${1:-}" = "--verify" ]; then
+  if [ "${ARGUS_SKIP_UI_GATE:-}" = "1" ]; then echo "ui-gate: SKIPPED by ARGUS_SKIP_UI_GATE=1 (only on Greg's word)" >&2; exit 0; fi
+  if [ -n "$(git status --porcelain --untracked-files=no -- prototype engine)" ]; then echo "ui-gate: prototype/ or engine/ has uncommitted changes, so the gate can't vouch for them" >&2; exit 1; fi
+  if [ -f "$STAMP" ] && diff -q <(trees) <(grep -E '^(prototype|engine) ' "$STAMP") >/dev/null; then
+    echo "ui-gate: ok, $(grep '^passed' "$STAMP")"
+    exit 0
+  fi
+  echo "ui-gate: the UI checks haven't passed on this commit's prototype/ and engine/." >&2
+  echo "ui-gate: run 'just ui-gate' in a cloud session on this commit, commit release/ui-gate.txt, then release." >&2
+  exit 1
+fi
+
+if [ -n "$(git status --porcelain --untracked-files=no -- prototype engine)" ]; then echo "ui-gate: commit prototype/ and engine/ first, so the stamp names what was checked" >&2; exit 1; fi
+export PW_CHROMIUM="${PW_CHROMIUM:-$(ls -d /opt/pw-browsers/chromium-*/chrome-linux64/chrome 2>/dev/null | tail -1)}"
+[ -n "$PW_CHROMIUM" ] || unset PW_CHROMIUM
+(cd prototype && npm install --no-audit --no-fund --silent)
+# Pre-bundle the UI's dependencies once, so five dev servers starting together don't all write
+# prototype/node_modules/.vite at the same moment.
+(cd prototype && npx vite optimize >/dev/null 2>&1) || true
+# Build the engine once up front, so the engine-backed steps don't queue on cargo's lock.
+scripts/progress build-cli -- cargo build --profile fast -p argus-cli
+
+# What every step's result depends on besides its own script.
+APP=(--in prototype/src --in prototype/index.html --in prototype/package.json --in prototype/package-lock.json
+  --in prototype/vite.config.ts --in prototype/tsconfig.json --in prototype/scripts/layout-lib.mjs
+  --in engine --in cli --in Cargo.toml --in Cargo.lock --in scripts/ui-gate --key 'rustc -vV')
+RAWS=(--in fixtures --stat fixtures/raw --stat fixtures/raw-a7rv)
+mkdir -p out/logs
+names=(); pids=()
+step() { # step NAME [cached args...] -- CMD...
+  local name=$1; shift
+  local args=(); while [ "$1" != "--" ]; do args+=("$1"); shift; done; shift
+  scripts/cached "ui-gate-$name" "${APP[@]}" "${args[@]}" -- scripts/progress "ui-gate-$name" --stall 600 -- "$@" > "out/logs/ui-gate-$name.out" 2>&1 &
+  names+=("$name"); pids+=($!)
+}
+step layout --in prototype/scripts/layout.mjs -- sh -c 'cd prototype && node scripts/layout.mjs'
+step shots --in prototype/scripts/shots.mjs -- sh -c 'cd prototype && node scripts/shots.mjs'
+step shoot-look-check "${RAWS[@]}" --in prototype/scripts/shoot-look-check.mjs -- sh -c 'cd prototype && node scripts/shoot-look-check.mjs'
+step framing-check "${RAWS[@]}" --in prototype/scripts/framing-check.mjs -- sh -c 'cd prototype && node scripts/framing-check.mjs'
+step mac-e2e "${RAWS[@]}" --in prototype/scripts/mac-e2e.mjs --in prototype/scripts/live.mjs -- sh -c 'cd prototype && ../scripts/timeout 900 node scripts/mac-e2e.mjs'
+echo "ui-gate: running ${names[*]} side by side (logs in out/logs/ui-gate-*.out; 'just status' for progress)"
+
+failed=()
+for i in "${!names[@]}"; do
+  if wait "${pids[$i]}"; then
+    echo "ui-gate: ${names[$i]} ok ($(tail -n 1 "out/logs/ui-gate-${names[$i]}.out" | cut -c1-100))"
+  else
+    failed+=("${names[$i]}")
+    echo "ui-gate: ${names[$i]} FAILED, the end of out/logs/ui-gate-${names[$i]}.out:" >&2
+    tail -n 30 "out/logs/ui-gate-${names[$i]}.out" >&2
+  fi
+done
+scripts/progress slower
+if [ ${#failed[@]} -gt 0 ]; then
+  echo "ui-gate: FAILED: ${failed[*]} (logs in out/logs/ui-gate-*.out, shots in prototype/out/shots/). No stamp written. Rerunning skips the steps that passed." >&2
+  exit 1
+fi
+mkdir -p release
+{ echo "# Written by scripts/ui-gate when the release UI checks passed. Releases check it (scripts/ui-gate --verify)."; trees; echo "passed $(TZ=America/New_York date '+%Y-%m-%d %H:%M ET') at $(git rev-parse --short HEAD)"; } > "$STAMP"
+echo "ui-gate: all green; commit $STAMP and land it, then the Mac can release"

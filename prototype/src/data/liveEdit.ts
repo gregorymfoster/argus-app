@@ -2,6 +2,7 @@
 // edited (render_photo). Saving is the store's job: each change is an engine batch
 // (saveRecipe in live.ts), so ⌘Z is `undo_batch`.
 
+import { emptyRecipe } from '../domain/render';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { call } from './backend';
 import { photoFacts } from './facts';
@@ -17,7 +18,8 @@ interface Rendered {
 /** The Photo's saved Recipe, or null when it was never edited. */
 export async function loadRecipe(photoId: string): Promise<Recipe | null> {
   const r = await call<{ recipe: Recipe } | null>('read_recipe', { photo_id: Number(photoId) });
-  return r?.recipe ?? null;
+  // A Recipe written by a tool or script can leave out what it doesn't set; fill the rest in.
+  return r?.recipe ? { ...emptyRecipe(), ...r.recipe } : null;
 }
 
 /** Where the engine would copy from for a Spot at x, y, r on `recipe` (`pick_spot_source`). */

@@ -40,7 +40,9 @@ use std::time::Duration;
 /// - `download_model` {}: the search-by-meaning model into the models folder
 ///   ([`crate::meaning::download`], progress in MB), then an `analyze` of the whole Library
 /// - `denoise` {photo_id}: AI Denoise's base for one RAW ([`crate::denoise`]), queued when the
-///   person saves a Denoise Amount, or opens a Photo whose AI edit has one
+///   person saves a Denoise Amount, or opens a Photo whose AI edit has one; with `precompute`,
+///   queued for each RAW Pick at the lowest priority so it runs while the Mac is idle, kept
+///   under [`crate::denoise::CACHE_CAP`]
 /// - `pre_edit_shoot` {shoot_id, every?}: edit as you cull, a Shoot match Suggestion for each Pick and
 ///   likely keeper from the Shoot's hand edits ([`crate::pre_edit`], no model), queued when the
 ///   person saves an edit of a RAW and when the AI's stars refresh; with `every` (Lock look) for
@@ -83,8 +85,10 @@ pub const PRIORITY_PREFETCH: i64 = 70;
 /// The person opened `photo_id` (and `next` follow it in the filmstrip): their queued
 /// Suggestions jump ahead of background work. Returns how many jobs moved up.
 pub fn focus(lib: &mut Library, photo_id: PhotoId, next: &[PhotoId]) -> Result<usize> {
-    // An AI edit's Denoise gets its base when the person first looks (crate::denoise).
+    // An AI edit's Denoise gets its base when the person first looks (crate::denoise), and
+    // Picks from before precomputing existed get theirs queued once.
     crate::denoise::queue_on_open(lib, photo_id)?;
+    crate::denoise::backfill_picks(lib)?;
     if !config(lib)?.focus_first {
         return Ok(0);
     }
@@ -723,21 +727,41 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
             #[derive(Deserialize)]
             struct A {
                 photo_id: PhotoId,
+                #[serde(default)]
+                precompute: bool,
             }
             let a: A = args(job)?;
             let lib = Library::open(tools.library())?;
             let photo = lib
                 .photo(a.photo_id)?
                 .ok_or_else(|| Error(format!("no Photo {}", a.photo_id)))?;
-            // Undone or turned off since it was queued: nothing to do.
             let recipe = lib
                 .read_recipe(a.photo_id)?
                 .map(|v| Recipe::from_value(&v.recipe))
                 .transpose()?
                 .unwrap_or_default();
-            if crate::denoise::amount(&recipe) == 0.0 {
+            if crate::denoise::ready(&photo).is_some() {
+                return Ok(json!({ "photo_id": a.photo_id, "skipped": "already made" }));
+            }
+            // A Pick's precompute: only for a frame noisy enough to want Denoise, still a Pick.
+            // Otherwise: undone or turned off since it was queued, nothing to do.
+            if a.precompute && !crate::denoise::wants_precompute(&lib, &photo, &recipe)? {
+                return Ok(
+                    json!({ "photo_id": a.photo_id, "skipped": "clean frame or no longer a Pick" }),
+                );
+            }
+            if a.precompute
+                && job.priority < PRIORITY_FOCUS
+                && !crate::denoise::room_to_precompute(tools.library())
+            {
+                return Ok(json!({ "photo_id": a.photo_id, "skipped": "denoise cache full" }));
+            }
+            if !a.precompute && crate::denoise::amount(&recipe) == 0.0 {
                 return Ok(json!({ "photo_id": a.photo_id, "skipped": "Denoise is off" }));
             }
+            let focused = crate::denoise::focused(&lib)?
+                .and_then(|f| lib.photo(f).ok().flatten())
+                .and_then(|p| crate::denoise::base_file(&p));
             let started = std::time::Instant::now();
             let id = job.id;
             let progress = std::sync::Mutex::new(lib);
@@ -748,7 +772,15 @@ fn execute(tools: &Tools, job: &Job, compute: Compute) -> Result<Value> {
                     }
                 })
             })?;
-            Ok(json!({ "photo_id": a.photo_id, "seconds": started.elapsed().as_secs() }))
+            // Stay under the cache cap: the new base and the open Photo's stay.
+            let keep: Vec<_> = crate::denoise::base_file(&photo)
+                .into_iter()
+                .chain(focused)
+                .collect();
+            let dropped = crate::denoise::evict(tools.library(), crate::denoise::CACHE_CAP, &keep)?;
+            Ok(
+                json!({ "photo_id": a.photo_id, "seconds": started.elapsed().as_secs(), "evicted": dropped }),
+            )
         }
         other => Err(Error(format!("unknown job kind {other:?}"))),
     }

@@ -33,8 +33,8 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "undo_batch",
-            description: "Undo one batch of changes (an Agent turn, a cull, a Look change): every Recipe, Verdict, Rating and Look it touched goes back to how it was before. Without batch_id, undoes the newest AI batch. The undo is itself a new batch.",
-            input_schema: json!({ "type": "object", "properties": { "batch_id": id } }),
+            description: "Undo one batch of changes (an Agent turn, a cull, a Look change): every Recipe, Verdict, Rating and Look it touched goes back to how it was before. Without batch_id, undoes the newest AI batch. photo_ids: only those Photos' changes go back (Looks stay). The undo is itself a new batch.",
+            input_schema: json!({ "type": "object", "properties": { "batch_id": id, "photo_ids": ids } }),
             read_only: false,
         },
         ToolSpec {
@@ -66,8 +66,9 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "sync_to_look",
-            description: "Lightroom's Sync: fold one Photo's own sliders into its Shoot's Look so every Photo under that Look gets them, and clear them on that Photo. Creates a Look for the Shoot's Picks if there is none.",
-            input_schema: json!({ "type": "object", "required": ["photo_id"], "properties": { "photo_id": id } }),
+            description: "Lightroom's Sync: fold one Photo's own sliders into its Shoot's Look so every Photo under that Look gets them, and clear them on that Photo. Creates a Look for the Shoot's Picks if there is none. keep_out: Photos to leave as they look now (taken off the Look, their look folded into their own sliders). dry_run: only say which Photos the Look would reach.",
+            input_schema: json!({ "type": "object", "required": ["photo_id"], "properties": {
+                "photo_id": id, "keep_out": ids, "dry_run": { "type": "boolean" } } }),
             read_only: false,
         },
         ToolSpec {
@@ -130,7 +131,10 @@ impl Tools {
                             .0
                     }
                 };
-                one(lib.undo_batch(id, Author::Person)?)
+                match &a.photo_ids {
+                    Some(only) => one(lib.undo_batch_for(id, Author::Person, only)?),
+                    None => one(lib.undo_batch(id, Author::Person)?),
+                }
             }
             "list_looks" => {
                 let a: ShootArg = parse(args)?;
@@ -390,9 +394,18 @@ fn photos_under(lib: &Library, shoot: ShootId, look: &str) -> Result<Vec<PhotoId
     Ok(out)
 }
 
-fn sync_to_look(lib: &mut Library, a: SyncToLook, batch: Option<BatchId>) -> Result<Vec<Part>> {
-    let photo = find_photo(lib, a.photo_id)?;
-    let mut r = current_recipe(lib, photo.id)?;
+/// What Sync to Look would do for `photo_id`, without saving: the Look as it will be, whether
+/// it is new, and every Photo it will reach (the source included).
+pub(crate) struct Synced {
+    pub photo: Photo,
+    pub look: Look,
+    pub created: bool,
+    pub under: Vec<PhotoId>,
+}
+
+pub(crate) fn synced(lib: &Library, photo_id: PhotoId) -> Result<Synced> {
+    let photo = find_photo(lib, photo_id)?;
+    let r = current_recipe(lib, photo.id)?;
     let looks = lib.looks(photo.shoot_id)?;
     let current = r
         .look
@@ -407,20 +420,56 @@ fn sync_to_look(lib: &mut Library, a: SyncToLook, batch: Option<BatchId>) -> Res
         adjust: Default::default(),
     });
     look.adjust = look.adjust.plus(&r.global).clamped();
+    let mut under = if created {
+        picks_or_all(lib, photo.shoot_id)?
+    } else {
+        photos_under(lib, photo.shoot_id, &look.id)?
+    };
+    if !under.contains(&photo.id) {
+        under.insert(0, photo.id);
+    }
+    Ok(Synced {
+        photo,
+        look,
+        created,
+        under,
+    })
+}
+
+fn sync_to_look(lib: &mut Library, a: SyncToLook, batch: Option<BatchId>) -> Result<Vec<Part>> {
+    let s = synced(lib, a.photo_id)?;
+    if a.dry_run {
+        return one(json!({ "look": s.look, "created": s.created, "photos_under_look": s.under }));
+    }
+    let (photo, look) = (s.photo, s.look);
+    let mut r = current_recipe(lib, photo.id)?;
     let batch = batch_or(lib, batch, &format!("Sync to {}", look.name))?;
+    // Left out: they keep how they look now, their old Look folded into their own sliders.
+    for &id in a.keep_out.iter().filter(|&&id| id != photo.id) {
+        let own = current_recipe(lib, id)?;
+        if own.look.as_deref() == Some(look.id.as_str()) {
+            let mut flat = with_look(lib, &find_photo(lib, id)?, &own)?;
+            flat.look = None;
+            flat.global = flat.global.clamped();
+            lib.write_recipe(id, &flat.to_value(), Author::Person, Some(batch))?;
+        }
+    }
     lib.save_look(photo.shoot_id, &look, Some(batch))?;
     r.global = Default::default();
     r.look = Some(look.id.clone());
     lib.write_recipe(photo.id, &r.to_value(), Author::Person, Some(batch))?;
-    if created {
-        let others: Vec<PhotoId> = picks_or_all(lib, photo.shoot_id)?
+    if s.created {
+        let others: Vec<PhotoId> = s
+            .under
             .into_iter()
-            .filter(|&id| id != photo.id)
+            .filter(|&id| id != photo.id && !a.keep_out.contains(&id))
             .collect();
         assign_look(lib, &others, &look.id, batch)?;
     }
     let under = photos_under(lib, photo.shoot_id, &look.id)?;
-    one(json!({ "batch_id": batch, "look": look, "created": created, "photos_under_look": under }))
+    one(
+        json!({ "batch_id": batch, "look": look, "created": s.created, "photos_under_look": under }),
+    )
 }
 
 /// Copy and paste settings ([`crate::paste`]). Under the same Look (or none) the source's
@@ -432,39 +481,16 @@ fn paste_settings(
     batch: Option<BatchId>,
 ) -> Result<Vec<Part>> {
     let groups = crate::paste::groups(a.groups.as_deref())?;
-    if groups.is_empty() {
-        return Err(Error("choose at least one settings group".into()));
-    }
-    let src_photo = find_photo(lib, a.from)?;
-    let src = current_recipe(lib, src_photo.id)?;
-    let mut next = Vec::new();
-    for &id in a.photo_ids.iter().filter(|&&id| id != a.from) {
-        let photo = find_photo(lib, id)?;
-        let own = current_recipe(lib, id)?;
-        let same_look = src.look == own.look && src_photo.shoot_id == photo.shoot_id;
-        let r = if same_look || (src.look.is_none() && own.look.is_none()) {
-            crate::paste::paste(&src, &own, &groups)?
-        } else {
-            let mut flat = with_look(lib, &photo, &own)?;
-            flat.look = None;
-            crate::paste::paste(&with_look(lib, &src_photo, &src)?, &flat, &groups)?
-        };
-        next.push((id, r));
-    }
-    if next.is_empty() {
-        return Err(Error(
-            "paste onto at least one Photo other than the source".into(),
-        ));
-    }
+    let next = pasted(lib, a.from, &a.photo_ids, &groups)?;
+    let src = find_photo(lib, a.from)?;
     let batch = batch_or(
         lib,
         batch,
-        &format!("Paste settings from {}", src_photo.file_name),
+        &format!("Paste settings from {}", src.file_name),
     )?;
     let author = lib.batch_author(batch)?;
     let mut versions = BTreeMap::new();
-    for (id, mut r) in next {
-        r.global = r.global.clamped();
+    for (id, r) in next {
         versions.insert(
             id,
             lib.write_recipe(id, &r.to_value(), author, Some(batch))?,
@@ -473,10 +499,48 @@ fn paste_settings(
     one(json!({ "batch_id": batch, "versions": versions, "groups": groups }))
 }
 
+/// What pasting `groups` of `from`'s settings writes on each of `ids` (the source left out):
+/// what `paste_settings` saves and the Apply popover draws.
+pub(crate) fn pasted(
+    lib: &Library,
+    from: PhotoId,
+    ids: &[PhotoId],
+    groups: &[&str],
+) -> Result<Vec<(PhotoId, Recipe)>> {
+    if groups.is_empty() {
+        return Err(Error("choose at least one settings group".into()));
+    }
+    let src_photo = find_photo(lib, from)?;
+    let src = current_recipe(lib, src_photo.id)?;
+    let mut next = Vec::new();
+    for &id in ids.iter().filter(|&&id| id != from) {
+        let photo = find_photo(lib, id)?;
+        let own = current_recipe(lib, id)?;
+        let same_look = src.look == own.look && src_photo.shoot_id == photo.shoot_id;
+        let mut r = if same_look || (src.look.is_none() && own.look.is_none()) {
+            crate::paste::paste(&src, &own, groups)?
+        } else {
+            let mut flat = with_look(lib, &photo, &own)?;
+            flat.look = None;
+            crate::paste::paste(&with_look(lib, &src_photo, &src)?, &flat, groups)?
+        };
+        r.global = r.global.clamped();
+        next.push((id, r));
+    }
+    if next.is_empty() {
+        return Err(Error(
+            "paste onto at least one Photo other than the source".into(),
+        ));
+    }
+    Ok(next)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UndoBatch {
     batch_id: Option<BatchId>,
+    /// Only these Photos' changes go back (Looks stay).
+    photo_ids: Option<Vec<PhotoId>>,
 }
 
 #[derive(Deserialize)]
@@ -496,6 +560,10 @@ struct SetLook {
 #[serde(deny_unknown_fields)]
 struct SyncToLook {
     photo_id: PhotoId,
+    #[serde(default)]
+    keep_out: Vec<PhotoId>,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Deserialize)]

@@ -239,6 +239,7 @@ impl Tools {
                                 photo_ids: None,
                                 shoot_id: Some(shoot),
                                 compute: None,
+                                fixes: None,
                             };
                             auto_edit(&mut lib, a, Some(b))
                         });

@@ -4,7 +4,7 @@ import { Bandage, Copy, Crop as CropIcon, History, Layers, SlidersHorizontal, Sq
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
 import type { Crop, LocalAdjust, NumKey, Recipe, Spot, Version } from '../domain/types';
 import { fmt, recipeOf, useLibrary } from '../store/library';
-import { go } from '../router';
+import { go, routeNow } from '../router';
 import { Agent } from '../agent/AgentPanel';
 import { LIVE, asPerson, focusPhoto, wrote } from '../data/live';
 import { loadRecipe, pickSpotSource, useDetailRender, useEngineMasks, useLiveRender } from '../data/liveEdit';
@@ -16,12 +16,13 @@ import { PicksRail } from '../ui/PicksRail';
 import { ModeSwitch } from '../ui/ViewBar';
 import { picksOf } from '../data/modes';
 import { ApplyLook, ApplyLookOffer, useOfferCount } from '../ui/ApplyLook';
+import { openApply } from '../ui/ApplyEdit';
 import { Framing } from '../ui/Framing';
 import { acceptSuggestion, cancelTakes, dismissSuggestion, requestSuggestions, useQueue, useSuggestionImage, useSuggestions, useTakesProgress } from '../data/suggestions';
 import { Kbd, Tip, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { QueueChip } from '../ui/Queue';
 import { ToolStrip } from '../ui/Develop';
-import { autoAction } from '../data/auto';
+import { autoAction, fixesLine } from '../data/auto';
 import { PresetsPanel } from '../ui/Presets';
 import { EditPanel, GLOBAL, LIGHT, PRESENCE, WB } from '../ui/EditPanel';
 import { MaskingPanel, maskPart, withPart } from '../ui/MaskingPanel';
@@ -119,7 +120,10 @@ export function EditScreen({ id }: { id: string }) {
   // arrow key through the photos"), and ⌘← ⌘→ always do. Plain arrows stay with a focused slider,
   // text field or other arrow-key widget.
   const step = (d: number) => {
-    const id = order[pos + d];
+    // From the Photo in the URL, which a quick second ⌘→ has already moved past this render.
+    const r = routeNow();
+    const from = r.name === 'edit' && order.includes(r.id) ? order.indexOf(r.id) : pos;
+    const id = order[from + d];
     if (id) go({ name: 'edit', id });
   };
   const arrowsTaken = (e: KeyboardEvent) => {
@@ -286,12 +290,19 @@ export function EditScreen({ id }: { id: string }) {
   };
   const sync = () => {
     if (!LIVE) return dispatch({ type: 'look/sync', id: p.id });
-    const done = asPerson('sync_to_look', { photo_id: Number(p.id) }, 'Sync to the Look', (r) => [Number(p.id), ...((r.photos_under_look as number[]) ?? [])]);
-    dispatch({ type: 'engine/saved', label: 'Sync to the Look', batch: done });
-    done
-      .then(() => dispatch({ type: 'toast', text: 'Synced to the Look' }))
-      .then(reload)
-      .catch((e) => dispatch({ type: 'toast', text: `Sync failed: ${String(e).replace(/^Error: /, '')}` }));
+    // Through the Apply popover: every Photo under the Look drawn as the sync leaves it.
+    openApply({
+      kind: 'look',
+      from: p.id,
+      apply: (keepOut) => {
+        const done = asPerson('sync_to_look', { photo_id: Number(p.id), keep_out: keepOut.map(Number) }, 'Sync to the Look', (r) => [Number(p.id), ...((r.photos_under_look as number[]) ?? []), ...keepOut.map(Number)]);
+        dispatch({ type: 'engine/saved', label: 'Sync to the Look', batch: done });
+        done
+          .then(() => dispatch({ type: 'toast', text: `Synced to the Look${keepOut.length ? `; ${keepOut.length} left as they were` : ''}. ⌘Z undoes it.` }))
+          .then(reload)
+          .catch((e) => dispatch({ type: 'toast', text: `Sync failed: ${String(e).replace(/^Error: /, '')}` }));
+      },
+    });
   };
   const restore = (v: Version) => {
     if (!LIVE) return dispatch({ type: 'version/restore', id: p.id, n: v.n });
@@ -302,7 +313,8 @@ export function EditScreen({ id }: { id: string }) {
   useSettingsKeys(p.id, []);
   useCreatePresetKey(p.id, recipe);
   const auto = () => {
-    dispatch(autoAction([p.id], (id) => recipeOf(state, id)));
+    // Says which Quick fixes Auto added; each shows as a ticked chip a click takes off.
+    dispatch(autoAction([p.id], (id) => recipeOf(state, id), (_, fixes) => fixes.length && dispatch({ type: 'toast', text: `Auto added ${fixesLine(fixes, true)}` })));
     dispatch({ type: 'toast', text: `Auto on ${p.file}` });
   };
   const bw = ((recipe.global.saturation as number | undefined) ?? 0) <= -100;

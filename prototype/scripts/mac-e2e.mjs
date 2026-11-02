@@ -61,6 +61,8 @@ const bridge = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
   // No model in part 1: point Ollama at a closed port so Shoot naming falls back to the date.
   env: { ...process.env, ARGUS_VOLUMES: volumes, ARGUS_PROVIDER: 'ollama', OLLAMA_HOST: '127.0.0.1:9', ARGUS_COMPUTE: 'gentle', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
 });
+// A crash must not leave the engine holding its port for the next run ("Address already in use").
+process.on('exit', () => bridge.kill());
 const api = (p, init) => fetch(`http://127.0.0.1:7878${p}`, init).then((r) => r.json());
 for (let i = 0; ; i++) {
   try {
@@ -82,6 +84,7 @@ console.log(`mac-e2e: ${files.length} RAW+JPEG pairs from ${rawDir}, ${engine}`)
 try {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const p = await ctx.newPage();
+  p.setDefaultNavigationTimeout(90_000); // a dev-build load under the ui-gate's parallel load, not a stall
   p.on('pageerror', (e) => failures.push(`page error: ${e.message}`));
   p.on('console', (m) => m.type() === 'error' && console.log(`     console: ${m.text()}`));
   const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
@@ -169,6 +172,7 @@ async function librarySettings(p, dir, shot) {
 if (!failures.length && process.env.MAC_E2E_LIBRARY) {
   const own = resolve(process.env.MAC_E2E_LIBRARY);
   const serve = spawn(bin, ['serve', '--library', own, '--port', '7878'], { stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, ARGUS_COMPUTE: 'gentle' } });
+  process.on('exit', () => serve.kill());
   for (let i = 0; ; i++) {
     try {
       await api('/api/list_shoots');
@@ -180,7 +184,7 @@ if (!failures.length && process.env.MAC_E2E_LIBRARY) {
   }
   const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5198, strictPort: true }, logLevel: 'error' });
   await vite.listen();
-  const b = await (engine === 'webkit' ? webkit : chromium).launch();
+  const b = await (engine === 'webkit' ? webkit : chromium).launch(process.env.PW_CHROMIUM && engine === 'chromium' ? { executablePath: process.env.PW_CHROMIUM } : {});
   try {
     const p = await (await b.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
     await p.goto('http://localhost:5198/?library=live#/cull');

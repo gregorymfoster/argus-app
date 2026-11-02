@@ -721,3 +721,106 @@ fn your_own_presets_save_apply_and_go() {
         .call("apply_preset", json!({ "photo_ids": [b], "preset": id }))
         .is_err());
 }
+
+/// A bright frame with a band of near black along the bottom: shadows Auto should open.
+fn write_dark_band(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let (w, h) = (320u16, 240u16);
+    let mut data = Vec::with_capacity(w as usize * h as usize * 3);
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let v = if y > 200 {
+                (x % 7) as u8 + 2
+            } else {
+                (110 + (x + y) % 90) as u8
+            };
+            data.extend([v, v, v.saturating_sub(6)]);
+        }
+    }
+    jpeg_encoder::Encoder::new_file(path, 92)
+        .unwrap()
+        .encode(&data, w, h, jpeg_encoder::ColorType::Rgb)
+        .unwrap();
+}
+
+fn fixes_on(tools: &Tools, id: i64) -> Vec<(String, f64)> {
+    let r = json1(tools, "read_recipe", json!({ "photo_id": id }))["recipe"].clone();
+    r["presets"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|p| p["id"].as_str().unwrap().starts_with("fix-"))
+        .map(|p| {
+            (
+                p["id"].as_str().unwrap().to_string(),
+                p["amount"].as_f64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn auto_adds_gentle_quick_fixes_where_they_fit_and_keeps_yours() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("2026-11-02_fixes");
+    write_dark_band(&src.join("band.jpg"));
+    write_jpeg(&src.join("plain.jpg"), 320, 240, 5);
+    let tools = Tools::new(tmp.path().join("Argus.library"));
+    json1(&tools, "import_folder", json!({ "folder": src }));
+    let photos = json1(&tools, "list_photos", json!({}));
+    let id = |name: &str| {
+        photos
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["file_name"] == name)
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap()
+    };
+    let (band, plain) = (id("band.jpg"), id("plain.jpg"));
+
+    // Off: Auto's sliders only.
+    json1(
+        &tools,
+        "auto_edit",
+        json!({ "photo_ids": [band], "fixes": false }),
+    );
+    assert!(fixes_on(&tools, band).is_empty());
+
+    // On (the default): the near-black band gets Lift shadows, gently, and says so.
+    let r = json1(&tools, "auto_edit", json!({ "photo_ids": [band, plain] }));
+    let added = &r["photos"][band.to_string()]["fixes"];
+    assert_eq!(added[0]["id"], "fix-shadows", "{r}");
+    let on = fixes_on(&tools, band);
+    assert_eq!(on.len(), 1, "{on:?}");
+    assert!(on[0].1 < 0.75, "{on:?}");
+    let g = json1(&tools, "read_recipe", json!({ "photo_id": band }))["recipe"]["global"].clone();
+
+    // Again: the same Recipe, nothing stacked twice.
+    let again = json1(&tools, "auto_edit", json!({ "photo_ids": [band] }));
+    assert_eq!(again["photos"][band.to_string()]["global"], g);
+    assert_eq!(again["photos"][band.to_string()]["fixes"], json!([]));
+    assert_eq!(fixes_on(&tools, band), on);
+
+    // A fix the person put on stays at their Amount through Auto.
+    json1(
+        &tools,
+        "apply_preset",
+        json!({ "photo_ids": [plain], "preset": "fix-skin", "amount": 100 }),
+    );
+    json1(&tools, "auto_edit", json!({ "photo_ids": [plain] }));
+    let on = fixes_on(&tools, plain);
+    assert!(on.contains(&("fix-skin".to_string(), 1.0)), "{on:?}");
+    let g = &json1(&tools, "read_recipe", json!({ "photo_id": plain }))["recipe"]["global"];
+    assert_eq!(g["skin"], 30.0, "{g}");
+
+    // Taking Auto's fix off by hand is one click: the Preset comes off cleanly.
+    json1(
+        &tools,
+        "apply_preset",
+        json!({ "photo_ids": [band], "preset": "fix-shadows", "remove": true }),
+    );
+    assert!(fixes_on(&tools, band).is_empty());
+}

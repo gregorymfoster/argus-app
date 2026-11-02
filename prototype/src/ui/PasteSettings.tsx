@@ -12,7 +12,9 @@ import { PHOTO_BY_ID } from '../data/dummy';
 import { LIVE, asPerson } from '../data/live';
 import { DEFAULT_GROUPS, GROUPS, groupsLabel, pasteRecipe, type GroupId } from '../domain/settings';
 import { recipeOf, useLibrary, type Action, type State } from '../store/library';
+import { routeNow } from '../router';
 import { Kbd } from './kit';
+import { openApply } from './ApplyEdit';
 
 /** What ⇧⌘C copied: the Photo (read when pasting, as the engine does) and its groups. */
 let clip: { from: string; groups: GroupId[] } | null = null;
@@ -20,7 +22,7 @@ let clip: { from: string; groups: GroupId[] } | null = null;
 let previous: string | null = null;
 
 const KEY = 'argus:paste-groups';
-function lastGroups(): GroupId[] {
+export function lastGroups(): GroupId[] {
   try {
     const v = JSON.parse(localStorage.getItem(KEY) ?? 'null') as GroupId[] | null;
     if (Array.isArray(v) && v.every((g) => GROUPS.some((x) => x.id === g))) return v;
@@ -40,10 +42,23 @@ function saveGroups(g: GroupId[]) {
 const plural = (n: number) => `${n} Photo${n === 1 ? '' : 's'}`;
 const fileOf = (id: string) => PHOTO_BY_ID[id]?.file ?? `Photo ${id}`;
 
-/** Paste `groups` of `from`'s settings onto `to` as one undoable change. */
-export function pasteSettings(state: State, dispatch: (a: Action) => void, from: string, to: string[], groups: GroupId[]) {
+/**
+ * Paste `groups` of `from`'s settings onto `to`: on more than one Photo through the Apply
+ * popover (each drawn as it will look, untick to leave out), on one at once. `verb` names it.
+ */
+export function pasteSettings(state: State, dispatch: (a: Action) => void, from: string, to: string[], groups: GroupId[], verb: 'paste' | 'sync' | 'copy' = 'paste', at?: Element | null) {
   const targets = to.filter((id) => id !== from);
-  if (!targets.length || !groups.length) return;
+  if (!groups.length) return;
+  if (!targets.length) return dispatch({ type: 'toast', text: `Nothing to paste on: these are ${fileOf(from)}’s own settings` });
+  if (targets.length > 1) return openApply({ kind: 'paste', verb, from, groups, ids: targets, apply: (ids, g) => applyPaste(state, dispatch, from, ids, g) }, at);
+  applyPaste(state, dispatch, from, targets, groups);
+}
+
+/** Paste now, as one undoable change. */
+function applyPaste(state: State, dispatch: (a: Action) => void, from: string, to: string[], groups: GroupId[]) {
+  const targets = to.filter((id) => id !== from);
+  if (!targets.length || !groups.length) return saveGroups(groups);
+  saveGroups(groups);
   const label = `Pasted ${groupsLabel(groups)} from ${fileOf(from)} to ${plural(targets.length)}`;
   if (LIVE) {
     const args = { from: Number(from), photo_ids: targets.map(Number), groups };
@@ -73,33 +88,42 @@ export function useSettingsKeys(current: string | null, targets: string[]) {
     if (current && last.current && last.current !== current) previous = last.current;
     last.current = current;
   }, [current]);
-  const to = targets.length ? targets : current ? [current] : [];
-  const deps = [current, to.join(','), state];
-  useHotkeys('mod+shift+c', () => current && askSettings({ mode: 'copy', from: current, targets: [] }), { preventDefault: true }, deps);
-  useHotkeys(
-    'mod+shift+v',
-    () => pasteClip(state, dispatch, to),
-    { preventDefault: true },
-    deps,
-  );
+  // Read when the key is pressed, not from the render that bound the keys: ⇧⌘V pressed right
+  // after ⌘→ otherwise reached the Photo just left and, being the source, pasted nothing.
+  const at = useRef({ current, targets, state });
+  at.current = { current, targets, state };
+  const now = {
+    get current() {
+      // Edit and the Loupe show the Photo in the URL, which moves before the screen does.
+      const r = routeNow();
+      const here = (r.name === 'edit' || r.name === 'loupe') && !at.current.targets.length ? r.id : at.current.current;
+      return { current: here, to: at.current.targets.length ? at.current.targets : here ? [here] : [], state: at.current.state };
+    },
+  };
+  const opts = { preventDefault: true };
+  useHotkeys('mod+shift+c', () => {
+    const { current } = now.current;
+    if (current) askSettings({ mode: 'copy', from: current, targets: [] });
+  }, opts);
+  useHotkeys('mod+shift+v', () => pasteClip(now.current.state, dispatch, now.current.to), opts);
   useHotkeys(
     'mod+alt+v',
     () => {
+      const { to, state } = now.current;
       if (!previous || !PHOTO_BY_ID[previous]) return dispatch({ type: 'toast', text: 'No previous Photo to paste from' });
       pasteSettings(state, dispatch, previous, to, lastGroups());
     },
-    { preventDefault: true },
-    deps,
+    opts,
   );
   useHotkeys(
     'mod+shift+s',
     () => {
+      const { current, to, state } = now.current;
       const rest = to.filter((id) => id !== current);
-      if (current && rest.length) askSettings({ mode: 'sync', from: current, targets: rest });
+      if (current && rest.length) pasteSettings(state, dispatch, current, rest, lastGroups(), 'sync');
       else dispatch({ type: 'toast', text: 'Select the Photos to sync, then ⇧⌘S' });
     },
-    { preventDefault: true },
-    deps,
+    opts,
   );
 }
 
@@ -132,7 +156,7 @@ export function PasteSettingsDialog() {
     if (ask.mode === 'copy') {
       clip = { from: ask.from, groups };
       dispatch({ type: 'toast', text: `Copied ${groupsLabel(groups)} from ${fileOf(ask.from)}: ⇧⌘V pastes` });
-    } else pasteSettings(state, dispatch, ask.from, ask.targets, groups);
+    } else pasteSettings(state, dispatch, ask.from, ask.targets, groups, 'sync');
     setAsk(null);
   };
   const title = !ask ? '' : ask.mode === 'copy' ? `Copy settings from ${fileOf(ask.from)}` : `Sync ${fileOf(ask.from)}’s settings to ${plural(ask.targets.length)}`;

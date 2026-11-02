@@ -12,6 +12,7 @@ On the Mac, on an up-to-date main with nothing uncommitted:
 
 ```sh
 just release-local 0.2.0      # or scripts/release/local.sh 0.2.0
+just ui-gate                            # first, in the cloud on the commit to ship: writes release/ui-gate.txt, which release-candidate requires
 just ship 0.2.0                         # all of it on Greg's one "ship it": release-candidate, publish, installer dry run
 just release-candidate 0.2.0            # check, then mac-e2e beside --build-only, as one unattended job
 just release-local 0.2.0 --build-only    # build and check it first (mac-e2e), no publish

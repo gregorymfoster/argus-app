@@ -17,7 +17,6 @@ import { BackToGrid, Hints, ViewSwitch } from '../ui/ViewBar';
 import { Histogram } from '../ui/Histogram';
 import { toggleKeepers, useSort } from '../ui/Sort';
 import { useLearnAsYouCull } from '../data/learn';
-import { acceptPreEdits, usePreEdits } from '../data/preEdit';
 import { keeperRank, keepersAt, keepersReset, movedUp, useKeepers } from '../data/keepers';
 import { Button } from '@/components/ui/button';
 import { Tip } from '../ui/kit';
@@ -71,12 +70,6 @@ export function LoupeScreen({ id }: { id: string }) {
   const pos = order.indexOf(p.id);
   // Keepers first re-orders the frames ahead while pos stays put, so the keys below follow the order itself.
   const orderKey = order.join(',');
-  // Edit as you cull: this frame's Shoot match, if one is waiting. \ previews it, A accepts.
-  const pre = usePreEdits(state);
-  const match = pre.byPhoto[p.id] ?? null;
-  const [showMatch, setShowMatch] = useState(false);
-  useEffect(() => setShowMatch(false), [p.id]);
-  const matchUrl = useSuggestionImage(showMatch ? match : null, 1536);
   const nextKey = order.slice(pos + 1, pos + 4).join(',');
   useEffect(() => focusPhoto(p.id, nextKey ? nextKey.split(',') : []), [p.id, nextKey]);
   // Lightroom's zoom: pinch, tap Space, click, Space-drag, ⌘+ / ⌘−; it stays on for the next photo.
@@ -98,8 +91,15 @@ export function LoupeScreen({ id }: { id: string }) {
   const facts = usePhotoFacts(LIVE ? p.id : null, LIVE);
   const demoEyes = useEyeFlags();
   const eyes = LIVE ? eyeFlagsOf(facts) : demoEyes(p.id);
+  // Moves from the Photo the address shows, not this render's: a second ← before React has
+  // re-rendered the last move would otherwise go back to the same frame.
+  const orderRef = useRef(order);
+  orderRef.current = order;
   const move = (d: number) => {
-    const n = order[pos + d];
+    const ids = orderRef.current;
+    const m = /#\/loupe\/([^/?]+)/.exec(location.hash);
+    const from = m ? ids.indexOf(decodeURIComponent(m[1])) : -1;
+    const n = ids[(from >= 0 ? from : pos) + d];
     if (n) go({ name: 'loupe', id: n });
   };
   // Greg's pick: setting a Verdict in the loupe moves on to the next photo.
@@ -144,14 +144,23 @@ export function LoupeScreen({ id }: { id: string }) {
   );
   useHotkeys('right', () => move(1), [pos, orderKey]);
   useHotkeys('left', () => move(-1), [pos, orderKey]);
-  useHotkeys('escape', () => go(takeBack() ?? { name: 'cull' }), ESC_OUTSIDE_DIALOGS);
+  // Cancel a pending move first: on a busy machine the grid can take longer than the beat to
+  // draw, and the move would then pull the person back into the Loupe after Esc.
+  useHotkeys(
+    'escape',
+    () => {
+      if (advance.current) clearTimeout(advance.current.timer);
+      advance.current = null;
+      here.current = '';
+      go(takeBack() ?? { name: 'cull' });
+    },
+    ESC_OUTSIDE_DIALOGS,
+  );
   useHotkeys('g', () => (takeBack(), go({ name: 'cull' })));
   useHotkeys(VERDICT_HOTKEYS, (e) => set(VERDICT_KEYS[e.key.toLowerCase()]), [p.id, pos, orderKey]);
   useHotkeys(STAR_KEYS, (e) => rate(Number(e.key)), [p.id, pos, orderKey]);
   useHotkeys('f', () => setFaces((f) => !f));
-  // On a frame with a Shoot match waiting, \ swaps between it and the frame as it is.
-  useHotkeys('backslash', () => (match ? setShowMatch((b) => !b) : setBefore((b) => !b)), [match]);
-  useHotkeys('a', () => match && acceptPreEdits([match], dispatch), [match]);
+  useHotkeys('backslash', () => setBefore((b) => !b));
   useHotkeys('d', () => go({ name: 'edit', id: p.id }), [p.id]);
   useHotkeys('shift+k', flipKeepers, [sort]);
   useSettingsKeys(p.id, []);
@@ -178,10 +187,9 @@ export function LoupeScreen({ id }: { id: string }) {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div className="stage" data-testid="loupe" {...zp.stageProps}>
             <div className="stage-fit">
-              <PhotoView photo={p} size="full" recipe={showMatch && match ? match.recipe : state.recipes[p.id]} look={state.look} original={before && !showMatch} rendered={showMatch ? (matchUrl ?? undefined) : detail.url} edits>
+              <PhotoView photo={p} size="full" recipe={state.recipes[p.id]} look={state.look} original={before} rendered={detail.url} edits>
                 <Faces p={p} all={faces} found={LIVE ? (facts?.faces ?? []) : undefined} />
-                {before && !showMatch && <span className="look-label">Before</span>}
-                {showMatch && <span className="look-label">Shoot match</span>}
+                {before && <span className="look-label">Before</span>}
               </PhotoView>
             </div>
             <ZoomReadout z={zp.z} loading={detail.loading} />
@@ -199,18 +207,11 @@ export function LoupeScreen({ id }: { id: string }) {
             )}
             <EyeBadges flags={eyes} inline />
             <span className="grow" />
-            {match && (
-              <Tip label={match.why}>
-                <span className="v-chip accent" data-testid="loupe-match">
-                  <Sparkles size={11} /> Shoot match ready
-                </span>
-              </Tip>
-            )}
             <Hints
               items={[
                 ['Space', zoomed ? 'Fit' : '100%'],
                 ['← →', 'Move'],
-                ...(match ? ([['\\', showMatch ? 'As it is' : 'Shoot match'], ['A', 'Accept']] as [string, string][]) : ([['\\', before ? 'After' : 'Before']] as [string, string][])),
+                ['\\', before ? 'After' : 'Before'],
                 ...(stackIds.length ? ([['C', 'Compare']] as [string, string][]) : []),
               ]}
             />

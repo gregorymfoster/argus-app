@@ -6,6 +6,7 @@ import type { Adjust, Recipe } from '../domain/types';
 import { toast } from 'sonner';
 import type { Action, ChatMessage } from '../store/library';
 import { LIVE, asPerson } from './live';
+import { FIXES } from '../domain/presets';
 
 /** A plausible Auto for a demo Photo, stable per id. */
 function demoAuto(id: string): Adjust {
@@ -15,13 +16,27 @@ function demoAuto(id: string): Adjust {
   return { exposure: Math.round(r(0) * 4) / 100 + 0.15, contrast: 8 + r(3), highlights: -25 + r(6), shadows: 22 + r(9), whites: 12 + r(12), blacks: -8 + r(15) / 2, temp: r(18), tint: Math.round(r(21) / 3), vibrance: 12 };
 }
 
+/** The demo's Auto on a Photo whose Recipe is `r`. */
+export const demoAutoRecipe = (id: string, r: Recipe): Recipe => ({ ...r, global: { ...r.global, ...demoAuto(id) } });
+
+/** Quick fixes Auto added (engine quick_fixes), by name with how many Photos got each. */
+export type FixesAdded = { name: string; photos: number }[];
+function fixesAdded(photos: { fixes?: { id: string }[] }[]): FixesAdded {
+  return FIXES.map((f) => ({ name: f.name, photos: photos.filter((p) => p.fixes?.some((x) => x.id === f.id)).length })).filter((f) => f.photos);
+}
+/** "Brighten faces on 3, Lift shadows on 1", or "Brighten faces" for one Photo. */
+export function fixesLine(fixes: FixesAdded, one = false): string {
+  return fixes.map((f) => (one ? f.name : `${f.name} on ${f.photos}`)).join(', ');
+}
+
 /** Auto on these Photos as one undoable step. */
-export function autoAction(ids: string[], recipeOf: (id: string) => Recipe, onDone?: (applied: number) => void): Action {
+export function autoAction(ids: string[], recipeOf: (id: string) => Recipe, onDone?: (applied: number, fixes: FixesAdded) => void): Action {
   const label = ids.length === 1 ? 'Auto' : `Auto on ${ids.length} Photos`;
   if (LIVE) {
     const batch = asPerson('auto_edit', { photo_ids: ids.map(Number) }, label, (r) => {
-      const done = Object.keys((r.photos as Record<string, unknown>) ?? {}).map(Number);
-      onDone?.(done.length);
+      const photos = (r.photos as Record<string, { fixes?: { id: string }[] }>) ?? {};
+      const done = Object.keys(photos).map(Number);
+      onDone?.(done.length, fixesAdded(Object.values(photos)));
       return done;
     });
     return { type: 'engine/saved', label, batch };
@@ -30,8 +45,7 @@ export function autoAction(ids: string[], recipeOf: (id: string) => Recipe, onDo
     type: 'batch',
     label,
     actions: ids.map((id) => {
-      const r = recipeOf(id);
-      return { type: 'recipe/set', id, recipe: { ...r, global: { ...r.global, ...demoAuto(id) } }, label: 'Auto', by: 'you' };
+      return { type: 'recipe/set', id, recipe: demoAutoRecipe(id, recipeOf(id)), label: 'Auto', by: 'you' };
     }),
   };
 }
@@ -44,7 +58,11 @@ export function autoAction(ids: string[], recipeOf: (id: string) => Recipe, onDo
 export function runAuto(ids: string[], recipeOf: (id: string) => Recipe, dispatch: (a: Action) => void) {
   if (!ids.length) return;
   let applied = ids.length;
-  const action = autoAction(ids, recipeOf, (n) => (applied = n));
+  let fixes: FixesAdded = [];
+  const action = autoAction(ids, recipeOf, (n, f) => {
+    applied = n;
+    fixes = f;
+  });
   dispatch(action);
   const what = (n: number) => `${n} Photo${n === 1 ? '' : 's'}`;
   const msgId = `auto-${Date.now()}`;
@@ -57,7 +75,7 @@ export function runAuto(ids: string[], recipeOf: (id: string) => Recipe, dispatc
     const stopped = applied < ids.length;
     say({
       steps: [{ label: `${stopped ? 'Auto stopped' : 'Auto'} on ${what(ids.length)} ·${secs}s`, ms: 0, done: true, stopped }],
-      text: stopped ? `Stopped after ${what(applied)} of ${ids.length}: Auto applied to those, the rest are as they were.` : `Auto applied to ${what(ids.length)}: exposure, tone and white balance from each one's own light.`,
+      text: stopped ? `Stopped after ${what(applied)} of ${ids.length}: Auto applied to those, the rest are as they were.` : `Auto applied to ${what(ids.length)}: exposure, tone and white balance from each one's own light${fixes.length ? `, plus gentle Quick fixes where they fit (${fixesLine(fixes)})` : ''}.`,
       actions: applied ? [{ label: 'Undo', kind: 'undo', batch: batch ?? undefined }] : [],
     });
     toast(stopped ? `Auto stopped after ${what(applied)}` : `Auto applied to ${what(ids.length)}`, { id: 'argus', description: applied ? '⌘Z undoes it.' : undefined });

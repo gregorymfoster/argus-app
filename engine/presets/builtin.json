@@ -59,5 +59,11 @@
     {"id": "subject-light", "name": "Light", "group": "Adaptive: Subject", "why": "Lifts the light on the subject.", "local": [{"name": "Subject: Light", "mask": {"kind": "subject"}, "adjust": {"exposure": 0.35, "shadows": 20}}]},
     {"id": "bg-darken", "name": "Darken background", "group": "Adaptive: Subject", "why": "Quietens the background so the subject reads first.", "local": [{"name": "Background: Darken", "mask": {"kind": "background"}, "adjust": {"exposure": -0.35, "saturation": -10}}]},
     {"id": "subject-spotlight", "name": "Spotlight", "group": "Adaptive: Subject", "why": "Subject a little brighter, background darker and calmer, soft corners.", "global": {"vignette": -10}, "local": [{"name": "Subject: Spotlight", "mask": {"kind": "subject"}, "adjust": {"exposure": 0.15, "clarity": 6}}, {"name": "Background: Spotlight", "mask": {"kind": "background"}, "adjust": {"exposure": -0.3, "saturation": -15}}]}
+  ],
+  "fixes": [
+    {"id": "fix-sky", "name": "Enhance sky", "group": "Fixes", "why": "A deeper, richer sky: darker, highlights held, a little colour and contrast.", "local": [{"name": "Sky: Enhance", "mask": {"kind": "sky"}, "adjust": {"exposure": -0.15, "highlights": -30, "saturation": 12, "contrast": 8}}]},
+    {"id": "fix-faces", "name": "Brighten faces", "group": "Fixes", "why": "Lifts the face skin of everyone in the frame.", "local": [{"name": "Faces: Brighten", "mask": {"kind": "person", "parts": ["face_skin"]}, "adjust": {"exposure": 0.25, "shadows": 15}}]},
+    {"id": "fix-skin", "name": "Even skin", "group": "Fixes", "why": "Smooths skin without losing its texture.", "global": {"skin": 30}},
+    {"id": "fix-shadows", "name": "Lift shadows", "group": "Fixes", "why": "Opens the darkest parts of the frame.", "global": {"shadows": 30, "blacks": 8}}
   ]
 }

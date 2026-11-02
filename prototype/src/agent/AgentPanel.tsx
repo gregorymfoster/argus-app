@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { LIVE, aiError, PROVIDERS as ENGINE_PROVIDERS, chooseProvider, chosenProvider, providerDown, listLooks, liveCull, readCull, readRecipes } from '../data/live';
 import { askAgent, stepLabel, undoBatch, type Turn } from '../data/liveAgent';
+import { openApply } from '../ui/ApplyEdit';
+import { call } from '../data/backend';
 import { loadRecipe } from '../data/liveEdit';
 import { ArrowUp, Check, ChevronDown, CircleSlash, X } from 'lucide-react';
 import { useLibrary, type Action, type ChatMessage } from '../store/library';
@@ -342,6 +344,22 @@ async function liveAgentChat(ctx: string, prompt: string, photoId: string | null
     if (r.batch_id != null && ctx === 'cull' && r.verdicts.length) actions.unshift({ label: `Review ${r.verdicts.length} changes`, kind: 'review', ids: r.verdicts.map(String) });
     dispatch({ type: 'chat/patch', ctx, msgId: id, patch: { steps, text: r.text, actions } });
     await refresh(ctx, r.recipes, r.verdicts, dispatch);
+    // An edit on several Photos opens the Apply popover on them (Greg, 2026-11-02): untick to
+    // put one back, Esc to put them all back.
+    const batch = r.batch_id;
+    if (batch != null && r.recipes.length > 1)
+      openApply({
+        kind: 'agent',
+        batch,
+        ids: r.recipes.map(String),
+        apply: (putBack) => {
+          if (!putBack.length) return;
+          void call<{ recipes: number[]; verdicts: number[]; ratings?: number[] }>('undo_batch', { batch_id: batch, photo_ids: putBack.map(Number) })
+            .then((u) => (dispatch({ type: 'toast', text: `Kept ${r.recipes.length - putBack.length}, put ${putBack.length} back` }), refresh(ctx, u.recipes, [...u.verdicts, ...(u.ratings ?? [])], dispatch)))
+            .catch((e) => dispatch({ type: 'toast', text: `Couldn't put them back: ${String(e).replace(/^Error: /, '')}` }));
+        },
+        cancel: () => void liveUndo(ctx, id, batch, dispatch),
+      });
   } catch (e) {
     dispatch({ type: 'chat/patch', ctx, msgId: id, patch: { steps: [{ label: 'The Agent stopped', ms: 0, done: true, failed: true }], text: aiError(e) } });
   }

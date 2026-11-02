@@ -29,17 +29,19 @@ execFileSync(bin, ['tool', 'import_folder', JSON.stringify({ folder: src }), '--
 
 const failures = [];
 const check = (ok, msg) => (ok ? console.log(`ok   ${msg}`) : (failures.push(msg), console.log(`FAIL ${msg}`)));
-const api = (cmd, body = {}) => fetch(`http://127.0.0.1:7879/api/${cmd}`, { method: 'POST', body: JSON.stringify(body) }).then((r) => r.json());
-const serve = spawn(bin, ['serve', '--library', library, '--port', '7879'], {
+const api = (cmd, body = {}) => fetch(`http://127.0.0.1:7883/api/${cmd}`, { method: 'POST', body: JSON.stringify(body) }).then((r) => r.json());
+const serve = spawn(bin, ['serve', '--library', library, '--port', '7883'], {
   env: { ...process.env, ARGUS_COMPUTE: 'full', ARGUS_MODEL_LOCK_DIR: mkdtempSync(join(tmpdir(), 'argus-model-')), ARGUS_FOREGROUND_DIR: mkdtempSync(join(tmpdir(), 'argus-foreground-')) },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
-const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5199, strictPort: true, proxy: { '/api': 'http://127.0.0.1:7879', '/previews': 'http://127.0.0.1:7879' } }, logLevel: 'error' });
+// A crash must not leave the engine holding its port for the next run ("Address already in use").
+process.on('exit', () => serve.kill());
+const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5203, strictPort: true, proxy: { '/api': 'http://127.0.0.1:7883', '/previews': 'http://127.0.0.1:7883' } }, logLevel: 'error' });
 await vite.listen();
 const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
 try {
   for (let i = 0; i < 100; i++) {
-    if (await fetch('http://127.0.0.1:7879/api/list_shoots').then((r) => r.ok, () => false)) break;
+    if (await fetch('http://127.0.0.1:7883/api/list_shoots').then((r) => r.ok, () => false)) break;
     await new Promise((r) => setTimeout(r, 200));
   }
   // No AI work in the way: Apply look needs no model.
@@ -48,7 +50,7 @@ try {
   const hero = photos[0].id;
   const p = await (await browser.newContext({ viewport: { width: 1500, height: 900 }, deviceScaleFactor: 2 })).newPage();
   p.on('pageerror', (e) => failures.push(`page error: ${e.message}`));
-  await p.goto(`http://localhost:5199/?library=live#/edit/${hero}`);
+  await p.goto(`http://localhost:5203/?library=live#/edit/${hero}`);
   await p.getByTestId('apply-look-open').waitFor({ timeout: 30000 });
 
   // A hand edit on the hero brings up the quiet offer in the Edit panel.
@@ -92,7 +94,7 @@ try {
     await p.waitForTimeout(200);
   }
   check(!Object.values(r).some((v) => v?.author === 'ai'), 'one Undo takes the look off every frame');
-  await p.goto(`http://localhost:5199/?library=live#/cull`);
+  await p.goto(`http://localhost:5203/?library=live#/cull`);
 
   // Crop like this: a hand crop on one frame is offered to the frame shot 39 s after it (the
   // a7R V samples DSC08006 and DSC08009), on its own or inside a fresh Shoot match.

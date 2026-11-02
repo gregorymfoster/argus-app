@@ -6,8 +6,6 @@
 // a horizon or architecture to level by, a punch-in where the people sit loose.
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { useHotkeys } from 'react-hotkeys-hook';
-import { Check } from 'lucide-react';
 import { PHOTOS, SHOOT } from '../data/dummy';
 import { LIVE, asPerson } from '../data/live';
 import { useFraming } from '../data/framing';
@@ -15,12 +13,8 @@ import { picksOf } from '../data/modes';
 import type { Photo } from '../domain/types';
 import { useLibrary, verdictOf } from '../store/library';
 import { PhotoView } from './PhotoView';
-import { ProgressBar } from './Progress';
 import { Kbd, Seg } from './kit';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Button } from '@/components/ui/button';
-
-type Scope = 'picks' | 'all';
+import { ApplyBody, ApplyPopover, type ApplyTile, type Scope } from './ApplyPopover';
 
 /** The Shoot's frames for `scope`, in capture order. */
 function useFrames(scope: Scope): { ids: string[]; picks: number; all: number } {
@@ -38,12 +32,9 @@ function useFrames(scope: Scope): { ids: string[]; picks: number; all: number } 
 /** The header button and its popover; `before` is Edit's held \ (every tile shows as shot). */
 export function Framing({ open, onOpenChange, before, children }: { open: boolean; onOpenChange: (on: boolean) => void; before: boolean; children: ReactNode }) {
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent align="end" className="apply-look w-[min(880px,calc(100vw-48px))] p-0" onOpenAutoFocus={(e) => e.preventDefault()} data-testid="framing">
-        {open && <Body before={before} onClose={() => onOpenChange(false)} />}
-      </PopoverContent>
-    </Popover>
+    <ApplyPopover open={open} onOpenChange={onOpenChange} testId="framing" body={() => <Body before={before} onClose={() => onOpenChange(false)} />}>
+      {children}
+    </ApplyPopover>
   );
 }
 
@@ -54,48 +45,38 @@ function Body({ before, onClose }: { before: boolean; onClose: () => void }) {
   // Straighten only by default: Greg rarely crops, and on the bench the AI's crops weren't his.
   const [withCrop, setWithCrop] = useState(false);
   const framing = useFraming(ids, withCrop, true);
-  const [off, setOff] = useState<Set<string>>(new Set());
   const proposed = ids.filter((id) => framing.frames[id]?.crop);
   const handCropped = ids.filter((id) => framing.frames[id]?.kept === 'already cropped').length;
-  const targets = proposed.filter((id) => !off.has(id));
-  const [busy, setBusy] = useState(false);
 
-  const apply = () => {
-    if (!targets.length || busy || framing.reading) return;
+  const apply = (targets: string[]) => {
     const n = targets.length;
     const label = `${withCrop ? 'Crop & straighten' : 'Straighten'} ${n} Photo${n === 1 ? '' : 's'}`;
+    const done = (n: number) => {
+      dispatch({ type: 'toast', text: `${withCrop ? 'Cropped and straightened' : 'Straightened'} ${n} Photo${n === 1 ? '' : 's'}. ⌘Z undoes it.` });
+      onClose();
+    };
     if (!LIVE) {
       dispatch({ type: 'batch', label, actions: targets.map((id) => ({ type: 'recipe/set' as const, id, recipe: { ...state.recipes[id], crop: framing.frames[id].crop ?? undefined }, label, by: 'ai' as const })) });
-      done(n);
-      return;
+      return done(n);
     }
-    setBusy(true);
     const w = asPerson('apply_framing', { photo_ids: targets.map(Number), crop: withCrop }, label, (r) => (r.applied as number[]) ?? []);
     dispatch({ type: 'engine/saved', label, batch: w });
-    w.then((r) => done(Object.keys(r.recipes ?? {}).length || n))
-      .catch((e) => dispatch({ type: 'toast', text: `Couldn't crop: ${String(e).replace(/^Error: /, '')}` }))
-      .finally(() => setBusy(false));
+    return w.then((r) => done(Object.keys(r.recipes ?? {}).length || n)).catch((e) => dispatch({ type: 'toast', text: `Couldn't crop: ${String(e).replace(/^Error: /, '')}` }));
   };
-  const done = (n: number) => {
-    dispatch({ type: 'toast', text: `${withCrop ? 'Cropped and straightened' : 'Straightened'} ${n} Photo${n === 1 ? '' : 's'}. ⌘Z undoes it.` });
-    onClose();
-  };
-  useHotkeys('enter', (e) => (e.preventDefault(), apply()), { enableOnFormTags: false }, [targets.join(','), busy, !!framing.reading]);
 
-  const toggle = (id: string) =>
-    setOff((s) => {
-      const n = new Set(s);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
-    });
+  const tiles: ApplyTile[] = proposed.flatMap((id) => {
+    const p = PHOTOS.find((x) => x.id === id);
+    const f = framing.frames[id];
+    if (!p || !f?.crop) return [];
+    return [{ id, image: f.image && !before ? f.image : undefined, fallback: <Tile photo={p} crop={before ? undefined : f.crop} />, badge: f.reasons.join(' · '), says: f.reasons.join(', ') }];
+  });
 
   return (
-    <div className="apply-look-body">
-      <div className="apply-look-head">
-        <span className="apply-look-title">Crop &amp; straighten</span>
-        <span className="faint mono trunc">{SHOOT.name}</span>
-        <span className="grow" />
+    <ApplyBody
+      testId="framing"
+      title="Crop & straighten"
+      context={SHOOT.name}
+      controls={
         <Seg
           quiet
           label="What to fix"
@@ -106,65 +87,27 @@ function Body({ before, onClose }: { before: boolean; onClose: () => void }) {
             { value: 'crop', label: 'Straighten + crop' },
           ]}
         />
-        {picks > 0 && (
-          <Seg
-            quiet
-            label="Which Photos"
-            value={scope}
-            onChange={setScope}
-            items={[
-              { value: 'picks', label: <>Picks <span className="mono faint">{picks}</span></> },
-              { value: 'all', label: <>All but Rejects <span className="mono faint">{all}</span></> },
-            ]}
-          />
-        )}
-      </div>
-      <div className="apply-look-note">
-        <span>{withCrop ? 'Frames with a crooked horizon or wall, or people sitting loose.' : 'Frames with a crooked horizon or wall.'} Click a photo to leave it out.</span>
-        <span className="grow" />
-        {framing.reading ? (
-          <span className="apply-look-bar">
-            <ProgressBar label="Looking at each frame" done={framing.reading.done} total={framing.reading.total} eta={framing.reading.eta} testId="framing-reading" />
-          </span>
-        ) : (
-          <span className="faint">
-            <Kbd quiet>{'\\'}</Kbd> hold for as shot
-          </span>
-        )}
-      </div>
-      <div className="apply-look-grid">
-        {proposed.map((id) => {
-          const p = PHOTOS.find((x) => x.id === id);
-          const f = framing.frames[id];
-          if (!p || !f?.crop) return null;
-          const out = off.has(id);
-          return (
-            <button key={id} className={`apply-tile${out ? ' off' : ''}`} onClick={() => toggle(id)} aria-pressed={!out} aria-label={`${p.file}, ${f.reasons.join(', ')}${out ? ', left out' : ''}`} data-testid="framing-tile" data-drawn={f.image ? 'yes' : undefined}>
-              <span className="apply-well">
-                {f.image && !before ? <img src={f.image} alt="" draggable={false} /> : <Tile photo={p} crop={before ? undefined : f.crop} />}
-                <span className={`apply-tick${out ? '' : ' on'}`}>{!out && <Check size={9} strokeWidth={3} />}</span>
-                <span className="look-badge">{f.reasons.join(' · ')}</span>
-              </span>
-              <span className="apply-cap mono">{p.file}</span>
-            </button>
-          );
-        })}
-        {!framing.reading && !proposed.length && <span className="faint" data-testid="framing-none">{withCrop ? 'Nothing to straighten or crop: every frame looks level and well framed.' : 'Nothing to straighten: no crooked horizon or wall found.'}</span>}
-      </div>
-      <div className="apply-look-foot">
-        <span className="trunc">
-          {targets.length} photo{targets.length === 1 ? '' : 's'} change, only their crop. {ids.length - proposed.length} left as shot{handCropped ? `, ${handCropped} already cropped` : ''}. One Undo.
+      }
+      scope={{ value: scope, onChange: setScope, picks, all }}
+      note={<>{withCrop ? 'Frames with a crooked horizon or wall, or people sitting loose.' : 'Frames with a crooked horizon or wall.'} Click a photo to leave it out.</>}
+      reading={framing.reading ? { label: 'Looking at each frame', ...framing.reading } : null}
+      idle={
+        <span className="faint">
+          <Kbd quiet>{'\\'}</Kbd> hold for as shot
         </span>
-        <span className="grow" />
-        {framing.error && <span className="faint trunc" title={framing.error}>Couldn't look: {framing.error}</span>}
-        <Button variant="ghost" size="sm" onClick={onClose}>
-          Cancel <Kbd quiet>esc</Kbd>
-        </Button>
-        <Button size="sm" onClick={apply} disabled={!targets.length || busy || !!framing.reading} data-testid="framing-go">
-          Apply to {targets.length} <Kbd>↵</Kbd>
-        </Button>
-      </div>
-    </div>
+      }
+      tiles={tiles}
+      empty={<span className="faint" data-testid="framing-none">{withCrop ? 'Nothing to straighten or crop: every frame looks level and well framed.' : 'Nothing to straighten: no crooked horizon or wall found.'}</span>}
+      foot={(n) => (
+        <>
+          {n} photo{n === 1 ? '' : 's'} change, only their crop. {ids.length - proposed.length} left as shot{handCropped ? `, ${handCropped} already cropped` : ''}. One Undo.
+        </>
+      )}
+      footNote={framing.error ? <span className="faint trunc" title={framing.error}>Couldn't look: {framing.error}</span> : undefined}
+      wait={!!framing.reading}
+      onApply={apply}
+      onClose={onClose}
+    />
   );
 }
 

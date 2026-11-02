@@ -8,7 +8,7 @@ import { useState, type ReactNode } from 'react';
 import { Check, ChevronDown, Cloud, Contrast, Pipette, RefreshCw, Smile, Sparkles, Sun, Wand2 } from 'lucide-react';
 import type { Adjust, HslBand, HslShift, Look, Photo, Recipe } from '../domain/types';
 import { HSL_BANDS } from '../domain/types';
-import { FIXES, applyPreset, hasFix, removePreset, type Preset } from '../domain/presets';
+import { FIXES, applyPreset, appliedIn, hasFix, removePreset, type Preset } from '../domain/presets';
 import { fmt, useLibrary } from '../store/library';
 import { Section } from './Develop';
 import { Seg, Slider, Tip } from './kit';
@@ -197,9 +197,13 @@ export function EditPanel({ photo: p, recipe, look, versions, shown, onShown, on
           {FIXES.map((f) => {
             const Icon = fixIcon[f.icon];
             const on = hasFix(recipe, f);
+            // Auto adds a fix gently (engine quick_fixes): say how much when it isn't the full click.
+            const amount = appliedIn(recipe, f.id)?.amount ?? 1;
+            const part = on && amount < 0.995;
             return (
-              <button key={f.id} className={`fix ${on ? 'on' : ''}`} aria-pressed={on} onClick={() => toggleFix(f)} onMouseEnter={() => onHover(on ? removePreset(recipe, f) : applyPreset(recipe, f))} onMouseLeave={() => onHover(null)} data-testid={f.id}>
+              <button key={f.id} className={`fix ${on ? 'on' : ''}`} aria-pressed={on} title={part ? `${f.why ?? f.name} On at ${Math.round(amount * 100)}%; click to take it off.` : f.why} onClick={() => toggleFix(f)} onMouseEnter={() => onHover(on ? removePreset(recipe, f) : applyPreset(recipe, f))} onMouseLeave={() => onHover(null)} data-testid={f.id}>
                 <Icon size={12} /> {f.name}
+                {part && <span className="mono faint" data-testid={`${f.id}-amount`}>{Math.round(amount * 100)}%</span>}
                 {on && <Check size={11} />}
               </button>
             );

@@ -1,12 +1,11 @@
 // Edit mode's left rail (mocked as MO-Edit): the Shoot's Picks in the order to work through
-// them. Shoot matches waiting to be accepted first (Accept all is one Undo), then Picks with no
-// edit yet, then the edited ones. Clicking a row opens it; Edit's ⌘← ⌘→ follow the Picks.
+// them: Picks with no edit yet, then the edited ones. Clicking a row opens it; Edit's ⌘← ⌘→
+// follow the Picks.
 
 import { Check } from 'lucide-react';
 import { go } from '../router';
 import { useLibrary } from '../store/library';
 import { isEdited, picksOf } from '../data/modes';
-import { acceptPreEdits, usePreEdits } from '../data/preEdit';
 import type { Photo } from '../domain/types';
 import { PhotoView } from './PhotoView';
 import { Button } from '@/components/ui/button';
@@ -22,12 +21,10 @@ export const keepInView = (el: HTMLElement | null) => {
 };
 
 export function PicksRail({ open }: { open: string }) {
-  const { state, dispatch } = useLibrary();
-  const pre = usePreEdits(state);
+  const { state } = useLibrary();
   const picks = picksOf(state);
-  const ready = picks.filter((p) => pre.byPhoto[p.id]);
-  const bare = picks.filter((p) => !pre.byPhoto[p.id] && !isEdited(state, p));
-  const done = picks.filter((p) => !pre.byPhoto[p.id] && isEdited(state, p));
+  const bare = picks.filter((p) => !isEdited(state, p));
+  const done = picks.filter((p) => isEdited(state, p));
   const row = (p: Photo, dot: string, note: string) => (
     <button key={p.id} className={`moment-row pick-row ${p.id === open ? 'on' : ''}`} onClick={() => go({ name: 'edit', id: p.id })} ref={p.id === open ? keepInView : undefined} data-testid={`pick-row-${p.id}`}>
       <PhotoView photo={p} size="tile" edits recipe={state.recipes[p.id]} look={state.look} style={{ width: 34, height: 23, borderRadius: 4, flex: 'none' }} />
@@ -58,15 +55,6 @@ export function PicksRail({ open }: { open: string }) {
         <span style={{ width: `${picks.length ? (done.length / picks.length) * 100 : 0}%` }} />
       </span>
       <div className="rail-list">
-        {group(
-          'Shoot match ready',
-          ready,
-          'ready',
-          'match',
-          <Button variant="ghost" size="sm" className="rail-act" onClick={() => acceptPreEdits(ready.map((p) => pre.byPhoto[p.id]), dispatch)} data-testid="picks-accept-all">
-            Accept all
-          </Button>,
-        )}
         {group('Not edited', bare, 'todo', 'to do')}
         {group('Edited', done, 'done', 'done')}
         {!picks.length && <div className="faint rail-empty">No Picks yet. Keep some in Cull (⌘2).</div>}

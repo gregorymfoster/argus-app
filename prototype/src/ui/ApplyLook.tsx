@@ -8,8 +8,7 @@
 // overlapping ways to spread a look, none of which applied anything when pressed.
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { useHotkeys } from 'react-hotkeys-hook';
-import { Check, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { PHOTOS, SHOOT } from '../data/dummy';
 import { LIVE, asPerson } from '../data/live';
 import { useShootLook } from '../data/shootLook';
@@ -17,12 +16,11 @@ import { picksOf } from '../data/modes';
 import type { Photo, Recipe } from '../domain/types';
 import { useLibrary, verdictOf } from '../store/library';
 import { PhotoView } from './PhotoView';
-import { ProgressBar } from './Progress';
-import { Kbd, Seg } from './kit';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Kbd } from './kit';
+import { ApplyBody, ApplyPopover, type ApplyTile, type Scope } from './ApplyPopover';
 import { Button } from '@/components/ui/button';
 
-export type Scope = 'picks' | 'all';
+export type { Scope };
 
 const handEdited = (versions: { by: string }[] | undefined) => versions?.at(-1)?.by === 'you';
 
@@ -46,12 +44,9 @@ function useFrames(hero: Photo, scope: Scope): { ids: string[]; picks: number; a
  */
 export function ApplyLook({ hero, recipe, open, onOpenChange, before, onApplied, children }: { hero: Photo; recipe: Recipe; open: boolean; onOpenChange: (on: boolean) => void; before: boolean; onApplied: () => void; children: ReactNode }) {
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent align="end" className="apply-look w-[min(880px,calc(100vw-48px))] p-0" onOpenAutoFocus={(e) => e.preventDefault()} data-testid="apply-look">
-        {open && <Body hero={hero} recipe={recipe} before={before} onClose={() => onOpenChange(false)} onApplied={onApplied} />}
-      </PopoverContent>
-    </Popover>
+    <ApplyPopover open={open} onOpenChange={onOpenChange} testId="apply-look" body={() => <Body hero={hero} recipe={recipe} before={before} onClose={() => onOpenChange(false)} onApplied={onApplied} />}>
+      {children}
+    </ApplyPopover>
   );
 }
 
@@ -60,113 +55,94 @@ function Body({ hero, recipe, before, onClose, onApplied }: { hero: Photo; recip
   const [scope, setScope] = useState<Scope>('picks');
   const { ids, picks, all } = useFrames(hero, scope);
   const look = useShootLook(hero.id, recipe, ids, true);
-  // Left out by the person; frames edited by hand are always out.
-  const [off, setOff] = useState<Set<string>>(new Set());
+  // Frames edited by hand are always kept as they are.
   const yours = (id: string) => id !== hero.id && (look.frames[id]?.anchor || handEdited(state.versions[id]));
-  const targets = ids.filter((id) => id !== hero.id && !yours(id) && !off.has(id));
-  const checks = targets.filter((id) => look.frames[id]?.check).length;
-  const [busy, setBusy] = useState(false);
+  const fileOf = (id: string) => PHOTOS.find((p) => p.id === id)?.file ?? id;
+  const undrawn = ids.filter((id) => look.gaveUp.includes(id) || look.frames[id]?.error).length;
 
-  const apply = () => {
-    if (!targets.length || busy) return;
+  const apply = (targets: string[]) => {
     const n = targets.length;
+    const checks = targets.filter((id) => look.frames[id]?.check).length;
     const label = `Apply look to ${n} Photo${n === 1 ? '' : 's'}`;
+    const done = (n: number, skipped: { photo_id: number; why: string }[] = []) => {
+      const left = skipped.filter((s) => !/edited by hand/.test(s.why));
+      const leftNote = left.length ? `. ${left.length} left as they were (${fileOf(String(left[0].photo_id))}: ${left[0].why})` : '';
+      dispatch({ type: 'toast', text: `Look applied to ${n} Photo${n === 1 ? '' : 's'}${leftNote}${checks ? `. ${checks} have light unlike ${hero.file}: worth a look` : ''}. ⌘Z undoes it.` });
+      onApplied();
+      onClose();
+    };
     if (!LIVE) {
       dispatch({ type: 'batch', label, actions: targets.map((id) => ({ type: 'recipe/set' as const, id, recipe: { ...recipe, crop: state.recipes[id]?.crop ?? recipe.crop }, label, by: 'ai' as const })) });
-      done(n);
-      return;
+      return done(n);
     }
-    setBusy(true);
-    const w = asPerson('apply_shoot_look', { photo_id: Number(hero.id), photo_ids: targets.map(Number) }, label, (r) => (r.applied as number[]) ?? []);
-    dispatch({ type: 'engine/saved', label, batch: w });
-    w.then((r) => done(Object.keys(r.recipes ?? {}).length || n))
-      .catch((e) => dispatch({ type: 'toast', text: `Couldn't apply: ${String(e).replace(/^Error: /, '')}` }))
-      .finally(() => setBusy(false));
-  };
-  const done = (n: number) => {
-    dispatch({ type: 'toast', text: `Look applied to ${n} Photo${n === 1 ? '' : 's'}${checks ? `. ${checks} have light unlike ${hero.file}: worth a look` : ''}. ⌘Z undoes it.` });
-    onApplied();
-    onClose();
-  };
-  useHotkeys('enter', (e) => (e.preventDefault(), apply()), { enableOnFormTags: false }, [targets.join(','), busy]);
-
-  const toggle = (id: string) =>
-    setOff((s) => {
-      const n = new Set(s);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
+    let skipped: { photo_id: number; why: string }[] = [];
+    const w = asPerson('apply_shoot_look', { photo_id: Number(hero.id), photo_ids: targets.map(Number) }, label, (r) => {
+      skipped = (r.skipped as typeof skipped) ?? [];
+      return (r.applied as number[]) ?? [];
     });
+    dispatch({ type: 'engine/saved', label, batch: w });
+    return w.then((r) => done(Object.keys(r.recipes ?? {}).length, skipped)).catch((e) => dispatch({ type: 'toast', text: `Couldn't apply the look: ${String(e).replace(/^Error: /, '')}` }));
+  };
+
+  const tiles: ApplyTile[] = ids.flatMap((id) => {
+    const p = PHOTOS.find((x) => x.id === id);
+    if (!p) return [];
+    const f = look.frames[id];
+    const isHero = id === hero.id;
+    const mine = yours(id);
+    const notDrawn = look.gaveUp.includes(id) || !!f?.error;
+    return [
+      {
+        id,
+        image: f?.image && !before && !mine ? f.image : undefined,
+        fallback: <PhotoView photo={p} size="tile" recipe={isHero ? recipe : undefined} edits={!before} original={before} style={{ width: '100%', height: '100%', borderRadius: 0 }} />,
+        lock: isHero ? ('source' as const) : mine ? ('kept' as const) : undefined,
+        badge: isHero ? 'Your edit' : mine ? 'edited by you, kept' : notDrawn ? <span title={f?.error ?? 'Took too long to draw'}>not drawn</span> : f?.check ? 'check light' : undefined,
+        warn: !isHero && !mine && (notDrawn || !!f?.check),
+        says: isHero ? 'your edit' : mine ? 'edited by you, kept' : undefined,
+      },
+    ];
+  });
+  const checks = tiles.filter((t) => !t.lock && look.frames[t.id]?.check).length;
 
   return (
-    <div className="apply-look-body">
-      <div className="apply-look-head">
-        <span className="apply-look-title">Apply this look to the Shoot</span>
-        <span className="faint mono trunc">{SHOOT.name}</span>
-        <span className="grow" />
-        {picks > 0 && (
-          <Seg
-            quiet
-            label="Which Photos"
-            value={scope}
-            onChange={setScope}
-            items={[
-              { value: 'picks', label: <>Picks <span className="mono faint">{picks}</span></> },
-              { value: 'all', label: <>All but Rejects <span className="mono faint">{all}</span></> },
-            ]}
-          />
-        )}
-      </div>
-      <div className="apply-look-note">
-        <span>
+    <ApplyBody
+      testId="apply-look"
+      title="Apply this look to the Shoot"
+      context={SHOOT.name}
+      scope={{ value: scope, onChange: setScope, picks, all }}
+      note={
+        <>
           Matched to each photo's own light, from <span className="mono">{hero.file}</span>. Quick fixes find faces and sky again in each. Click a photo to leave it out.
+        </>
+      }
+      reading={look.reading ? { label: look.slow ? `Still on ${fileOf(look.slow.ids[0])} · ${look.slow.seconds} s` : 'Reading light', done: look.reading.done, total: look.reading.total, eta: look.slow ? null : look.reading.eta } : null}
+      idle={
+        <span className="faint">
+          <Kbd quiet>{'\\'}</Kbd> hold for before
         </span>
-        <span className="grow" />
-        {look.reading ? (
-          <span className="apply-look-bar">
-            <ProgressBar label="Reading each frame's light" done={look.reading.done} total={look.reading.total} eta={look.reading.eta} testId="apply-look-reading" />
-          </span>
-        ) : (
-          <span className="faint">
-            <Kbd quiet>{'\\'}</Kbd> hold for before
-          </span>
-        )}
-      </div>
-      <div className="apply-look-grid">
-        {ids.map((id) => {
-          const p = PHOTOS.find((x) => x.id === id);
-          if (!p) return null;
-          const f = look.frames[id];
-          const isHero = id === hero.id;
-          const mine = yours(id);
-          const out = !isHero && (mine || off.has(id));
-          return (
-            <button key={id} className={`apply-tile${isHero ? ' hero' : ''}${out ? ' off' : ''}`} onClick={() => !isHero && !mine && toggle(id)} disabled={isHero || mine} aria-pressed={!isHero && !mine ? !out : undefined} aria-label={`${p.file}${isHero ? ', your edit' : mine ? ', edited by you, kept' : out ? ', left out' : ''}`} data-testid="apply-look-tile" data-drawn={f?.image ? 'yes' : undefined}>
-              <span className="apply-well">
-                {f?.image && !before && !mine ? <img src={f.image} alt="" draggable={false} /> : <PhotoView photo={p} size="tile" recipe={isHero ? recipe : undefined} edits={!before} original={before} style={{ width: '100%', height: '100%', borderRadius: 0 }} />}
-                {!isHero && !mine && <span className={`apply-tick${out ? '' : ' on'}`}>{!out && <Check size={9} strokeWidth={3} />}</span>}
-                {isHero ? <span className="look-badge hero">Your edit</span> : mine ? <span className="look-badge">edited by you, kept</span> : f?.check ? <span className="look-badge check">check light</span> : null}
-              </span>
-              <span className="apply-cap mono">{p.file}</span>
-            </button>
-          );
-        })}
-      </div>
-      <div className="apply-look-foot">
-        <span className="trunc">
-          {targets.length} photo{targets.length === 1 ? '' : 's'} change. Photos you edited, crops and brushes stay as they are. One Undo.
-          {checks > 0 && <span className="look-check-count" style={{ marginLeft: 8 }}><Sparkles size={9} /> {checks} to check</span>}
-        </span>
-        <span className="grow" />
-        {look.error && <span className="faint trunc" title={look.error}>Couldn't match: {look.error}</span>}
-        <Button variant="ghost" size="sm" onClick={onClose}>
-          Cancel <Kbd quiet>esc</Kbd>
-        </Button>
-        <Button size="sm" onClick={apply} disabled={!targets.length || busy} data-testid="apply-look-go">
-          Apply to {targets.length} <Kbd>↵</Kbd>
-        </Button>
-      </div>
-    </div>
+      }
+      tiles={tiles}
+      foot={(n) => (
+        <>
+          {n} photo{n === 1 ? '' : 's'} change. Photos you edited, crops and brushes stay as they are. One Undo.
+          {checks > 0 && (
+            <span className="look-check-count" style={{ marginLeft: 8 }}>
+              <Sparkles size={9} /> {checks} to check
+            </span>
+          )}
+        </>
+      )}
+      footNote={
+        look.error ? (
+          <span className="faint trunc" title={look.error}>Couldn't match: {look.error}</span>
+        ) : undrawn > 0 ? (
+          <span className="faint trunc">{undrawn} couldn't be drawn; Apply still tries them</span>
+        ) : undefined
+      }
+      onApply={apply}
+      onClose={onClose}
+    />
   );
 }
 

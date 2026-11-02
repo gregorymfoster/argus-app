@@ -6,6 +6,7 @@ import { PHOTOS, SHOOT } from './data/dummy';
 import { lastRemovalAt, takeRemovedToast, undoRemoval } from './data/remove';
 import { RemoveDialog, askRemove, showRemoved } from './ui/Remove';
 import { PasteSettingsDialog } from './ui/PasteSettings';
+import { ApplyEditHost, askAuto } from './ui/ApplyEdit';
 import { CreatePresetDialog } from './ui/CreatePreset';
 import { LIVE, inCollection, exportAfterLoad, noteImportFinished, takeNoteAfterLoad, refreshLivePhotos, runningImport, takeCullAfterLoad } from './data/live';
 import { zoom } from './ui/zoom';
@@ -21,6 +22,7 @@ import { Palette, VariantsPanel, type Command } from './ui/Overlays';
 import { ExportDialog } from './ui/Export';
 import { TipProvider } from './ui/kit';
 import { Toaster } from '@/components/ui/sonner';
+import { SlowCalls } from './ui/SlowCalls';
 import { ImportDialog } from './screens/Import';
 import { CullScreen } from './screens/Cull';
 import { LoupeScreen } from './screens/Loupe';
@@ -159,12 +161,7 @@ export function App() {
   useHotkeys('mod+shift+z', () => dispatch({ type: 'redo' }), { preventDefault: true });
 
   // Lightroom's Auto on every Photo of the open Shoot, as one undoable batch.
-  const autoShoot = () =>
-    runAuto(
-      PHOTOS.slice(0, state.imported).map((p) => p.id),
-      (id) => recipeOf(state, id),
-      dispatch,
-    );
+  const autoShoot = () => askAuto(null, (ids) => runAuto(ids, (id) => recipeOf(state, id), dispatch));
   // The AI cull of the whole open Shoot: Verdicts, stars, Stacks and Best Photos.
   const cullShoot = () => {
     if (inCollection()) return void toast('Open a Shoot to cull it', { id: 'argus', description: 'The AI cull compares the Photos of one Shoot.' });
@@ -261,6 +258,7 @@ export function App() {
         <SettingsDialog />
         <RemoveDialog />
         <PasteSettingsDialog />
+        <ApplyEditHost />
         <CreatePresetDialog onSaved={(text) => dispatch({ type: 'toast', text })} />
         <Palette open={palette} onOpenChange={setPalette} extra={commands} />
         <ExportDialog
@@ -273,6 +271,7 @@ export function App() {
         />
         <VariantsPanel screen={screen} />
         <Toaster />
+        <SlowCalls />
       </div>
         )}
       </StatusSlotProvider>

@@ -230,7 +230,7 @@ fn lens_blur(
     // The image as it will look, small, for the models when there's no Analysis.
     let small = std::sync::OnceLock::new();
     let small = || {
-        small.get_or_init(|| {
+        crate::get_or_compute(&small, || {
             let fin = Finish::new(matrix, look, &recipe.render_adjust());
             let f = (w.max(h) / (2 * crate::analyzers::SMALL_EDGE)).max(1);
             let (sw, sh) = (w / f, h / f);

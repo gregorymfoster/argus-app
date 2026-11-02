@@ -45,6 +45,12 @@ export const takeBack = (): Route | null => {
   return r;
 };
 
+/**
+ * Where the person is this instant. The screen catches up a frame or a transition later, so a
+ * key pressed right after another (⌘→ then ⇧⌘V) reads this, not the last render's Route.
+ */
+export const routeNow = (): Route => parse(location.hash);
+
 export function go(r: Route) {
   location.hash = href(r);
 }

@@ -91,7 +91,7 @@ impl<'a> Input<'a> {
 
     /// The preview at [`SMALL_EDGE`] (area-averaged), made once and shared.
     pub fn small(&self) -> &crate::RgbImage {
-        self.small.get_or_init(|| {
+        crate::get_or_compute(&self.small, || {
             let full = crate::RgbImage {
                 width: self.preview.width() as usize,
                 height: self.preview.height() as usize,

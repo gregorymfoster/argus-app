@@ -16,6 +16,7 @@ import { Kbd, Slider, Tip, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { BackToGrid, Hints } from '../ui/ViewBar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
+import { openApply } from '../ui/ApplyEdit';
 
 const LOOK_SLIDERS: { key: NumKey; label: string; min: number; max: number; step?: number }[] = [
   { key: 'exposure', label: 'Exposure', min: -2, max: 2, step: 0.05 },
@@ -139,11 +140,21 @@ export function LookScreen({ onExport }: { onExport: () => void }) {
   const sync = () => {
     if (!sel || !canSync) return;
     if (!LIVE) return dispatch({ type: 'look/sync', id: sel.id });
-    const done = asPerson('sync_to_look', { photo_id: Number(sel.id) }, 'Sync to the Look', (r) => [Number(sel.id), ...((r.photos_under_look as number[]) ?? [])]);
-    dispatch({ type: 'engine/saved', label: 'Sync to the Look', batch: done });
-    done
-      .then(() => setLoaded((n) => n + 1))
-      .catch((e) => dispatch({ type: 'toast', text: `Sync failed: ${String(e).replace(/^Error: /, '')}` }));
+    // Through the Apply popover: every Pick under the Look drawn as the sync leaves it.
+    openApply(
+      {
+        kind: 'look',
+        from: sel.id,
+        apply: (keepOut) => {
+          const done = asPerson('sync_to_look', { photo_id: Number(sel.id), keep_out: keepOut.map(Number) }, 'Sync to the Look', (r) => [Number(sel.id), ...((r.photos_under_look as number[]) ?? []), ...keepOut.map(Number)]);
+          dispatch({ type: 'engine/saved', label: 'Sync to the Look', batch: done });
+          done
+            .then(() => setLoaded((n) => n + 1))
+            .catch((e) => dispatch({ type: 'toast', text: `Sync failed: ${String(e).replace(/^Error: /, '')}` }));
+        },
+      },
+      document.querySelector('[data-testid="look-sync"]'),
+    );
   };
   const cycle = () => setLayout((l) => LAYOUTS[(LAYOUTS.findIndex((x) => x.id === l) + 1) % LAYOUTS.length].id);
 
@@ -207,7 +218,7 @@ export function LookScreen({ onExport }: { onExport: () => void }) {
       {card}
       <div className="look-actions">
         <Tip label={canSync ? `Fold ${sel?.file}'s own sliders into the Look, for every Pick` : 'Edit a Pick first, then sync its sliders into the Look'} keys="⇧S">
-          <Button size="sm" onClick={sync} disabled={!canSync}>
+          <Button size="sm" onClick={sync} disabled={!canSync} data-testid="look-sync">
             <RefreshCw size={12} /> Sync to Look
           </Button>
         </Tip>

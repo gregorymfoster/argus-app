@@ -22,7 +22,9 @@ ADR 0005: every change is checkable by Claude without a human. Pick the narrowes
 | View › Zoom, pinch, Edit › Undo routing | `just live <lib> --only zoom,flags`: dispatches `argus:zoom` / `argus:edit-menu`, the same path the Tauri menu takes, and synthetic pinch (ctrl+wheel, WebKit gesture events) | 20 s | both |
 | How any screen looks (unintended visual change) | `just shots [name]`: dummy-data screens diffed against blessed baselines, diffs in `prototype/out/shots/diff/`; `just shots-bless [names]` after an intended change | 3 min all | cloud |
 | The native menu bar itself | `just mac-menus`: launches Argus.app on a throwaway Library, checks menus and shortcuts, clicks Edit › Undo/Redo, Zoom, Settings | 1 min | Mac thread (Accessibility granted once) |
-| Bars, labels, window widths | `just layout`; Import: `just import-check` | 1-2 min | both |
+| Bars, labels, window widths, overlapping tiles, cut-off text, portraits, big Stacks | `just layout` (adds the `?stress=1` demo; add your state to its `STRESS` list); Import: `just import-check` | 2 min | both |
+| An engine call that might hang | `node scripts/shots.mjs stalled` proves the slow/stall chain; a real hang shows as a `[stall]` console error in any check | 30 s | cloud |
+| Before a release (required) | `just ui-gate`: layout, all shots and smoke flows, shoot-look-check, framing-check and mac-e2e, side by side; on green commit `release/ui-gate.txt`. `release-candidate` refuses without it | ~5 min | cloud |
 | Apply look to Shoot (offer, popover, Apply, Undo) | `just shoot-look-check` | ~1 min | cloud |
 | Motion and empty states (flag stamp, key echo, counts, zoom, sliders, Import pop-in, Reduce motion) | `just motion-check` | ~40 s | cloud |
 | Design tokens, stray styles | `npm run design-lint` (in `just check`) | 2 s | both |

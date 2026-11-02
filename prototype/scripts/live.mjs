@@ -31,7 +31,7 @@ if (!source) {
   process.exit(2);
 }
 // --only flags,zoom runs just those steps (each one navigates for itself), for a fast loop.
-const STEPS = ['grid', 'flags', 'zoom', 'cancel', 'cull', 'auto', 'export', 'agent', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views', 'keywords', 'search'];
+const STEPS = ['grid', 'flags', 'zoom', 'cancel', 'cull', 'auto', 'export', 'agent', 'agent-batch', 'sliders', 'suggest', 'masks', 'look', 'rename', 'remove', 'views', 'keywords', 'search'];
 const onlyArg = process.argv.indexOf('--only');
 const only = onlyArg > 0 ? process.argv[onlyArg + 1]?.split(',').filter(Boolean) ?? [] : (process.env.LIVE_ONLY?.split(',').filter(Boolean) ?? []);
 const unknown = only.filter((s) => !STEPS.includes(s));
@@ -52,6 +52,8 @@ cpSync(source, library, { recursive: true });
 let mockCalls = 0;
 let agentCalls = 0;
 let suggestCalls = 0;
+// Photos an Agent turn asked to "warm every photo" edits all at once (the agent-batch step).
+let batchIds = [];
 const mock = httpServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
@@ -67,6 +69,11 @@ const mock = httpServer((req, res) => {
       agentCalls++;
       const focus = Number(/In focus: Photo (\d+)/.exec(req.messages[1].content)?.[1]);
       const done = req.messages[req.messages.length - 1].content.includes('edit_recipe ->');
+      const every = req.messages.some((m) => typeof m.content === 'string' && m.content.includes('warm every photo'));
+      if (every) {
+        const step = done ? { say: 'Mock batch: warmed every Photo.', calls: [] } : { say: 'Warming all', calls: [{ tool: 'edit_recipe', args: { photo_ids: batchIds, set: { temp: 9 }, relative: true } }] };
+        return res.end(JSON.stringify({ message: { content: JSON.stringify(step) }, done: true }));
+      }
       const step = done
         ? { say: 'Mock edit: Temperature +12, Contrast -15.', calls: [] }
         : { say: 'Warming', calls: [{ tool: 'edit_recipe', args: { photo_ids: [focus], set: { temp: 12, contrast: -15 }, relative: true } }] };
@@ -124,6 +131,8 @@ const bridge = spawn(bin, ['serve', '--library', library, '--port', '7878'], {
   // Full: never throttle (pause) a real Ollama on this machine during a smoke test.
   env: { ...process.env, ARGUS_PROVIDER: 'ollama', ARGUS_CULL_CHECK: 'model', ARGUS_CULL_ASK: 'all', OLLAMA_HOST: '127.0.0.1:7879', ARGUS_COMPUTE: 'full', ARGUS_REFINE_ROUNDS: '1', ARGUS_MODEL_LOCK_DIR: modelLockDir, ARGUS_FOREGROUND_DIR: foregroundDir },
 });
+// A crash must not leave the engine holding its port for the next run ("Address already in use").
+process.on('exit', () => bridge.kill());
 const api = (p, init) => fetch(`http://127.0.0.1:7878${p}`, init).then((r) => r.json());
 for (let i = 0; ; i++) {
   try {
@@ -148,6 +157,8 @@ try {
   const photos = await api(`/api/photos?shoot_id=${shoot.id}`);
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const p = await ctx.newPage();
+  // Loading the dev build can take over 30 s when the ui-gate runs every check side by side; that is load, not a stall.
+  p.setDefaultNavigationTimeout(90_000);
   // WebKit rejects a fetch that a navigation (p.goto) cancels with "… due to access control checks"
   // or "Load failed": the screen was being left, not broken, so only other page errors fail the run.
   const aborted = /due to access control checks|^TypeError: Load failed$/;
@@ -332,6 +343,12 @@ try {
     // in Background work, then the result with Undo (Greg, 2026-10-21).
     const before = await Promise.all(photos.map((x) => recipeOf(x.id)));
     await p.getByTestId('auto-all').click();
+    // Auto all opens the Apply popover with each Photo measured; Apply runs it.
+    await p.getByTestId('apply-edit-go').waitFor({ timeout: 10000 });
+    await p.getByTestId('apply-edit-reading').waitFor({ state: 'detached', timeout: 120000 }).catch(() => {});
+    // Auto all skips Rejects, and Photos edited by hand start left out (36f08fb): only the ticked tiles change.
+    const ticked = (await p.getByTestId('apply-edit-tile').evaluateAll((els) => els.filter((e) => e.getAttribute('aria-pressed') !== 'false').map((e) => e.getAttribute('aria-label') ?? ''))).map((l) => l.split(',')[0]);
+    await p.getByTestId('apply-edit-go').click();
     const row = p.getByTestId('auto-progress');
     await row.waitFor({ timeout: 10000 });
     check(/Auto on \d+ Photos?/.test(await row.innerText()), 'Auto all shows a progress row in the chat');
@@ -353,7 +370,9 @@ try {
     await p.getByText(/Auto applied to \d+ Photos?/).first().waitFor({ timeout: 120000 });
     await p.locator('.panel.agent').screenshot({ path: `${out}live-auto-done.png` }).catch(() => {});
     const after = await Promise.all(photos.map((x) => recipeOf(x.id)));
-    check(after.every((g, i) => JSON.stringify(g) !== JSON.stringify(before[i])), 'Auto all changed every Photo in the Library');
+    const isIn = (i) => ticked.includes(photos[i].file_name);
+    const wrong = photos.filter((x, i) => (JSON.stringify(after[i]) !== JSON.stringify(before[i])) !== isIn(i)).map((x) => x.file_name);
+    check(ticked.length > 0 && !wrong.length, `Auto all changed every ticked Photo and nothing else (ticked: ${ticked.join(', ')}; wrong: ${wrong.join(', ') || 'none'})`);
     await p.locator('.panel.agent').getByRole('button', { name: 'Undo' }).last().click();
     await p.waitForTimeout(1500);
     const undone = await Promise.all(photos.map((x) => recipeOf(x.id)));
@@ -405,6 +424,53 @@ try {
     const undone = await recipeOf(target);
     check(!undone.temp && !undone.contrast, `Undo in the chat put the Recipe back (${JSON.stringify(undone)})`);
     await p.screenshot({ path: `${out}live-agent-undo.png` });
+  }
+
+  if (run('agent-batch')) {
+    // An Agent edit on several Photos opens the Apply popover on them (Greg, 2026-11-02):
+    // untick one and Return puts it back; Esc on a second turn puts them all back.
+    batchIds = (await api('/api/list_photos', { method: 'POST', body: '{}' })).slice(0, 3).map((x) => x.id);
+    await p.goto('http://localhost:5198/?library=live#/cull');
+    await p.waitForSelector('.tile');
+    const ask = async () => {
+      const box = p.locator('textarea').last();
+      await box.fill('warm every photo');
+      await box.press('Enter');
+      await p.getByTestId('apply-edit').waitFor({ timeout: 20000 });
+      await p.getByTestId('apply-edit-reading').waitFor({ state: 'detached', timeout: 120000 }).catch(() => {});
+    };
+    const temps = async () => Promise.all(batchIds.map(async (id) => (await recipeOf(id)).temp ?? 0));
+    await ask();
+    const n = await p.getByTestId('apply-edit-tile').count();
+    check(n === batchIds.length, `the Agent's batch edit opens the Apply popover on its ${batchIds.length} Photos (${n})`);
+    const drawnN = await p.locator('[data-testid="apply-edit-tile"][data-drawn="yes"]').count();
+    check(drawnN === batchIds.length, `the engine draws each as the Agent left it (${drawnN})`);
+    await p.screenshot({ path: `${out}live-agent-batch.png` });
+    // Untick the last tile, and find its Photo by name: the popover's order needn't match list_photos.
+    const offName = ((await p.getByTestId('apply-edit-tile').last().getAttribute('aria-label')) ?? '').split(',')[0];
+    const files = await Promise.all(batchIds.map(async (id) => (await api('/api/list_photos', { method: 'POST', body: '{}' })).find((x) => x.id === id)?.file_name));
+    const off = files.indexOf(offName);
+    await p.getByTestId('apply-edit-tile').last().click();
+    await p.keyboard.press('Enter');
+    await p.getByTestId('apply-edit').waitFor({ state: 'detached', timeout: 5000 });
+    let t = [];
+    for (let i = 0; i < 50; i++) {
+      t = await temps();
+      if (t[off] === 0) break;
+      await p.waitForTimeout(200);
+    }
+    check(off >= 0 && t.every((x, i) => (i === off ? x === 0 : x > 0)), `Return keeps the ticked edits and puts the unticked Photo back (unticked ${offName}; temps ${t.join(', ')})`);
+    const before = await temps();
+    await ask();
+    await p.keyboard.press('Escape');
+    await p.getByTestId('apply-edit').waitFor({ state: 'detached', timeout: 5000 });
+    let back = [];
+    for (let i = 0; i < 50; i++) {
+      back = await temps();
+      if (back.every((x, j) => x === before[j])) break;
+      await p.waitForTimeout(200);
+    }
+    check(back.every((x, j) => x === before[j]), `Esc puts every Photo back as it was before the request (${back.join(', ')})`);
   }
 
   if (run('sliders')) {
@@ -651,6 +717,9 @@ try {
   }
   if (run('people')) {
     // People: the face models read the Shoot in the Queue, and list_people groups the faces.
+    // This throwaway Library's Queue must run on battery too: on an unplugged Mac it otherwise
+    // waits for the charger and the face read never starts (2026-11-02, release-candidate).
+    await api('/api/set_queue', { method: 'POST', body: JSON.stringify({ run_on_battery: true }) });
     const queued = await api('/api/read_faces', { method: 'POST', body: '{}' });
     let people = await api('/api/list_people', { method: 'POST', body: '{}' });
     // The Queue reaches the face read after the Shoot's earlier jobs (pre-edit, Shoot match), which

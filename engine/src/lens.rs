@@ -321,14 +321,17 @@ impl Lens {
         if !which.any() {
             return None;
         }
-        let mut done = self.done.lock().unwrap();
-        if let Some((w0, img)) = done.as_ref() {
+        if let Some((w0, img)) = self.done.lock().unwrap().as_ref() {
             if *w0 == which {
                 return Some(img.clone());
             }
         }
+        // Never hold the lock while correcting: correct() runs on rayon, and a worker waiting
+        // in it can steal another render of this same image and block on this lock forever
+        // (Greg's Apply look hung this way, 2026-11-02). Two renders may both correct; the
+        // last one is kept.
         let img = Arc::new(correct(rgb, w, h, p, which));
-        *done = Some((which, img.clone()));
+        *self.done.lock().unwrap() = Some((which, img.clone()));
         Some(img)
     }
 

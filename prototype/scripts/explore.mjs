@@ -77,6 +77,10 @@ try {
   });
   await p.keyboard.press('Enter'); // Auto every Photo: no model needed
   await at('auto-all', null, async () => {
+    // It opens the Apply popover; Apply once every Photo is measured.
+    await p.getByTestId('apply-edit-go').waitFor({ timeout: 10000 });
+    await p.getByTestId('apply-edit-reading').waitFor({ state: 'detached', timeout: 120000 }).catch(() => {});
+    await p.getByTestId('apply-edit-go').click();
     // The grid shows the edit: edited tiles swap their preview for the engine's edited preview.
     await p.waitForFunction(() => document.querySelectorAll('.tile img[src*="previews/edited/"]').length > 0, null, { timeout: 20000 }).catch(() => note('no tile shows its Auto edit'));
   });

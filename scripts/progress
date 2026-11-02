@@ -3,6 +3,8 @@
 
     scripts/progress NAME [--stall SECS] [--timeout SECS] [--every SECS] -- CMD ARGS...
     scripts/progress status          one line per step: state, elapsed, ETA, last output
+    scripts/progress slower          the steps that got slower than their baseline lately
+    scripts/progress baseline NAME.. save these steps' last good times as this machine's baseline
 
 The command's output passes through unchanged (stdout stays stdout, stderr stays stderr)
 and is also appended, timestamped, to out/logs/NAME.log. out/logs/NAME.status is one line,
@@ -15,7 +17,13 @@ ETA comes from `::progress DONE/TOTAL [label]` lines the command prints, else fr
 the last successful run of NAME took (out/logs/durations.json).
 Watchdog: no output for --stall seconds (default 900) kills the command's process group
 and exits 124, like `timeout` (--stall 0 turns it off); --timeout caps the whole run the same way.
-Exit code is the command's own. Python 3.9+ stdlib only (Greg's Mac has 3.9).
+Time watch (Greg, 2026-11-02: "self-watch for e2e time regressions and fix. We keep accidentally
+regressing here"): bench/step-times.json holds a committed baseline per machine ("Linux-4" for the
+cloud box, "Darwin-16" for Greg's M4 Max) and step. When a step passes more than 20% (and 10 s)
+slower than its baseline, a loud `[slower]` line names it and out/logs/slower.log keeps it;
+`scripts/progress slower` lists them, and `just ui-gate`, `just check` and releases print them.
+A deliberate change (a new check) re-baselines with `scripts/progress baseline NAME` in the
+same commit, saying why. Exit code is the command's own. Python 3.9+ stdlib only (Greg's Mac has 3.9).
 """
 import json, os, re, selectors, signal, subprocess, sys, time
 
@@ -35,6 +43,76 @@ def durations():
             return json.load(f)
     except (OSError, ValueError):
         return {}
+
+
+BASELINE = os.path.join(ROOT, "bench", "step-times.json")
+SLOWER = 1.2  # more than 20% over baseline ...
+SLOWER_MIN = 10.0  # ... and at least this many seconds, so a 3 s step jittering to 4 s stays quiet
+
+
+def machine():
+    import platform
+    return f"{platform.system()}-{os.cpu_count()}"
+
+
+def baselines():
+    try:
+        with open(BASELINE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def watch_time(name, took):
+    base = baselines().get(machine(), {}).get(name)
+    if not base or took <= base * SLOWER or took - base < SLOWER_MIN:
+        return
+    line = (f"[slower] {name} took {fmt(took)}, baseline {fmt(base)} on {machine()} (+{round(100 * (took / base - 1))}%). "
+            "Find the cause and fix it (docs/agents/build-speed.md); a busy box or a cold build? rerun once. "
+            "A deliberate cost: scripts/progress baseline " + name)
+    print(line, file=sys.stderr, flush=True)
+    with open(os.path.join(LOGS, "slower.log"), "a") as f:
+        f.write(json.dumps({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "step": name, "took": round(took, 1), "baseline": base, "machine": machine(), "commit": git_head()}) + "\n")
+
+
+def git_head():
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
+def slower(hours=12.0):
+    """Steps slower than baseline in the last HOURS, latest run of each, so a script can print them."""
+    try:
+        with open(os.path.join(LOGS, "slower.log")) as f:
+            rows = [json.loads(x) for x in f if x.strip()]
+    except (OSError, ValueError):
+        rows = []
+    cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - hours * 3600))
+    latest = {}
+    for r in rows:
+        if r["at"] >= cutoff:
+            latest[r["step"]] = r
+    ok = durations()
+    for r in latest.values():
+        # A later passing run back under the bar clears it.
+        if ok.get(r["step"], r["took"]) <= r["baseline"] * SLOWER:
+            continue
+        print(f"[slower] {r['step']}: {fmt(r['took'])} vs baseline {fmt(r['baseline'])} (+{round(100 * (r['took'] / r['baseline'] - 1))}%) at {r['commit']} {r['at']}")
+
+
+def save_baseline(names):
+    d, b = durations(), baselines()
+    mine = b.setdefault(machine(), {})
+    for n in names:
+        if n not in d:
+            sys.exit(f"progress: no passing run of {n} recorded in {LOGS}/durations.json")
+        mine[n] = d[n]
+        print(f"baseline {machine()} {n} = {fmt(d[n])}")
+    with open(BASELINE, "w") as f:
+        json.dump(b, f, indent=1, sort_keys=True)
+        f.write("\n")
 
 
 def status():
@@ -66,6 +144,10 @@ def status():
 def main(argv):
     if argv[:1] == ["status"]:
         return status() or 0
+    if argv[:1] == ["slower"]:
+        return slower() or 0
+    if argv[:1] == ["baseline"]:
+        return save_baseline(argv[1:]) or 0
     if "--" not in argv or argv.index("--") < 1 or argv.index("--") == len(argv) - 1:
         sys.exit(__doc__)
     opts, cmd = argv[: argv.index("--")], argv[argv.index("--") + 1 :]
@@ -200,6 +282,7 @@ def main(argv):
         d[name] = round(time.time() - start, 1)
         with open(os.path.join(LOGS, "durations.json"), "w") as f:
             json.dump(d, f, indent=1, sort_keys=True)
+        watch_time(name, d[name])
     write_status(state)
     log.write(f"=== {name}: {state} after {fmt(time.time() - start)}\n".encode())
     log.close()

@@ -15,9 +15,9 @@ use crate::recipe::Recipe;
 use crate::shoot_match::{self, Model, MAX_ANCHORS};
 use crate::suggest::shoot_match_recipe;
 use crate::{Error, Result};
-use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 /// A frame the anchors cover less than this is marked to check: its scene is unlike every
 /// hand-edited frame, so the match leans on the Edit head.
@@ -66,6 +66,18 @@ pub fn preview(
     ids: &[PhotoId],
     long_edge: Option<usize>,
 ) -> Result<Preview> {
+    preview_within(lib, hero, recipe, ids, long_edge, STALL)
+}
+
+/// [`preview`], giving up on frames once none has finished for `stall` (see [`STALL`]).
+pub fn preview_within(
+    lib: &Library,
+    hero: &Photo,
+    recipe: &Recipe,
+    ids: &[PhotoId],
+    long_edge: Option<usize>,
+    stall: Duration,
+) -> Result<Preview> {
     let others: Vec<Photo> = shoot_match::anchors_of(lib, hero.shoot_id, hero.id, hero.id)?
         .into_iter()
         .filter(|p| p.id != hero.id)
@@ -89,6 +101,7 @@ pub fn preview(
     }
     let smart = crate::jobs::config(lib)?.shoot_match_smart;
     let base = sync_base(recipe);
+    let samples = std::sync::Arc::new(samples);
 
     // What each frame shows before rendering: the hero as dragged, other hand edits as saved.
     let mut todo: Vec<(Photo, Option<Recipe>)> = Vec::new();
@@ -109,26 +122,50 @@ pub fn preview(
         todo.push((p, own));
     }
 
-    let root = lib.root().to_path_buf();
-    let frames = todo
-        .into_par_iter()
-        .map_init(
-            || Library::open(&root),
-            |lib, (p, own)| {
-                let lib = match lib {
-                    Ok(l) => l,
-                    Err(e) => return failed(p.id, own.is_some(), e.to_string()),
-                };
-                frame(lib, &p, own, &base, &samples, smart, long_edge)
-                    .unwrap_or_else(|e| failed(p.id, false, e.to_string()))
-            },
-        )
-        .collect();
+    let frames = frames_within(lib.root(), todo, base, samples, smart, long_edge, stall);
     Ok(Preview {
         hero_id: hero.id,
         anchors,
         frames,
     })
+}
+
+/// No frame finishing for this long means one is stuck: [`preview`] gives up waiting and
+/// returns, the unfinished frames marked as failed (Greg, 2026-11-02: Apply look with Denoise
+/// sat at "90 of 101" with nothing saying why).
+pub const STALL: Duration = Duration::from_secs(60);
+/// Every frame of `todo`, in order, in parallel ([`crate::stall::par_within`]): frames not
+/// done once none has finished for `stall` come back failed.
+fn frames_within(
+    root: &std::path::Path,
+    todo: Vec<(Photo, Option<Recipe>)>,
+    base: Recipe,
+    samples: std::sync::Arc<Vec<Sample>>,
+    smart: bool,
+    long_edge: Option<usize>,
+    stall: Duration,
+) -> Vec<Frame> {
+    let order: Vec<(PhotoId, bool)> = todo.iter().map(|(p, own)| (p.id, own.is_some())).collect();
+    let items = todo
+        .into_iter()
+        .map(|(p, own)| crate::stall::Item {
+            photo_id: p.id,
+            file: p.file_name.clone(),
+            data: (p, own),
+        })
+        .collect();
+    crate::stall::par_within(
+        root,
+        "Shoot look",
+        items,
+        stall,
+        move |lib, id, (p, own): (Photo, Option<Recipe>)| {
+            let anchor = own.is_some();
+            frame(lib, &p, own, &base, &samples, smart, long_edge)
+                .unwrap_or_else(|e| failed(id, anchor, e.to_string()))
+        },
+        |i, why| failed(order[i].0, order[i].1, why),
+    )
 }
 
 fn frame(

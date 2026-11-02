@@ -26,6 +26,7 @@
 //! | `face_crops`   | {faces: [{photo_id, face}], edge = 160} | {"<photo>-<face>": Library-relative square JPEG of the face, or null}; cached on disk |
 //! | `edited_previews` | {photo_ids, long_edge}              | {"<id>": Library-relative JPEG of the Photo with its edits, or null}; cached on disk by what it shows |
 //! | `shoot_look_preview` | {hero_id, recipe?, photo_ids?, long_edge?} | {hero_id, anchors, frames: [{photo_id, anchor, sliders, reach, check, image?, error}], ms}: the Shoot matched to the hero as dragged (crate::shoot_look) |
+//! | `apply_preview` | {change: {kind: paste, from, groups?} \| {kind: auto}, photo_ids, long_edge?} | {frames: [{photo_id, hand, image?, error}], ms}: the Apply popover's tiles, nothing saved (crate::apply_preview) |
 //! | `framing_preview` | {photo_ids, crop?, long_edge?}          | {frames: [{photo_id, crop, reasons, kept, image?, error}], ms}: Crop & straighten's proposals (crate::framing) |
 //! | `suggest_name` | {paths? \| shoot_id?, captured_at?, provider?} | {name, by, note}       |
 //! | `shoot_name`   | {title, captured_at?}                  | {shoot_name, originals}       |
@@ -233,6 +234,14 @@ struct EditedPreviewArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ApplyPreviewArgs {
+    change: crate::apply_preview::Change,
+    photo_ids: Vec<PhotoId>,
+    long_edge: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FramingArgs {
     photo_ids: Vec<PhotoId>,
     /// Also propose punch-ins; straighten only when left out.
@@ -396,7 +405,9 @@ pub fn dispatch(tools: &Tools, command: &str, a: Value) -> Result<Value> {
     }
     let args: String = a.to_string().chars().take(300).collect();
     let t = std::time::Instant::now();
+    let watch = running::start(command, &args);
     let r = run(tools, command, a);
+    running::end(watch);
     let ms = t.elapsed().as_secs_f64() * 1000.0;
     if !POLLS.contains(&command) || ms > 250.0 || r.is_err() {
         crate::debug_log::event(
@@ -411,6 +422,56 @@ pub fn dispatch(tools: &Tools, command: &str, a: Value) -> Result<Value> {
         );
     }
     r
+}
+
+/// Commands still running, so one that hangs shows up in the Debug log (`command_slow`, at
+/// 30 s, 2 min and 10 min) instead of only when it ends, which a hung one never does
+/// (Greg, 2026-11-02: an Apply look call sat for minutes and the log showed nothing).
+mod running {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    const MARKS: [u64; 3] = [30, 120, 600];
+    type Running = HashMap<u64, (String, String, Instant, usize)>;
+    static RUNNING: OnceLock<Mutex<Running>> = OnceLock::new();
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn table() -> &'static Mutex<Running> {
+        RUNNING.get_or_init(|| {
+            std::thread::spawn(|| loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let mut t = table().lock().unwrap_or_else(|e| e.into_inner());
+                for (cmd, args, at, marks) in t.values_mut() {
+                    let s = at.elapsed().as_secs();
+                    if *marks < MARKS.len() && s >= MARKS[*marks] {
+                        *marks += 1;
+                        crate::debug_log::event(
+                            "command_slow",
+                            serde_json::json!({ "command": cmd, "running_s": s, "args": args }),
+                        );
+                    }
+                }
+            });
+            Default::default()
+        })
+    }
+
+    pub fn start(command: &str, args: &str) -> u64 {
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        table()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, (command.into(), args.into(), Instant::now(), 0));
+        id
+    }
+
+    pub fn end(id: u64) {
+        table()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+    }
 }
 
 fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
@@ -539,6 +600,28 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             Ok(
                 json!({ "hero_id": pv.hero_id, "anchors": pv.anchors, "frames": frames, "ms": t.elapsed().as_millis() as u64 }),
             )
+        }
+        // The Apply popover's tiles for Paste, Sync and Auto (crate::apply_preview).
+        "apply_preview" => {
+            let a: ApplyPreviewArgs = args(command, a)?;
+            let lib = Library::open(tools.library())?;
+            let edge = a
+                .long_edge
+                .unwrap_or(224)
+                .clamp(64, crate::auto::MEASURE_EDGE as u32) as usize;
+            let t = std::time::Instant::now();
+            let frames: Vec<Value> =
+                crate::apply_preview::preview(&lib, &a.change, &a.photo_ids, edge)?
+                    .iter()
+                    .map(|f| {
+                        let mut v = json!(f);
+                        if let Some(j) = &f.jpeg {
+                            v["image"] = data_url(j);
+                        }
+                        v
+                    })
+                    .collect();
+            Ok(json!({ "frames": frames, "ms": t.elapsed().as_millis() as u64 }))
         }
         "framing_preview" => {
             let a: FramingArgs = args(command, a)?;

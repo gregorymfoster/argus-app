@@ -170,9 +170,11 @@ impl Libraries {
                 Ok(self.info(&s))
             }
             _ => {
-                let s = self.state.read().unwrap();
-                let root = s
-                    .current
+                // Copy the root out and let go of the lock before running the command: held
+                // across a long command (an Apply look, a cull), a waiting open_library would
+                // block every other command behind it (docs/agents/concurrency.md).
+                let root = self.state.read().unwrap().current.clone();
+                let root = root
                     .as_deref()
                     .ok_or_else(|| Error("no Library is open; create or open one first".into()))?;
                 if !Library::is_library(root) {

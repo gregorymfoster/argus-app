@@ -259,3 +259,68 @@ fn auto_sets_denoise_from_the_raws_own_noise() {
     assert_eq!(denoise_of(n), Some(0.0));
     std::env::remove_var("ARGUS_DENOISE_FAKE");
 }
+
+/// Picks get their Denoise base made ahead of time (lowest priority, so only while the Mac is
+/// idle), but only when the frame is noisy; opening a Photo raises its queued precompute.
+#[test]
+fn picks_get_their_base_precomputed_when_noisy() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw-a7rv");
+    let (noisy, clean) = (dir.join("DSC08006.ARW"), dir.join("DSC07856.ARW"));
+    if !noisy.is_file() || !clean.is_file() {
+        eprintln!("precompute: needs fixtures/raw-a7rv DSC08006 and DSC07856, skipping");
+        return;
+    }
+    let _env = crate::env_lock();
+    std::env::set_var("ARGUS_DENOISE_FAKE", "1");
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    std::fs::create_dir_all(&card).unwrap();
+    for f in [&noisy, &clean] {
+        std::fs::copy(f, card.join(f.file_name().unwrap())).unwrap();
+    }
+    let tools = Tools::new(tmp.path().join("Argus.library"));
+    json1(
+        &tools,
+        "import_folder",
+        json!({ "folder": card.to_str().unwrap(), "shoot_name": "2026-11-02_Precompute" }),
+    );
+    let lib = Library::open(tools.library()).unwrap();
+    let photos = lib.list_photos(&Default::default()).unwrap();
+    let photo = |name: &str| photos.iter().find(|p| p.file_name == name).unwrap().clone();
+    let (n, c) = (photo("DSC08006.ARW"), photo("DSC07856.ARW"));
+    drop(lib);
+    // Let import's own background work finish first, so only the Picks' jobs are new.
+    jobs::drain(&tools, Compute::Gentle).unwrap();
+    json1(
+        &tools,
+        "set_verdict",
+        json!({ "photo_ids": [n.id, c.id], "verdict": "pick", "as": "person" }),
+    );
+    let queued = json1(&tools, "list_jobs", json!({ "kind": "denoise" }));
+    let queued = queued.as_array().unwrap();
+    assert_eq!(queued.len(), 2, "{queued:?}");
+    assert!(
+        queued
+            .iter()
+            .all(|j| j["priority"] == denoise::PRIORITY_PRECOMPUTE),
+        "{queued:?}"
+    );
+    // Opening the noisy one puts its base first.
+    argus_engine::commands::dispatch(&tools, "focus_photo", json!({ "photo_id": n.id })).unwrap();
+    let raised = json1(&tools, "list_jobs", json!({ "kind": "denoise" }));
+    assert!(
+        raised
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|j| j["args"]["photo_id"] == n.id && j["priority"] == jobs::PRIORITY_FOCUS),
+        "{raised}"
+    );
+    jobs::drain(&tools, Compute::Gentle).unwrap();
+    assert!(
+        denoise::ready(&n).is_some(),
+        "the noisy Pick's base was made"
+    );
+    assert!(denoise::ready(&c).is_none(), "the clean Pick was skipped");
+    std::env::remove_var("ARGUS_DENOISE_FAKE");
+}

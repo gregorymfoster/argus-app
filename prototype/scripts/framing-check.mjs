@@ -45,6 +45,8 @@ const serve = spawn(bin, ['serve', '--library', library, '--port', '7881'], {
   env: { ...process.env, ARGUS_COMPUTE: 'full', ARGUS_MODEL_LOCK_DIR: mkdtempSync(join(tmpdir(), 'argus-model-')), ARGUS_FOREGROUND_DIR: mkdtempSync(join(tmpdir(), 'argus-foreground-')) },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
+// A crash must not leave the engine holding its port for the next run ("Address already in use").
+process.on('exit', () => serve.kill());
 const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5201, strictPort: true, proxy: { '/api': 'http://127.0.0.1:7881', '/previews': 'http://127.0.0.1:7881' } }, logLevel: 'error' });
 await vite.listen();
 const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});

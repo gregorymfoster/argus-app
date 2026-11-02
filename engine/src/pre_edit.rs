@@ -1,7 +1,7 @@
-//! Edit as you cull: once the person has edited a RAW of a Shoot by hand, every Pick and likely
-//! keeper they haven't edited gets a Shoot match ([`crate::shoot_match`]) as a Suggestion,
-//! worked out in the background with no model call, so most of a Shoot is edited by the time
-//! the cull is done. Nothing changes until the person accepts one (`accept_suggestion`).
+//! Shoot match Suggestions for a Shoot ([`crate::shoot_match`]), no model call, when asked for
+//! (tool `pre_edit_shoot`). Until 2026-11-02 this ran by itself after every hand edit ("edit as
+//! you cull"); Greg chose one way to spread a look instead, Edit's Apply look
+//! ([`crate::shoot_look`]), so nothing queues it now. Nothing changes until the person accepts one.
 //!
 //! The hero is the RAW they edited last; its other settings (colour mixer, effects, Look) come
 //! along as Lightroom's Sync would bring them, and only the Basic sliders are matched to each
@@ -71,35 +71,6 @@ pub fn targets(lib: &Library, shoot: ShootId, every: bool) -> Result<Vec<Photo>>
     }
     out.sort_by_key(|p| (p.verdict != Verdict::Pick, std::cmp::Reverse(p.stars)));
     Ok(out)
-}
-
-/// Queue a pre-edit of `shoot` when the person has edited one of its RAWs, so it picks up
-/// new Picks, new likely keepers and new anchors. One at a time per Shoot; a run that finds
-/// everything up to date costs a few reads.
-pub fn queue(lib: &mut Library, shoot: ShootId) -> Result<()> {
-    if hand_edited(lib, shoot)?.is_empty() {
-        return Ok(());
-    }
-    enqueue(lib, shoot)
-}
-
-/// After the person saved a Recipe of `photo`: a hand edit of a RAW sets the Shoot's style.
-pub fn queue_after_edit(lib: &mut Library, photo: PhotoId) -> Result<()> {
-    match lib.photo(photo)? {
-        Some(p) if p.kind == "raw" => enqueue(lib, p.shoot_id),
-        _ => Ok(()),
-    }
-}
-
-fn enqueue(lib: &mut Library, shoot: ShootId) -> Result<()> {
-    crate::jobs::enqueue(
-        lib,
-        "pre_edit_shoot",
-        &serde_json::json!({ "shoot_id": shoot }),
-        None,
-        None,
-    )?;
-    Ok(())
 }
 
 /// Give every target of `shoot` an up-to-date Shoot match; `progress(done, total)` counts them.

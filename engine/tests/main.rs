@@ -25,6 +25,25 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Run `f` on its own thread and fail the test if it hasn't finished in `secs`: the pattern
+/// for any code that goes parallel while sharing a lock, a cache or a one-time init, so a
+/// deadlock fails loudly instead of hanging `just check` (docs/agents/concurrency.md). A hung
+/// thread is left behind; the test binary exits anyway once the test fails.
+pub fn must_finish<T: Send + 'static>(
+    secs: u64,
+    what: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(secs))
+        .unwrap_or_else(|_| {
+            panic!("{what} didn't finish in {secs} s: a deadlock? (docs/agents/concurrency.md)")
+        })
+}
+
 mod agent;
 mod analyzers;
 mod commands;

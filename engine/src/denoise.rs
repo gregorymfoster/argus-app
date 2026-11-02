@@ -236,6 +236,8 @@ pub fn queue_on_open(
     photo: crate::library::PhotoId,
 ) -> Result<()> {
     lib.set_setting(FOCUSED, &serde_json::json!(photo))?;
+    // A Pick's precompute for it, queued for an idle moment, runs now instead.
+    lib.raise_job(&format!("denoise:{photo}"), crate::jobs::PRIORITY_FOCUS)?;
     let Some(r) = lib.read_recipe(photo)? else {
         return Ok(());
     };
@@ -266,7 +268,143 @@ fn queue_base(
         Some(crate::jobs::PRIORITY_FOCUS),
         None,
     )?;
+    // A precompute already queued for it at low priority jumps ahead now.
+    lib.raise_job(&format!("denoise:{photo}"), crate::jobs::PRIORITY_FOCUS)?;
     Ok(())
+}
+
+/// Priority of a Pick's precomputed base: below every other background job, and a model
+/// kind, so it runs only while the Mac is idle (or overnight) and never ahead of the open
+/// Photo.
+pub const PRIORITY_PRECOMPUTE: i64 = 2;
+
+/// How much the Library's cache may hold in denoised bases (about 60 A7R V frames).
+/// Precomputes stop at it ([`room_to_precompute`]); past it, a base the person asks for
+/// drops the least recently used ([`evict`]), never the one just made or the open Photo's.
+pub const CACHE_CAP: u64 = 20 * 1024 * 1024 * 1024;
+
+/// `photos` were made Picks: queue each RAW's base at [`PRIORITY_PRECOMPUTE`], so moving the
+/// Denoise slider on a Pick is instant. The job decides when it runs whether the frame is
+/// noisy enough to be worth it ([`wants_precompute`]); queueing costs nothing.
+pub fn queue_precompute(
+    lib: &mut crate::library::Library,
+    photos: &[crate::library::PhotoId],
+) -> Result<()> {
+    for &id in photos {
+        let Some(p) = lib.photo(id)? else { continue };
+        if base_file(&p).is_none_or(|f| f.is_file()) {
+            continue;
+        }
+        crate::jobs::enqueue(
+            lib,
+            "denoise",
+            &serde_json::json!({ "photo_id": id, "precompute": true }),
+            Some(PRIORITY_PRECOMPUTE),
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+/// Once per Library: queue precomputed bases for the Picks made before precomputing existed.
+pub fn backfill_picks(lib: &mut crate::library::Library) -> Result<()> {
+    const DONE: &str = "denoise_precompute_backfill";
+    if lib.setting(DONE)?.is_some() {
+        return Ok(());
+    }
+    lib.set_setting(DONE, &serde_json::json!(1))?;
+    let picks: Vec<_> = lib
+        .list_photos(&crate::library::PhotoFilter {
+            shoot: None,
+            verdict: Some(crate::library::Verdict::Pick),
+        })?
+        .into_iter()
+        .filter(|p| p.kind == "raw")
+        .map(|p| p.id)
+        .collect();
+    queue_precompute(lib, &picks)
+}
+
+/// Whether a precompute for `photo` is worth half a minute of GPU and ~330 MB: still a Pick,
+/// and its Recipe has a Denoise Amount or Auto Denoise would give it one.
+pub fn wants_precompute(
+    lib: &crate::library::Library,
+    photo: &Photo,
+    recipe: &Recipe,
+) -> Result<bool> {
+    if photo.verdict != crate::library::Verdict::Pick || base_file(photo).is_none() {
+        return Ok(false);
+    }
+    if let Some(v) = recipe.global.other.get("denoise").and_then(|v| v.as_f64()) {
+        return Ok(v > 0.0);
+    }
+    let facts = crate::analyzers::facts(lib, photo, &["noise"])?;
+    Ok(facts
+        .get("noise")
+        .and_then(crate::analyzers::noise::read)
+        .is_some_and(|m| {
+            crate::noise::auto_amount(crate::noise::visible(&m, recipe.global.exposure)) > 0.0
+        }))
+}
+
+/// Keep the Library's denoised bases under `cap` bytes: drop the least recently used (by
+/// modified time, which [`base_at`] refreshes on every read) except `keep`. Returns how
+/// many were dropped.
+pub fn evict(root: &Path, cap: u64, keep: &[PathBuf]) -> Result<usize> {
+    let dir = root.join(CACHE_DIR).join("denoise");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(0);
+    };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            let path = e.path();
+            (m.is_file() && path.extension().is_some_and(|x| x == "bin"))
+                .then(|| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), path))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort_by_key(|f| f.0);
+    let mut dropped = 0;
+    for (_, len, path) in files {
+        if total <= cap {
+            break;
+        }
+        if keep.contains(&path) {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+            dropped += 1;
+        }
+    }
+    Ok(dropped)
+}
+
+/// Bytes the Library's denoised bases take now.
+pub fn cache_bytes(root: &Path) -> u64 {
+    std::fs::read_dir(root.join(CACHE_DIR).join("denoise"))
+        .map(|d| {
+            d.flatten()
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Whether a precompute still fits under [`CACHE_CAP`] (room for one more ~330 MB base).
+/// A precompute never evicts: it fills the cache up to the cap and stops, so an idle Mac
+/// doesn't make bases only to throw them away. Bases the person asks for evict instead.
+pub fn room_to_precompute(root: &Path) -> bool {
+    cache_bytes(root) + 400 * 1024 * 1024 <= CACHE_CAP
+}
+
+/// The Photo the person has open, if [`queue_on_open`] saw one.
+pub fn focused(lib: &crate::library::Library) -> Result<Option<crate::library::PhotoId>> {
+    Ok(lib.setting(FOCUSED)?.and_then(|v| v.as_i64()))
 }
 
 /// Compute `photo`'s denoised base unless it exists: decode the RAW, demosaic at full size,
@@ -343,6 +481,10 @@ fn load(file: &Path) -> Result<(Vec<f32>, usize, usize)> {
 /// pixel for pixel: halved by 2x2 quads when that path halves, then area-resized.
 pub fn base_at(file: &Path, long_edge: Option<usize>) -> Result<(Vec<f32>, usize, usize)> {
     let (rgb, w, h) = load(file)?;
+    // Mark it recently used, so the cache cap ([`evict`]) drops colder bases first.
+    if let Ok(f) = std::fs::File::options().write(true).open(file) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
     let Some(t) = long_edge.map(|t| t.max(1)) else {
         return Ok((rgb, w, h));
     };
@@ -584,6 +726,33 @@ fn tile_input(rgb: &[f32], w: usize, h: usize, x0: usize, y0: usize, gain: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evict_drops_the_coldest_bases_past_the_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(CACHE_DIR).join("denoise");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = std::time::SystemTime::now();
+        let files: Vec<PathBuf> = (0..4)
+            .map(|i| {
+                let f = dir.join(format!("{i}.v1.bin"));
+                std::fs::write(&f, vec![0u8; 100]).unwrap();
+                let at = now - std::time::Duration::from_secs(100 - i * 10);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&f)
+                    .unwrap()
+                    .set_modified(at)
+                    .unwrap();
+                f
+            })
+            .collect();
+        // 400 bytes, cap 250: the two oldest go, unless one is kept.
+        assert_eq!(evict(tmp.path(), 250, &[files[0].clone()]).unwrap(), 2);
+        let left: Vec<bool> = files.iter().map(|f| f.is_file()).collect();
+        assert_eq!(left, [true, false, false, true]);
+        assert_eq!(evict(tmp.path(), 1000, &[]).unwrap(), 0);
+    }
 
     #[test]
     fn tiles_cover_every_pixel_and_end_flush() {

@@ -1,0 +1,4 @@
+# Written by scripts/ui-gate when the release UI checks passed. Releases check it (scripts/ui-gate --verify).
+prototype 14c92016b73910e9ecd6cdb15a1a9c3651d5c928
+engine cb0310db8545259e6e495449dc57e5fb81064b77
+passed 2026-11-02 10:53 ET at 27df7e5

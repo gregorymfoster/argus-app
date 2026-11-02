@@ -17,6 +17,7 @@
 
 pub mod agent;
 pub mod analyzers;
+pub mod apply_preview;
 pub mod auto;
 pub mod bursts;
 pub mod color;
@@ -58,6 +59,7 @@ pub mod presets;
 mod preview;
 pub mod progress;
 pub mod providers;
+pub mod quick_fixes;
 pub mod rawcheck;
 pub mod recipe;
 pub mod render;
@@ -65,6 +67,7 @@ pub mod shoot_look;
 pub mod shoot_match;
 pub mod shoot_split;
 pub mod signals;
+pub mod stall;
 pub mod style;
 pub mod suggest;
 pub mod tagging;
@@ -580,6 +583,19 @@ pub fn develop_rgb8_scaled(
         height: img.height,
         data: finish_pixels(&lin, img.width, img.height, &fin, &adjust, scale),
     }
+}
+
+/// `cell.get_or_init(f)` without running `f` inside the init: use it when `f` goes parallel
+/// (rayon). A rayon worker waiting in `f` can steal another task that wants this same cell,
+/// and `get_or_init` would block it on itself for good (docs/agents/concurrency.md). Two
+/// callers racing may both compute; the first value is kept.
+pub fn get_or_compute<T>(cell: &std::sync::OnceLock<T>, f: impl FnOnce() -> T) -> &T {
+    if let Some(v) = cell.get() {
+        return v;
+    }
+    let v = f();
+    let _ = cell.set(v);
+    cell.get().expect("set above")
 }
 
 #[cfg(test)]

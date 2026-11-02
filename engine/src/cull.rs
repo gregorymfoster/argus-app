@@ -1115,8 +1115,6 @@ pub fn rerate(lib: &mut Library, shoot: ShootId) -> Result<Rerate> {
         lib.set_rating(&[p.id], stars, Author::Ai, None)?;
         out.changed += 1;
     }
-    // New likely keepers, and Picks since the last run, get their Shoot match.
-    crate::pre_edit::queue(lib, shoot)?;
     Ok(out)
 }
 

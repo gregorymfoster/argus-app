@@ -66,6 +66,16 @@ export function sortPhotos(photos: Photo[], sort: Sort, facts: SortFacts, stacks
     }
   const head = (p: Photo) => (stacks && p.stackId ? lead.get(p.stackId)! : p);
   const dir = sort.desc ? -1 : 1;
+  // Keepers first holds what the person passed (data/keepers.ts), so a Stack can't jump when a
+  // flag changes its lead frame: it sits at its earliest frame in the held order, and its frames
+  // keep their held order inside it.
+  if (sort.key === 'keepers' && facts.keeper) {
+    const rank = facts.keeper;
+    const at = new Map<string, number>();
+    if (stacks) for (const p of photos) if (p.stackId) at.set(p.stackId, Math.min(at.get(p.stackId) ?? Infinity, rank(p.id)));
+    const place = (p: Photo) => (stacks && p.stackId ? at.get(p.stackId)! : rank(p.id));
+    return [...photos].sort((a, b) => (place(a) - place(b)) * dir || (stacks && a.stackId && a.stackId === b.stackId ? rank(a.id) - rank(b.id) || (a.stackRank ?? 0) - (b.stackRank ?? 0) : 0) || a.index - b.index);
+  }
   return [...photos].sort((a, b) => {
     const ha = head(a);
     const hb = head(b);

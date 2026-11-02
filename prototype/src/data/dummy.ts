@@ -18,8 +18,14 @@ const SHIRTS = ['#3D5A80', '#B5443C', '#E9C46A', '#2A9D8F', '#F4F1DE', '#6D597A'
 const HAIRS = ['#2B1D14', '#4A3222', '#7A5230', '#C9A26B', '#1C1C1C', '#8C8C8C'];
 const KINDS: SceneKind[] = ['lake', 'forest', 'cabin', 'dusk', 'street'];
 
+/** `?stress=1`: the awkward cases real Shoots have and the tidy demo didn't (2026-11-02, after
+ *  bugs with portraits, a Stack too big for one page and long labels reached Greg). Every third
+ *  Photo is a portrait, the first burst has 40 frames, and the Shoot's name is long. The layout
+ *  checks (`just layout`, `just ui-gate`) run every screen with it. */
+export const STRESS = typeof location !== 'undefined' && new URLSearchParams(location.search).get('stress') === '1';
+
 // SHOOT, OTHER_SHOOTS, PHOTOS and STACKS are filled in place by data/live.ts in live mode.
-export const SHOOT: Shoot = { id: 'tahoe', name: 'Tahoe, Oct 12', count: 112, live: true };
+export const SHOOT: Shoot = { id: 'tahoe', name: STRESS ? 'Tahoe with the whole family and the boat, Oct 12' : 'Tahoe, Oct 12', count: 112, live: true };
 export const OTHER_SHOOTS: Shoot[] = [
   { id: 'dinner', name: 'Birthday dinner', count: 86, live: false },
   { id: 'lisbon', name: 'Lisbon', count: 240, live: false },
@@ -67,7 +73,7 @@ function moments(): Moment[] {
   let i = 0;
   while (total < 112) {
     const wantBurst = bursts < 9 && i % 4 === 1;
-    const frames = Math.min(wantBurst ? 3 + Math.floor(r() * 4) : 1, 112 - total);
+    const frames = Math.min(STRESS && wantBurst && bursts === 0 ? 40 : wantBurst ? 3 + Math.floor(r() * 4) : 1, 112 - total);
     if (frames > 1) bursts++;
     const kind = KINDS[Math.floor(r() * KINDS.length)];
     const n = r() < 0.15 ? 0 : r() < 0.55 ? 1 + Math.floor(r() * 2) : 3 + Math.floor(r() * 3);
@@ -164,6 +170,7 @@ function build(): { photos: Photo[]; stacks: Stack[] } {
         stackId,
         stackRank: stackId ? (isBest ? 0 : 1 + Math.abs(f - bestFrame)) : undefined,
         exif: `${shutter} · ${ap} · ISO ${iso} · 35mm`,
+        ...(STRESS && index % 3 === 2 ? { pixels: [4000, 6000] as [number, number] } : {}),
         group: people >= 3,
       });
       index++;

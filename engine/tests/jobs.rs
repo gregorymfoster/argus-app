@@ -470,7 +470,7 @@ fn apply_to_the_rest_on_raws_leads_with_the_shoot_match() {
 }
 
 #[test]
-fn a_hand_edit_pre_edits_the_picks_with_a_shoot_match_until_the_person_answers() {
+fn a_hand_edit_leaves_the_rest_of_the_shoot_alone() {
     let raws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw");
     let mut found: Vec<_> = std::fs::read_dir(&raws)
         .map(|d| {
@@ -520,48 +520,11 @@ fn a_hand_edit_pre_edits_the_picks_with_a_shoot_match_until_the_person_answers()
         .clone()
     };
     edit(40);
-    let m = matches(pick);
-    assert_eq!(m.len(), 1, "one Shoot match for the Pick: {m:?}");
-    assert_eq!(
-        (
-            m[0]["title"].as_str(),
-            m[0]["status"].as_str(),
-            m[0]["reference_id"].as_i64()
-        ),
-        (Some("Shoot match"), Some("open"), Some(hero))
-    );
-    assert_eq!(
-        m[0]["recipe"]["global"]["saturation"], 12.0,
-        "the hero's other sliders come along, as Sync brings them"
-    );
-    assert!(matches(unflagged).is_empty(), "not a Pick or likely keeper");
-    let recipe = json1(&tools, "read_recipe", json!({ "photo_id": pick }));
     assert!(
-        recipe.get("version").is_none_or(Value::is_null),
-        "nothing changes until the person accepts: {recipe}"
+        matches(pick).is_empty() && matches(unflagged).is_empty(),
+        "nothing spreads by itself: Apply look is the one way (Greg, 2026-11-02)"
     );
     assert!(seen.lock().unwrap().is_empty(), "no model asked");
-
-    // Another hand edit makes it stale; the next run works it out again.
-    edit(-20);
-    let again = matches(pick);
-    assert_eq!(again.len(), 1);
-    assert_ne!(
-        again[0]["recipe"], m[0]["recipe"],
-        "worked out again from the new edit"
-    );
-
-    // Accepted, it is the person's answer: later edits leave it alone.
-    tools
-        .call(
-            "accept_suggestion",
-            json!({ "suggestion_id": again[0]["id"] }),
-        )
-        .unwrap();
-    edit(10);
-    let after = matches(pick);
-    assert_eq!(after.len(), 1, "{after:?}");
-    assert_eq!(after[0]["status"], "accepted");
 }
 
 #[test]
@@ -681,20 +644,6 @@ fn the_shoot_look_follows_the_hero_as_dragged_and_locking_it_readies_every_frame
         "what the strip showed is what the lock suggests"
     );
     assert!(matches(reject).is_empty(), "Rejects are left out");
-    tools
-        .call("dismiss_suggestion", json!({ "suggestion_id": m[0]["id"] }))
-        .unwrap();
-    argus_engine::commands::dispatch(
-        &tools,
-        "edit",
-        json!({ "photo_id": hero, "recipe": { "global": { "temp": 10, "saturation": 12 } } }),
-    )
-    .unwrap();
-    jobs::drain(&tools, Compute::Full).unwrap();
-    assert!(
-        matches(other).iter().any(|s| s["status"] == "open"),
-        "the Shoot stays locked: a later hand edit re-matches every frame, even a dismissed one"
-    );
     assert!(seen.lock().unwrap().is_empty(), "no model asked");
 }
 
@@ -1651,4 +1600,194 @@ fn apply_look_writes_the_previewed_match_as_one_undo_keeping_hand_edits_and_crop
         "one Undo takes the look off: {back}"
     );
     assert!(seen.lock().unwrap().is_empty(), "no model asked");
+}
+
+/// Greg, 2026-11-02: Apply look sat at "90 of 101" with nothing saying why. A frame that never
+/// finishes must not hold up the rest: the call returns, the frame comes back failed with why
+/// (and Apply skips it with that reason), and the next call still draws it.
+#[test]
+fn a_stuck_shoot_look_frame_comes_back_failed_instead_of_hanging_the_call() {
+    let raws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw");
+    let mut found: Vec<_> = std::fs::read_dir(&raws)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "ARW"))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if found.len() < 2 {
+        eprintln!("jobs: fewer than two fixtures/raw/*.ARW, skipping");
+        return;
+    }
+    let (_t, tools, ids, _) = library_of(
+        |src| {
+            for f in &found[..2] {
+                std::fs::copy(f, src.join(f.file_name().unwrap())).unwrap();
+            }
+        },
+        false,
+    );
+    let (hero, other) = (ids[0], ids[1]);
+    argus_engine::commands::dispatch(
+        &tools,
+        "edit",
+        json!({ "photo_id": hero, "recipe": { "global": { "temp": 30, "denoise": 26 } } }),
+    )
+    .unwrap();
+    let lib = Library::open(tools.library()).unwrap();
+    let h = lib.photo(hero).unwrap().unwrap();
+    let recipe =
+        argus_engine::recipe::Recipe::from_value(&lib.read_recipe(hero).unwrap().unwrap().recipe)
+            .unwrap();
+    // A budget no RAW decode fits in stands in for a frame that hangs.
+    let stuck = argus_engine::shoot_look::preview_within(
+        &lib,
+        &h,
+        &recipe,
+        &[other],
+        Some(64),
+        std::time::Duration::from_millis(1),
+    )
+    .unwrap();
+    // Had it waited, the frame would have come back drawn: the error is the proof.
+    let f = &stuck.frames[0];
+    assert_eq!(f.photo_id, other);
+    assert!(
+        f.error
+            .as_deref()
+            .is_some_and(|e| e.contains("left as it is")),
+        "{:?}",
+        f.error
+    );
+    let drawn = argus_engine::shoot_look::preview(&lib, &h, &recipe, &[other], Some(64)).unwrap();
+    assert!(
+        drawn.frames[0].error.is_none(),
+        "{:?}",
+        drawn.frames[0].error
+    );
+    assert!(drawn.frames[0].jpeg.is_some());
+}
+
+/// The Apply popover's tiles for Paste, Sync and Auto (Greg, 2026-11-02): each Photo drawn as
+/// the edit leaves it, nothing saved, a hand-edited one marked so it starts left out, and a
+/// stuck Photo coming back failed instead of holding up the call.
+#[test]
+fn apply_preview_draws_paste_and_auto_without_saving_and_never_hangs() {
+    let raws = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/raw");
+    let mut found: Vec<_> = std::fs::read_dir(&raws)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "ARW"))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    if found.len() < 2 {
+        eprintln!("jobs: fewer than two fixtures/raw/*.ARW, skipping");
+        return;
+    }
+    let (_t, tools, ids, _) = library_of(
+        |src| {
+            for f in &found[..2] {
+                std::fs::copy(f, src.join(f.file_name().unwrap())).unwrap();
+            }
+        },
+        false,
+    );
+    let (from, other) = (ids[0], ids[1]);
+    let dispatch = |c: &str, a: Value| argus_engine::commands::dispatch(&tools, c, a).unwrap();
+    dispatch(
+        "edit",
+        json!({ "photo_id": from, "recipe": { "global": { "exposure": 0.5 } } }),
+    );
+    let lib = Library::open(tools.library()).unwrap();
+    let saved = |id| lib.read_recipe(id).unwrap().map(|v| v.recipe);
+    let before = saved(other);
+
+    for change in [
+        json!({ "kind": "paste", "from": from, "groups": ["light"] }),
+        json!({ "kind": "auto" }),
+        json!({ "kind": "recipes", "recipes": { from.to_string(): { "global": { "temp": 20 } }, other.to_string(): { "global": { "temp": 20 } } } }),
+    ] {
+        let r = dispatch(
+            "apply_preview",
+            json!({ "change": change, "photo_ids": [from, other], "long_edge": 96 }),
+        );
+        let frames = r["frames"].as_array().unwrap();
+        let want = if change["kind"] == "paste" { 1 } else { 2 };
+        assert_eq!(
+            frames.len(),
+            want,
+            "{change}: the source of a paste is left out"
+        );
+        let f = frames.iter().find(|f| f["photo_id"] == other).unwrap();
+        assert!(f["error"].is_null(), "{change}: {}", f["error"]);
+        assert!(f["image"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("data:image/jpeg")));
+        assert_eq!(f["hand"], false);
+        assert_eq!(saved(other), before, "{change}: the preview saved nothing");
+    }
+    let hand = dispatch(
+        "apply_preview",
+        json!({ "change": { "kind": "auto" }, "photo_ids": [from], "long_edge": 96 }),
+    );
+    assert_eq!(
+        hand["frames"][0]["hand"], true,
+        "the person's own edit is marked"
+    );
+
+    // Sync to Look: the dry run names who the Look reaches, the preview draws them, and a
+    // Photo kept out stays off the Look.
+    let dry = dispatch("sync_to_look", json!({ "photo_id": from, "dry_run": true }));
+    let under: Vec<i64> = serde_json::from_value(dry["photos_under_look"].clone()).unwrap();
+    assert!(under.contains(&other), "{dry}");
+    assert_eq!(saved(other), before, "the dry run saved nothing");
+    let pv = dispatch(
+        "apply_preview",
+        json!({ "change": { "kind": "sync_look", "from": from }, "photo_ids": [other], "long_edge": 96 }),
+    );
+    assert!(
+        pv["frames"][0]["image"].is_string(),
+        "{}",
+        pv["frames"][0]["error"]
+    );
+    dispatch(
+        "sync_to_look",
+        json!({ "photo_id": from, "keep_out": [other] }),
+    );
+    let kept = lib
+        .read_recipe(other)
+        .unwrap()
+        .map(|v| v.recipe["look"].clone());
+    assert!(
+        kept.as_ref().is_none_or(|l| l.is_null()),
+        "the kept-out Photo went under the Look: {kept:?}"
+    );
+
+    // A budget no RAW decode fits in stands in for a Photo that hangs.
+    let t = std::time::Instant::now();
+    let stuck = argus_engine::apply_preview::preview_within(
+        &lib,
+        &argus_engine::apply_preview::Change::Auto,
+        &[other],
+        96,
+        std::time::Duration::from_millis(1),
+    )
+    .unwrap();
+    assert!(
+        t.elapsed().as_secs() < 5,
+        "the call waited on the stuck Photo"
+    );
+    assert!(
+        stuck[0]
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("left as it is")),
+        "{:?}",
+        stuck[0].error
+    );
 }

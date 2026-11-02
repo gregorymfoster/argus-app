@@ -12,13 +12,12 @@ import { useEyeFlags, type EyeFlags } from '../data/facts';
 import { EyeBadges } from '../ui/EyeBadges';
 import { askRemove } from '../ui/Remove';
 import { OTHER_SHOOTS, PHOTOS, PHOTO_BY_ID, SHOOT, STACK_BY_ID, stackOf } from '../data/dummy';
-import type { Photo, Verdict } from '../domain/types';
+import type { Photo, Suggestion, Verdict } from '../domain/types';
 import { recipeOf, roundIn, starsOf, useLibrary, verdictOf } from '../store/library';
 import { autoAction, runAuto } from '../data/auto';
 import { usePref } from '../store/variants';
 import { MIN_FLAGS, useLearnAsYouCull, type Learning } from '../data/learn';
 import { keeperRank, keepersAt, keepersReset, useKeepers } from '../data/keepers';
-import { acceptPreEdits, usePreEdits, type PreEdits } from '../data/preEdit';
 import { acceptCropOffers, dismissCropOffers, useCropOffers, type CropOffers } from '../data/cropOffer';
 import { sortToString } from '../domain/sort';
 import { go } from '../router';
@@ -34,7 +33,8 @@ import { SortMenu, toggleKeepers, toggleStars, useSort } from '../ui/Sort';
 import { sortPhotos } from '../domain/sort';
 import { aiName } from '../data/live';
 import { ESC_OUTSIDE_DIALOGS, Kbd, MenuKeys, Seg, Tip, VERDICT_KEYS, VERDICT_HOTKEYS } from '../ui/kit';
-import { askSettings, hasCopiedSettings, pasteClip, pasteSettings, useSettingsKeys } from '../ui/PasteSettings';
+import { askSettings, hasCopiedSettings, lastGroups, pasteClip, pasteSettings, useSettingsKeys } from '../ui/PasteSettings';
+import { askAuto, openApply } from '../ui/ApplyEdit';
 import { ALL_GROUPS } from '../domain/settings';
 import { Button } from '@/components/ui/button';
 import { FoundLine } from '../ui/Search';
@@ -392,7 +392,6 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   // Keepers first: the frames ahead of the cursor re-order as the person flags (data/keepers.ts).
   const keepers = useKeepers();
   // Edit as you cull: Shoot matches for the Picks and likely keepers, once a RAW is hand-edited.
-  const pre = usePreEdits(state);
   const crops = useCropOffers();
   // Sorted by Stars, the grid holds the order it had when the sort was chosen while the AI's
   // stars refresh, so nothing moves under the person (Greg, 2026-10-22); choosing it again re-sorts.
@@ -475,9 +474,14 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     else dispatch({ type: 'batch', label: `${ids.length} ${v === 'unflagged' ? 'unflagged' : `to ${v}`}`, actions: ids.map((id) => ({ type: 'verdict/set', id, verdict: v, by: 'you' })) });
   };
   // A accepts the first take on each target as one batch.
+  // A: the first waiting take on each Photo; on more than one through the Apply popover.
   const acceptFirst = (ids: string[]) => {
     const firsts = ids.map((id) => (takes[id] ?? []).find((t) => t.status === 'open')).filter((t) => !!t);
     if (!firsts.length) return dispatch({ type: 'toast', text: 'No Suggestions waiting on these Photos' });
+    if (firsts.length > 1) return openApply({ kind: 'takes', takes: firsts, apply: (keep) => acceptNow(firsts.filter((t) => keep.includes(t.photoId))) });
+    acceptNow(firsts);
+  };
+  const acceptNow = (firsts: Suggestion[]) => {
     if (!LIVE) {
       return dispatch({ type: 'batch', label: `Suggestions on ${firsts.length} Photo${firsts.length > 1 ? 's' : ''}`, actions: firsts.map((t) => ({ type: 'recipe/set', id: t.photoId, recipe: t.recipe, label: `Suggestion: ${t.title}`, by: 'ai' })) });
     }
@@ -705,7 +709,9 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   useHotkeys('l', () => (inCollection() ? toast('Open a Shoot to set its Look', { id: 'argus' }) : counts.pick ? go({ name: 'look' }) : toast('Pick some Photos first', { id: 'argus', description: 'A Look is set on the Picks of a Shoot (Z picks).' })), [counts.pick]);
   // Lightroom's Auto on the selection, or on the whole Shoot before culling starts.
   const autoIds = sel.size > 1 ? [...sel] : all.map((p) => p.id);
-  const autoAll = () => runAuto(autoIds, (id) => recipeOf(state, id), dispatch);
+  // Through the Apply popover (ui/ApplyEdit.tsx): the selection, or the Shoot with Picks / All but Rejects.
+  const runIds = (ids: string[]) => runAuto(ids, (id) => recipeOf(state, id), dispatch);
+  const autoAll = () => askAuto(sel.size > 1 ? [...sel] : null, runIds, document.querySelector('[data-testid="auto-all"]'));
   useHotkeys('shift+a', autoAll, [autoIds, state]);
   useHotkeys('g', () => go({ name: 'cull' }));
 
@@ -716,12 +722,12 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
       others: others.length,
       onAuto: () => {
         const ids = sel.has(p.id) ? [...sel] : [p.id];
-        if (ids.length > 1) runAuto(ids, (id) => recipeOf(state, id), dispatch);
+        if (ids.length > 1) askAuto(ids, runIds);
         else dispatch(autoAction(ids, (id) => recipeOf(state, id)));
       },
       onApplyToSelection: () => copyEdit(p.id, others),
       onPaste: () => pasteCopied(sel.has(p.id) && sel.size > 1 ? [...sel] : [p.id]),
-      onSync: () => askSettings({ mode: 'sync', from: p.id, targets: others }),
+      onSync: () => pasteSettings(state, dispatch, p.id, others, lastGroups(), 'sync'),
       onCompare: () => go({ name: 'compare', ids: others.length ? [p.id, ...others] : stackOf(p).map((x) => x.id) }),
       onAsk: () => {
         const i = visible.findIndex((x) => x.id === p.id);
@@ -753,7 +759,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const moveTo = (ids: string[], to: Parameters<typeof movePhotos>[1]) =>
     void movePhotos(ids, to).catch((e) => toast(String(e).replace(/^Error: /, ''), { id: 'argus' }));
   // "Apply this edit": the whole edit onto the others, as one batch (⇧⌘S asks which groups).
-  const copyEdit = (from: string, to: string[]) => pasteSettings(state, dispatch, from, to, ALL_GROUPS);
+  const copyEdit = (from: string, to: string[]) => pasteSettings(state, dispatch, from, to, ALL_GROUPS, 'copy');
   const pasteCopied = (to: string[]) => pasteClip(state, dispatch, to);
   useSettingsKeys(current?.id ?? null, [...sel]);
   useHotkeys('mod+shift+a', () => current && copyEdit(current.id, [...sel].filter((id) => id !== current.id)), { preventDefault: true }, [current, sel, state]);
@@ -922,20 +928,23 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
             }}
           />
         )}
-        {pre.ready.length > 0 && (
-          <PreEditLine
-            pre={pre}
-            onAccept={() => acceptPreEdits(pre.ready, dispatch)}
-            onShow={() => {
-              setAiFilter('ready');
-              setCur(0);
-            }}
-          />
-        )}
         {crops.ready.length > 0 && (
           <CropOfferLine
             crops={crops}
-            onAccept={() => acceptCropOffers(crops.ready)}
+            onAccept={(at) =>
+              crops.ready.length > 1
+                ? openApply(
+                    {
+                      kind: 'takes',
+                      takes: crops.ready,
+                      onHand: true,
+                      words: { title: 'Crop like this', note: `Each frame shot around ${crops.hero ?? 'the Photo you cropped'} with your crop.`, foot: 'take the crop, nothing else' },
+                      apply: (keep) => acceptCropOffers(crops.ready.filter((s) => keep.includes(s.photoId))),
+                    },
+                    at,
+                  )
+                : acceptCropOffers(crops.ready)
+            }
             onShow={() => {
               setAiFilter('ready');
               setCur(0);
@@ -1184,41 +1193,12 @@ function NextStep({ shootId, rejects, fourUp, best, onPick, onReview }: { shootI
   );
 }
 
-/** Edit as you cull: the Shoot matches waiting on Picks and likely keepers, in one line under the
- * header, with Accept all (one Undo) and Show them (the Suggestions filter). ✕ hides it until
- * more arrive. */
-function PreEditLine({ pre, onAccept, onShow }: { pre: PreEdits; onAccept: () => void; onShow: () => void }) {
-  const [hidden, setHidden] = useState(0);
-  const n = pre.ready.length;
-  const cropped = pre.ready.filter((s) => s.recipe.crop).length;
-  if (hidden >= n) return null;
-  return (
-    <div className="ai-bar next-step" data-testid="pre-edits">
-      <Sparkles size={12} className="accent-text" />
-      <span className="trunc">
-        <b>
-          Shoot match ready for {n} Photo{n === 1 ? '' : 's'},
-        </b>{' '}
-        from the {pre.heroes === 1 ? 'Photo' : `${pre.heroes} Photos`} you edited{cropped ? `, ${cropped} with your crop` : ''}. <span className="faint">Nothing changes until you accept.</span>
-      </span>
-      <span className="grow" />
-      <Button variant="ghost" size="sm" onClick={onAccept} data-testid="pre-edits-accept">
-        Accept all {n}
-      </Button>
-      <Button variant="ghost" size="sm" onClick={onShow} data-testid="pre-edits-show">
-        Show them
-      </Button>
-      <button className="next-close" onClick={() => setHidden(n)} aria-label="Hide until more are ready" title="Hide until more are ready">
-        <X size={12} />
-      </button>
-    </div>
-  );
-}
 
 /** Crop like this: the hand crop offered to the frames shot around it, in one line under the
- * header (canvas board SL-Crop). Accept all is one Undo and changes only the crop; Not for these
+ * header (canvas board SL-Crop). Preview opens the Apply popover (one frame is accepted at once);
+ * Apply is one Undo and changes only the crop; Not for these
  * dismisses them, so the same crop isn't offered to them again. */
-function CropOfferLine({ crops, onAccept, onShow }: { crops: CropOffers; onAccept: () => void; onShow: () => void }) {
+function CropOfferLine({ crops, onAccept, onShow }: { crops: CropOffers; onAccept: (at: Element) => void; onShow: () => void }) {
   const n = crops.ready.length;
   return (
     <div className="ai-bar next-step" data-testid="crop-offers">
@@ -1230,8 +1210,8 @@ function CropOfferLine({ crops, onAccept, onShow }: { crops: CropOffers; onAccep
         the ones shot within 2 minutes of it. <span className="faint">Nothing changes until you accept.</span>
       </span>
       <span className="grow" />
-      <Button variant="ghost" size="sm" onClick={onAccept} data-testid="crop-offers-accept">
-        Accept all {n}
+      <Button variant="ghost" size="sm" onClick={(e) => onAccept(e.currentTarget)} data-testid="crop-offers-accept">
+        {n > 1 ? `Preview ${n}` : 'Accept'}
       </Button>
       <Button variant="ghost" size="sm" onClick={onShow} data-testid="crop-offers-show">
         Show them

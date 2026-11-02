@@ -243,8 +243,10 @@ export function previewUrl(photo: Photo, size: 'thumb' | 'full'): string {
   const key = `${photo.id}:${size}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const w = size === 'thumb' ? 480 : 1500;
-  const h = Math.round((w * 2) / 3);
+  const long = size === 'thumb' ? 480 : 1500;
+  const [pw, ph] = photo.pixels ?? [3, 2];
+  const w = pw >= ph ? long : Math.round((long * pw) / ph);
+  const h = pw >= ph ? Math.round((long * ph) / pw) : long;
   const a = document.createElement('canvas');
   a.width = w;
   a.height = h;

@@ -440,6 +440,10 @@ impl Library {
             }
         }
         tx.commit().map_err(db_err)?;
+        // A Pick is likely to be edited: make its Denoise base while the Mac is idle.
+        if verdict == Verdict::Pick {
+            crate::denoise::queue_precompute(self, photos)?;
+        }
         for &id in photos {
             self.log_usage(
                 id,
@@ -586,7 +590,6 @@ impl Library {
             crate::denoise::queue_if_needed(lib, photo, recipe, author)?;
             if author == Author::Person {
                 crate::crop_offer::after_edit(lib, photo, recipe)?;
-                crate::pre_edit::queue_after_edit(lib, photo)?;
             }
             Ok(next)
         })

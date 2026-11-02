@@ -58,12 +58,9 @@ export const presetById = (id: string) => PRESETS.find((p) => p.id === id);
  * The Edit panel's one-click fixes (design v2): each toggles one adaptive change on and off.
  * Brighten faces uses a per-person Mask (Lightroom's Select People: face skin of everyone).
  */
-export const FIXES: (Preset & { icon: 'sky' | 'face' | 'skin' | 'shadows' })[] = [
-  { id: 'fix-sky', name: 'Enhance sky', group: 'Fixes', icon: 'sky', local: [{ name: 'Sky: Enhance', mask: { kind: 'sky' }, adjust: { exposure: -0.15, highlights: -30, saturation: 12, contrast: 8 } }] },
-  { id: 'fix-faces', name: 'Brighten faces', group: 'Fixes', icon: 'face', local: [{ name: 'Faces: Brighten', mask: { kind: 'person', parts: ['face_skin'] }, adjust: { exposure: 0.25, shadows: 15 } }] },
-  { id: 'fix-skin', name: 'Even skin', group: 'Fixes', icon: 'skin', global: { skin: 30 } },
-  { id: 'fix-shadows', name: 'Lift shadows', group: 'Fixes', icon: 'shadows', global: { shadows: 30, blacks: 8 } },
-];
+const FIX_ICONS: Record<string, 'sky' | 'face' | 'skin' | 'shadows'> = { 'fix-sky': 'sky', 'fix-faces': 'face', 'fix-skin': 'skin', 'fix-shadows': 'shadows' };
+/** As engine/presets/builtin.json `fixes`; Auto adds the ones a Photo needs, gently (engine/src/quick_fixes.rs). */
+export const FIXES: (Preset & { icon: 'sky' | 'face' | 'skin' | 'shadows' })[] = (builtin.fixes as unknown as Preset[]).map((f) => ({ ...f, icon: FIX_ICONS[f.id] }));
 
 const byId = (id: string) => yours.find((p) => p.id === id) ?? presetById(id) ?? FIXES.find((f) => f.id === id);
 /** A Preset's slot by id; one of the person's since deleted still holds the Look slot. */

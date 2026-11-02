@@ -66,6 +66,8 @@ impl Library {
                 .or_default()
                 .clone()
         };
+        // lock-lint: ok, one render_previews per Library at a time; it runs on a command or Queue
+        // thread, never on a rayon worker, so the pool below can't steal work that wants this lock.
         let _one_at_a_time = lock.lock().unwrap();
         let settings = self.settings()?;
         let pool = compute.cpu_pool()?;

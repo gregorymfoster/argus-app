@@ -4,7 +4,9 @@
 //!
 //! Every line has `t` (UTC, milliseconds), `pid`, `proc` (the app, `argus work`, ...) and
 //! `kind`, plus fields of its own. Kinds: `start`, `command` (every UI command with its
-//! duration; polls only when slow or failing), `job` (each Queue job: duration, outcome
+//! duration; polls only when slow or failing), `command_slow` (one still running at 30 s,
+//! 2 min and 10 min, so a hung call shows), `slow_frame` and `frames_stalled` (Shoot look
+//! frames that took over 10 s, or that no frame finished for a minute), `job` (each Queue job: duration, outcome
 //! and the CPU, energy and GPU the AI used meanwhile), `ollama` and `claude` (each model
 //! request: tokens, load, prefill and output speed, cost), `model_wait`, `resources` (the
 //! Resource meter, every 30 s while a model works, every 5 min otherwise) and `note`

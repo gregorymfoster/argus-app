@@ -33,6 +33,13 @@ interface Preview {
 const EDGE = 224;
 /** Frames read per call on the first pass, so the bar moves. */
 const CHUNK = 6;
+/** A call slower than this shows which frames it is on; one slower than GIVE_UP is left behind
+ * (its frames marked as not drawn) so the rest of the Shoot still draws (Greg, 2026-11-02: the
+ * popover sat at "90 of 101" with nothing saying why). */
+const SLOW_MS = 8000;
+// The engine itself gives up on a stuck frame after a minute (shoot_look::STALL); this is the
+// backstop if the call itself never comes back.
+const GIVE_UP_MS = 90000;
 
 export interface ShootLook {
   frames: Record<string, LookFrame>;
@@ -42,16 +49,37 @@ export interface ShootLook {
   ms: number | null;
   anchors: string[];
   error: string | null;
+  /** A call running longer than SLOW_MS: its frames' ids and how long so far. */
+  slow: { ids: string[]; seconds: number } | null;
+  /** Frames left behind after GIVE_UP_MS. */
+  gaveUp: string[];
 }
 
 /** The Shoot `ids` as it will look with hero `heroId` edited as `recipe`. */
 export function useShootLook(heroId: string, recipe: Recipe, ids: string[], on: boolean): ShootLook {
-  const [out, setOut] = useState<ShootLook>({ frames: {}, reading: null, ms: null, anchors: [], error: null });
+  const [out, setOut] = useState<ShootLook>({
+    frames: {},
+    reading: null,
+    ms: null,
+    anchors: [],
+    error: null,
+    slow: null,
+    gaveUp: [],
+  });
   const json = JSON.stringify(recipe);
   const key = ids.join(',');
   // What each tile shows now (the Recipe it was drawn for), and the newest Recipe and frames
   // asked for. One call runs at a time; it picks up whatever is newest when it ends.
-  const s = useRef({ running: false, mounted: true, want: json, hero: heroId, ids, drawn: new Map<string, string>(), started: 0, read: 0 });
+  const s = useRef({
+    running: false,
+    mounted: true,
+    want: json,
+    hero: heroId,
+    ids,
+    drawn: new Map<string, string>(),
+    started: 0,
+    read: 0,
+  });
 
   useEffect(() => {
     const st = s.current;
@@ -69,7 +97,15 @@ export function useShootLook(heroId: string, recipe: Recipe, ids: string[], on: 
       st.drawn.clear();
       st.started = 0;
       st.read = 0;
-      setOut({ frames: {}, reading: null, ms: null, anchors: [], error: null });
+      setOut({
+        frames: {},
+        reading: null,
+        ms: null,
+        anchors: [],
+        error: null,
+        slow: null,
+        gaveUp: [],
+      });
     }
     st.want = json;
     st.ids = ids;
@@ -85,24 +121,75 @@ export function useShootLook(heroId: string, recipe: Recipe, ids: string[], on: 
       if (unread.length && !st.started) st.started = performance.now();
       st.running = true;
       let failed = false;
+      const t0 = performance.now();
+      const tick = setInterval(() => {
+        const ms = performance.now() - t0;
+        if (ms > SLOW_MS && st.mounted)
+          setOut((o) => ({
+            ...o,
+            slow: { ids: batch, seconds: Math.round(ms / 1000) },
+          }));
+      }, 1000);
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const r = await call<Preview>('shoot_look_preview', { hero_id: Number(hero), recipe: JSON.parse(want), photo_ids: batch.map(Number), long_edge: EDGE });
+        const late = new Promise<'late'>((ok) => (timer = setTimeout(() => ok('late'), GIVE_UP_MS)));
+        const got = await Promise.race([
+          call<Preview>('shoot_look_preview', {
+            hero_id: Number(hero),
+            recipe: JSON.parse(want),
+            photo_ids: batch.map(Number),
+            long_edge: EDGE,
+          }),
+          late,
+        ]);
         if (!st.mounted || st.hero !== hero) return;
-        for (const id of batch) st.drawn.set(id, want);
-        if (unread.length) st.read += batch.length;
-        const left = st.ids.filter((id) => !st.drawn.has(id)).length;
-        const rate = st.read ? (performance.now() - st.started) / 1000 / st.read : null;
-        setOut((o) => ({
-          frames: { ...o.frames, ...Object.fromEntries(r.frames.map((f) => [String(f.photo_id), f])) },
-          reading: left ? { done: st.ids.length - left, total: st.ids.length, eta: rate != null ? rate * left : null } : null,
-          ms: unread.length ? o.ms : r.ms,
-          anchors: r.anchors.map(String),
-          error: null,
-        }));
+        if (got === 'late') {
+          // Leave these frames behind and go on; Apply still works on them.
+          for (const id of batch) st.drawn.set(id, want);
+          if (unread.length) st.read += batch.length;
+          const left = st.ids.filter((id) => !st.drawn.has(id)).length;
+          setOut((o) => ({
+            ...o,
+            slow: null,
+            gaveUp: [...o.gaveUp, ...batch],
+            reading: left ? { done: st.ids.length - left, total: st.ids.length, eta: null } : null,
+          }));
+        } else {
+          const r = got;
+          for (const id of batch) st.drawn.set(id, want);
+          if (unread.length) st.read += batch.length;
+          const left = st.ids.filter((id) => !st.drawn.has(id)).length;
+          const rate = st.read ? (performance.now() - st.started) / 1000 / st.read : null;
+          setOut((o) => ({
+            frames: {
+              ...o.frames,
+              ...Object.fromEntries(r.frames.map((f) => [String(f.photo_id), f])),
+            },
+            reading: left
+              ? {
+                  done: st.ids.length - left,
+                  total: st.ids.length,
+                  eta: rate != null ? rate * left : null,
+                }
+              : null,
+            ms: unread.length ? o.ms : r.ms,
+            anchors: r.anchors.map(String),
+            error: null,
+            slow: null,
+            gaveUp: o.gaveUp.filter((id) => !batch.includes(id)),
+          }));
+        }
       } catch (e) {
         failed = true;
-        if (st.mounted) setOut((o) => ({ ...o, error: String(e).replace(/^Error: /, '') }));
+        if (st.mounted)
+          setOut((o) => ({
+            ...o,
+            slow: null,
+            error: String(e).replace(/^Error: /, ''),
+          }));
       } finally {
+        clearInterval(tick);
+        clearTimeout(timer);
         st.running = false;
       }
       // A failed call waits for the next drag; otherwise on to whatever is newest.

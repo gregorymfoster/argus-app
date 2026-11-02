@@ -821,6 +821,7 @@ impl Chat for OllamaChat {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(3 * 3600))
             .build();
+        // lock-lint: ok, Throttle::start spawns its own thread (the name matches a parallel `start`).
         let mut throttle = self.throttle.lock().unwrap();
         if throttle.is_none() {
             self.o.post(&agent, self.o.load_body())?;

@@ -83,10 +83,27 @@ impl Library {
     /// after the batch to the same Photos are overwritten, as with Lightroom's history.
     /// All in one transaction: a crash midway leaves the batch fully in place.
     pub fn undo_batch(&mut self, batch: BatchId, author: Author) -> Result<UndoReport> {
-        self.atomic(|lib| lib.undo_batch_now(batch, author))
+        self.atomic(|lib| lib.undo_batch_now(batch, author, None))
     }
 
-    fn undo_batch_now(&mut self, batch: BatchId, author: Author) -> Result<UndoReport> {
+    /// [`Library::undo_batch`] for some of its Photos only (the Apply popover's review of an
+    /// Agent turn: the ones the person unticked go back). Looks and Rounds are left alone.
+    pub fn undo_batch_for(
+        &mut self,
+        batch: BatchId,
+        author: Author,
+        only: &[PhotoId],
+    ) -> Result<UndoReport> {
+        self.atomic(|lib| lib.undo_batch_now(batch, author, Some(only)))
+    }
+
+    fn undo_batch_now(
+        &mut self,
+        batch: BatchId,
+        author: Author,
+        only: Option<&[PhotoId]>,
+    ) -> Result<UndoReport> {
+        let keep = |p: &PhotoId| only.is_none_or(|o| o.contains(p));
         let label: String = self
             .db
             .query_row("SELECT label FROM batches WHERE id = ?1", [batch], |r| {
@@ -113,7 +130,7 @@ impl Library {
         };
         let mut recipes = Vec::new();
         let mut restore = Vec::new();
-        for (photo, first) in firsts {
+        for (photo, first) in firsts.into_iter().filter(|(p, _)| keep(p)) {
             let before: Option<String> = self
                 .db
                 .query_row(
@@ -149,7 +166,7 @@ impl Library {
         };
         type Prior = Option<(String, String, Option<String>)>;
         let mut vrestore: Vec<(PhotoId, Prior)> = Vec::new();
-        for (photo, first) in vfirsts {
+        for (photo, first) in vfirsts.into_iter().filter(|(p, _)| keep(p)) {
             let prior: Prior = self
                 .db
                 .query_row(
@@ -179,7 +196,7 @@ impl Library {
                 .map_err(db_err)?
         };
         let mut rrestore: Vec<(PhotoId, Option<(i64, String)>)> = Vec::new();
-        for (photo, first) in rfirsts {
+        for (photo, first) in rfirsts.into_iter().filter(|(p, _)| keep(p)) {
             let prior = self
                 .db
                 .query_row(
@@ -258,8 +275,14 @@ impl Library {
                 .map_err(db_err)?;
             ratings.push(photo);
         }
-        let passes = self.undo_pass_marks(batch, new_batch, author)?;
-        let looks = self.undo_looks(batch, new_batch)?;
+        let (passes, looks) = if only.is_some() {
+            (Vec::new(), 0)
+        } else {
+            (
+                self.undo_pass_marks(batch, new_batch, author)?,
+                self.undo_looks(batch, new_batch)?,
+            )
+        };
         Ok(UndoReport {
             undone: batch,
             label,

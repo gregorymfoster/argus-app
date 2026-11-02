@@ -10,7 +10,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { Flag, Layers, Merge, Repeat, Sparkles, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Flag, Layers, Merge, Repeat, Sparkles, X } from 'lucide-react';
 import { PHOTOS, PHOTO_BY_ID } from '../data/dummy';
 import type { Photo, Verdict } from '../domain/types';
 import { fitGrid, keptOnEnter, moments, pageSize, pages, type Moment } from '../domain/moments';
@@ -22,7 +22,7 @@ import { PhotoView, photoRatio } from '../ui/PhotoView';
 import { Stars } from '../ui/Stars';
 import { EmptyState } from '../ui/Empty';
 import { Button } from '@/components/ui/button';
-import { Kbd, Tip, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
+import { Kbd, Seg, Tip, VERDICT_LABEL, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { Hints, ModeSwitch } from '../ui/ViewBar';
 import { aiName } from '../data/live';
 import { flaggedHere, isSettled, setLastPass } from '../data/modes';
@@ -48,6 +48,15 @@ const pickedHere = new Set<string>();
 /** What the bench gets for the moment in hand: when it opened, what had focus, what was zoomed.
  *  Module-level, so a trip to the Loupe (Space) and back keeps it. */
 let track: { key: string; opened: number; looked: string[]; zoomed: Set<string>; mergedFrom?: string[][] } | null = null;
+
+const TODO_KEY = 'argus.cullTodo';
+const readTodo = () => {
+  try {
+    return localStorage.getItem(TODO_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
 
 const label = (m: Moment, n: number) => (m.kind === 'stack' ? `Stack ${n}` : m.photoIds.length === 1 ? `Single ${n}` : `Singles ${n}`);
 
@@ -213,10 +222,28 @@ export function CullModeScreen({ start, pass = 1 }: { start?: string; pass?: num
     setAt(next(after, new Set(shown.map((m) => m.id))));
   };
 
+  // To do (Greg, 2026-11-02: "filter down to just the ones that we still need to decide on"): the
+  // rail lists only moments with a frame left to decide, and Tab skips the done ones. T toggles.
+  const [todo, setTodoState] = useState(readTodo);
+  const setTodo = (on: boolean) => {
+    setTodoState(on);
+    (document.activeElement as HTMLElement | null)?.blur(); // hand the arrow keys back to the frames
+    try {
+      localStorage.setItem(TODO_KEY, on ? '1' : '0');
+    } catch {
+      /* private window: the choice lasts this session */
+    }
+  };
   const step = (d: number) => {
     setSpan(1);
     setPage(0);
-    setAt((i) => Math.max(0, Math.min(list.length - 1, i + d)));
+    setAt((i) => {
+      if (todo) {
+        for (let j = i + d; j >= 0 && j < list.length; j += d) if (!isDone(list[j])) return j;
+        return i; // nothing left to decide that way
+      }
+      return Math.max(0, Math.min(list.length - 1, i + d));
+    });
   };
   const more = () => setSpan((s) => Math.max(1, Math.min(s + 1, list.length - at)));
   const fewer = () => setSpan((s) => Math.max(1, s - 1));
@@ -267,13 +294,26 @@ export function CullModeScreen({ start, pass = 1 }: { start?: string; pass?: num
 
   useHotkeys(['right', 'l'], () => move(1), [cur, key, page, onScreenIds.join()]);
   useHotkeys(['left', 'h'], () => move(-1), [cur, key, page, onScreenIds.join()]);
+  // Turning a page by hand; a page you finish flagging turns by itself (as ↵ does).
+  const turn = (d: number) => setPage((p) => Math.max(0, Math.min(Math.min(p, book.length - 1) + d, book.length - 1)));
+  const pageDone = span === 1 && book.length > 1 && !finals && onScreenIds.length > 0 && onScreenIds.every(settled);
+  const pageKey = `${key}#${page}`;
+  const lastPage = useRef({ key: '', done: false });
+  useEffect(() => {
+    const prev = lastPage.current;
+    lastPage.current = { key: pageKey, done: pageDone };
+    // Only when this page just became done, so going back to a finished page with [ stays there.
+    if (prev.key === pageKey && !prev.done && pageDone && page < book.length - 1) setPage(page + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageDone, pageKey]);
   // ] and [ page through a big Stack without flagging (↵ flags the page and turns it).
   useHotkeys('bracketright', () => setPage((p) => Math.min(p + 1, book.length - 1)), [book.length]);
   useHotkeys('bracketleft', () => setPage((p) => Math.max(0, Math.min(p, book.length - 1) - 1)), [book.length]);
   useHotkeys(['down', 'j'], (e) => (e.preventDefault(), vertical(1)), [cur, key, span]);
   useHotkeys(['up', 'k'], (e) => (e.preventDefault(), vertical(-1)), [cur, key, span]);
-  useHotkeys('tab', () => step(1), { preventDefault: true }, [list]);
-  useHotkeys('shift+tab', () => step(-1), { preventDefault: true }, [list]);
+  useHotkeys('t', () => setTodo(!todo), [todo]);
+  useHotkeys('tab', () => step(1), { preventDefault: true }, [list, todo, state]);
+  useHotkeys('shift+tab', () => step(-1), { preventDefault: true }, [list, todo, state]);
   useHotkeys('shift+down', more, { preventDefault: true }, [at, list]);
   useHotkeys('shift+up', fewer, { preventDefault: true });
   useHotkeys('shift+m', () => void merge(), [key, canMerge]);
@@ -301,6 +341,8 @@ export function CullModeScreen({ start, pass = 1 }: { start?: string; pass?: num
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [at, total, unflagged]);
   const first = shown[0];
+  // Rows: one column per frame up to six; a bigger moment wraps onto more lines of its band.
+  const rowCols = Math.min(6, Math.max(3, ...shown.map((m) => m.photoIds.length)));
   const pageNote = span === 1 && book.length > 1 ? (finals ? ' · your Picks from it' : ` · page ${page + 1} of ${book.length}`) : '';
   const round = pass > 1 ? `Round ${pass} · ` : '';
   const title = finished || !total ? (pass > 1 ? `Round ${pass}` : 'Cull') : `${round}${span > 1 ? `Moments ${at + 1} to ${at + span} together` : `${label(first, at + 1)} of ${total}${pageNote}`}`;
@@ -364,12 +406,27 @@ export function CullModeScreen({ start, pass = 1 }: { start?: string; pass?: num
         <span className="burst-progress rail-bar" title={`${doneCount} of ${total} moments done`} data-testid="bursts-progress">
           <span style={{ width: `${total ? (doneCount / total) * 100 : 0}%` }} />
         </span>
-        <div className="rail-list">
+        <div className="rail-filter">
+          <Seg
+            quiet
+            label="Which moments the list shows (T)"
+            value={todo ? 'todo' : 'all'}
+            onChange={(v) => setTodo(v === 'todo')}
+            items={[
+              { value: 'todo', label: <span data-testid="cull-todo">To do <span className="mono faint">{total - doneCount}</span></span>, title: 'Only moments with a frame left to decide (T)' },
+              { value: 'all', label: <span data-testid="cull-all">All <span className="mono faint">{total}</span></span>, title: 'Every moment (T)' },
+            ]}
+          />
+        </div>
+        <div className="rail-list" data-testid="moment-list">
+          {todo && doneCount === total && total > 0 && <div className="faint rail-empty">Nothing left to decide.</div>}
           {list.map((m, i) => {
             const cover = PHOTO_BY_ID[m.photoIds[0]];
             const kept = m.photoIds.filter((id) => (pass > 1 ? markOf(id) === 'pick' : verdictOf(state, id) === 'pick')).length;
             const left = m.photoIds.filter((id) => !settled(id)).length;
             const on = i >= at && i < at + span;
+            // To do hides finished moments, except the ones on screen (they just got finished).
+            if (todo && !left && !on) return null;
             return (
               <button key={m.id} className={`moment-row ${on ? 'on' : ''}`} onClick={() => (setSpan(1), setAt(i))} ref={on && i === at ? keepInView : undefined}>
                 <PhotoView photo={cover} size="tile" edits style={{ width: 44, height: 30, borderRadius: 4, flex: 'none' }} />
@@ -460,14 +517,37 @@ export function CullModeScreen({ start, pass = 1 }: { start?: string; pass?: num
           </div>
         ) : (
           <div className="burst-body">
+            {span === 1 && book.length > 1 && (
+              // Pages of a big Stack, in plain sight (Greg, 2026-11-02: "it's kind of hidden").
+              <div className="page-bar" data-testid="page-bar">
+                <Button variant="ghost" size="sm" onClick={() => turn(-1)} disabled={page === 0} aria-label="Previous page" data-testid="page-prev">
+                  <ChevronLeft size={13} /> <Kbd quiet>[</Kbd>
+                </Button>
+                <span className="page-dots">
+                  {book.map((ids, k) => {
+                    const left = ids.filter((id) => !settled(id)).length;
+                    return <button key={k} className={`page-dot ${k === page && !finals ? 'on' : ''} ${left ? '' : 'done'}`} onClick={() => setPage(k)} aria-label={`Page ${k + 1}${left ? `, ${left} to decide` : ', done'}`} />;
+                  })}
+                  {finalIds.length > 0 && <button className={`page-dot final ${finals ? 'on' : ''}`} onClick={() => setPage(book.length)} aria-label="Final look at your Picks" />}
+                </span>
+                <span className="mono" data-testid="page-label">
+                  {finals ? 'Final look at your Picks' : `Page ${page + 1} of ${book.length}`}
+                </span>
+                <span className="faint">{finals ? `${onScreen.length} Picks` : `frames ${allIds.indexOf(onScreenIds[0]) + 1} to ${allIds.indexOf(onScreenIds[onScreenIds.length - 1]) + 1} of ${allIds.length}`}</span>
+                <span className="grow" />
+                <Button variant="ghost" size="sm" onClick={() => turn(1)} disabled={finals || page >= book.length - 1} aria-label="Next page" data-testid="page-next">
+                  <Kbd quiet>]</Kbd> Next page <ChevronRight size={13} />
+                </Button>
+              </div>
+            )}
             {span === 1 ? (
               <div className="burst-grid" ref={box.ref} style={fitStyle} data-testid="survey-grid" data-page={finals ? 'finals' : page} data-pages={book.length}>
                 {onScreen.map((p) => cell(p, first, first.photoIds.indexOf(p.id), g.width > 420 ? 'full' : 'thumb'))}
               </div>
             ) : (
-              <div className="moment-rows" data-testid="moment-rows" style={{ '--cols': Math.min(6, Math.max(3, ...shown.map((m) => m.photoIds.length))) } as React.CSSProperties}>
+              <div className="moment-rows" data-testid="moment-rows" style={{ '--cols': rowCols } as React.CSSProperties}>
                 {shown.map((m, r) => (
-                  <section key={m.id} className={`moment-band ${cur && rowOf(cur.id) === r ? 'on' : ''}`}>
+                  <section key={m.id} className={`moment-band ${cur && rowOf(cur.id) === r ? 'on' : ''} ${m.photoIds.length > rowCols ? 'multi' : ''}`}>
                     <div className="moment-band-head">
                       <span>{label(m, at + r + 1)}</span>
                       <span className="mono faint">{m.photoIds.length === 1 ? '1 frame' : `${m.photoIds.length} frames`}</span>
@@ -494,7 +574,7 @@ export function CullModeScreen({ start, pass = 1 }: { start?: string; pass?: num
         <StatusFoot className="view-foot">
           <span>{frames.length ? `${frames.length} ${frames.length === 1 ? 'frame' : 'frames'} · ${pickedCount} kept` : ''}</span>
           <span className="grow" />
-          <Hints items={[['← →', 'Frame'], ['Z', 'Keep'], ['X', pass > 1 ? 'Cut' : 'Reject'], ['↵', pass > 1 ? 'Keep, cut rest' : 'Keep, reject rest'], ['⇧↓', 'Show next too'], [span > 1 ? '↑ ↓' : 'Tab', span > 1 ? 'Row' : 'Moment'], ['Space', 'Loupe'], ['Esc', 'Library']]} />
+          <Hints items={[['← →', 'Frame'], ['Z', 'Keep'], ['X', pass > 1 ? 'Cut' : 'Reject'], ['↵', pass > 1 ? 'Keep, cut rest' : 'Keep, reject rest'], ['⇧↓', 'Show next too'], [span > 1 ? '↑ ↓' : 'Tab', span > 1 ? 'Row' : 'Moment'], ...(span === 1 && book.length > 1 ? [['[ ]', 'Page'] as [string, string]] : []), ['Space', 'Loupe'], ['T', todo ? 'All' : 'To do'], ['Esc', 'Library']]} />
         </StatusFoot>
       </div>
     </div>

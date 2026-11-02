@@ -65,6 +65,9 @@ pub struct PresetLocal {
 struct File {
     groups: Vec<String>,
     presets: Vec<Preset>,
+    /// The Edit panel's Quick fixes ([`crate::quick_fixes`]): kept out of the Presets panel.
+    #[serde(default)]
+    fixes: Vec<Preset>,
 }
 
 fn file() -> &'static File {
@@ -77,17 +80,26 @@ pub fn builtin() -> &'static [Preset] {
     &file().presets
 }
 
+/// The Quick fixes (Enhance sky, Brighten faces, Even skin, Lift shadows), in panel order.
+pub fn fixes() -> &'static [Preset] {
+    &file().fixes
+}
+
 /// The groups, in panel order.
 pub fn groups() -> &'static [String] {
     &file().groups
 }
 
 pub fn find(id: &str) -> Result<&'static Preset> {
-    builtin().iter().find(|p| p.id == id).ok_or_else(|| {
-        Error(format!(
-            "no Preset {id:?}; list_presets names them (e.g. natural, film-portrait, bw-soft)"
-        ))
-    })
+    builtin()
+        .iter()
+        .chain(fixes())
+        .find(|p| p.id == id)
+        .ok_or_else(|| {
+            Error(format!(
+                "no Preset {id:?}; list_presets names them (e.g. natural, film-portrait, bw-soft)"
+            ))
+        })
 }
 
 /// A short hash of the library, so cached rankings know when the Presets changed.
@@ -96,9 +108,10 @@ pub fn library_hash() -> String {
 }
 
 impl Preset {
-    /// Adaptive Presets stack (one of each); every other kind replaces the last.
+    /// Adaptive Presets and Quick fixes stack (one of each); every other kind replaces the
+    /// last.
     pub fn slot(&self) -> &str {
-        if self.group.starts_with("Adaptive") {
+        if self.group.starts_with("Adaptive") || self.group == "Fixes" {
             &self.id
         } else {
             "look"
@@ -120,6 +133,7 @@ impl Preset {
 fn slot_of(id: &str, yours: &[Preset]) -> Option<String> {
     builtin()
         .iter()
+        .chain(fixes())
         .chain(yours)
         .find(|p| p.id == id)
         .map(|p| p.slot().to_string())

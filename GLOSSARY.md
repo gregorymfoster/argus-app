@@ -208,6 +208,10 @@ _Avoid_: Preset, filter, style
 A Shoot's style, spread from a hand-edited hero to the rest of the Shoot with **Apply look** (⇧⌘A in Edit, 2026-11-01): a popover shows every frame as it will look, each matched to its own light (the Shoot match), and Apply writes it on the ticked frames as one Undo. Quick fixes and AI Masks (Brighten faces, Enhance sky) are found again in each frame; frames edited by hand, crops, spots and drawn Masks stay as they are. (Replaced Lock look and the Shoot look strip.)
 _Avoid_: batch edit, sync
 
+**Apply popover**:
+The one way an edit reaches more than one Photo (Greg, 2026-11-02): a popover from the button or key that starts it draws every Photo as the edit will leave it, with a tick on each to leave it out (Photos edited by hand start left out), and Return applies the ticked ones as one Undo; Esc changes nothing. Apply look, Crop & straighten, Paste and Sync settings, Cull's Apply this edit, Auto on a selection or Shoot (with each noisy RAW's AI Denoise named), Cull's A (the AI's first take on each), Crop like this, Sync to Look (where a Photo left out keeps how it looks now and comes off the Look) and the Agent's batch edits (shown after it edits; a Photo left out goes back as it was) all use it; an edit on one Photo still applies at once (`ui/ApplyPopover.tsx`, engine `apply_preview`).
+_Avoid_: batch dialog, review queue, Accept all
+
 **Crop & straighten**:
 The AI's straighten and crop for the frames of a Shoot, reviewed in one Edit popover (⌥⌘R) laid out like Apply look: only frames with something to fix show, each as it would look; untick to leave one out, and Apply writes the rest as one Undo that changes only the crop. A straighten (0.7° to 3.5°) only where a horizon over water or architecture shows the lean; "Straighten + crop" also punches in where the people sit loose, off by default. Frames already cropped are never touched (`engine/src/framing/`).
 _Avoid_: auto crop, recompose, framing (in the UI)
@@ -285,7 +289,7 @@ What the local Mask models found in a Photo (people, skin, hair, sky, faces with
 _Avoid_: Detection, segmentation result
 
 **Denoise**:
-Lightroom's AI Denoise: a learned model (SCUNet) runs once over a RAW's full-size image in the background and the result is kept as the Photo's denoised base in the Library's cache. The Recipe's Denoise Amount (0-100, 0 is off) blends that base over the plain image, so the slider moves instantly once the base exists. RAW only. Separate from the manual Noise reduction sliders. **Auto Denoise** is the AI setting that Amount itself: Auto, Suggestions and Shoot match give each noisy RAW the Amount its measured sensor noise calls for (none on a clean frame), and never override one the person set. An AI-set Amount's base is made when the person opens the Photo or exports it.
+Lightroom's AI Denoise: a learned model (SCUNet) runs once over a RAW's full-size image in the background and the result is kept as the Photo's denoised base in the Library's cache. The Recipe's Denoise Amount (0-100, 0 is off) blends that base over the plain image, so the slider moves instantly once the base exists. RAW only. Separate from the manual Noise reduction sliders. **Auto Denoise** is the AI setting that Amount itself: Auto, Suggestions and Shoot match give each noisy RAW the Amount its measured sensor noise calls for (none on a clean frame), and never override one the person set. An AI-set Amount's base is made when the person opens the Photo or exports it; a noisy Pick's base is also made ahead while the Mac is idle, up to a 20 GB cache, so the slider is instant.
 _Avoid_: Noise reduction (that's the manual sliders), enhance, clean up
 
 **Lens Blur**:
@@ -293,7 +297,7 @@ Lightroom's Lens Blur: a fake shallow depth of field. A depth model (Depth Anyth
 _Avoid_: Portrait mode, bokeh filter, background blur (that's a Mask with negative Sharpness)
 
 **Auto**:
-Lightroom's Auto button: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temp, Tint and Vibrance set from a Photo's own light by a fast, deterministic measurement (no model). It replaces only those sliders and keeps the rest of the Recipe.
+Lightroom's Auto button: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temp, Tint and Vibrance set from a Photo's own light by a fast, deterministic measurement (no model). It replaces only those sliders and keeps the rest of the Recipe. It also adds the **Quick fixes** (the Edit panel's one-click Enhance sky, Brighten faces, Even skin and Lift shadows) that the Photo clearly needs, each at a gentle Amount (30 to 70%) read off the Photo as Auto left it: Brighten faces for faces sitting in shadow, Even skin for a face close enough for skin to show, Lift shadows for near-black shadows in a bright enough frame (Greg, 2026-11-02). Auto never adds Enhance sky: on Greg's bench edits it took skies away from how he edits them. They show as ticked chips with their Amount, one click takes one off, and a fix already on stays at its Amount (`engine::quick_fixes`).
 _Avoid_: Auto-enhance, magic fix
 
 **Settings group**:
