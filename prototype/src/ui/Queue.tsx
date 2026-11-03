@@ -3,7 +3,7 @@
 // with an honest ETA and its own Cancel, plus Pause all and the Compute level.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowUpToLine, BatteryMedium, Check, Coffee, GripVertical, Image, Pause, Play, RotateCcw, ScanEye, Sparkles, X } from 'lucide-react';
+import { ArrowUpToLine, BatteryMedium, Check, Coffee, GripVertical, Pause, Play, RotateCcw, ScanEye, X } from 'lucide-react';
 import { call } from '../data/backend';
 import { whileShown } from '../data/poll';
 import { toastFailure } from '@/lib/utils';
@@ -15,6 +15,7 @@ import { openSettings } from '../settings/Settings';
 import { go } from '../router';
 import { Kbd, Seg } from './kit';
 import { eta, etaLeft } from './Progress';
+import { runningIcon, useRunning } from './Running';
 
 /** A job as `list_jobs` returns it. */
 interface Job {
@@ -104,7 +105,7 @@ function useModelLine(open: boolean): string | null {
   return line;
 }
 
-const kindIcon = (kind: string) => (kind === 'render_previews' || kind === 'import' ? <Image size={12} /> : kind === 'analyze' ? <ScanEye size={12} /> : <Sparkles size={12} />);
+const kindIcon = (kind: string) => (kind === 'analyze' ? <ScanEye size={12} /> : runningIcon(kind));
 /** A second line for jobs that never touch the LLM, so it's clear they're cheap. */
 const kindSub = (kind: string) => (kind === 'render_previews' ? 'no model needed' : kind === 'analyze' ? 'faces, eyes and sky on this Mac, no LLM' : null);
 
@@ -184,9 +185,13 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
   const [drag, setDrag] = useState<{ id: number; over: number | null } | null>(null);
   const dragging = useRef(false);
   dragging.current = !!drag;
+  // A read that started before a reorder answers with the old order: drop it (2026-11-02, the
+  // dragged job jumped back on the next poll).
+  const order = useRef(0);
   const refresh = () => {
+    const asked = order.current;
     // A failed read keeps the last lists; the next round tries again.
-    void listJobs('queued', 50).then((j) => !dragging.current && setWaiting([...j].sort((a, b) => b.priority - a.priority || a.id - b.id)), () => {});
+    void listJobs('queued', 50).then((j) => !dragging.current && asked === order.current && setWaiting([...j].sort((a, b) => b.priority - a.priority || a.id - b.id)), () => {});
     void listJobs('done', 40).then(setDone, () => {});
   };
   useEffect(() => {
@@ -197,6 +202,7 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
   const set = (args: Record<string, unknown>) => (LIVE ? call('set_queue', args).then(() => bump((n) => n + 1), toastFailure('Couldn’t change Background work')) : Promise.resolve());
   const cancel = (id: number) => (LIVE ? call('cancel_job', { job_id: id }).then(refresh, toastFailure('Couldn’t cancel')) : undefined);
   const reorder = (ids: number[]) => {
+    order.current++;
     setWaiting((cur) => ids.map((id) => cur.find((j) => j.id === id)!).filter(Boolean));
     if (LIVE) void call('reorder_jobs', { job_ids: ids }).then(refresh, refresh);
     // Dummy data: keep the new order, as the engine would.
@@ -222,11 +228,13 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
     n[j.kind] = (n[j.kind] ?? 0) + 1;
   }
   const r = queue.running;
+  // Import, Export and AI culls run beside the Queue: they show here too, first.
+  const others = useRunning(queue, { queue: false });
   const elapsed = r?.started_at ? (Date.now() - Date.parse(r.started_at)) / 1000 : null;
   const runningLeft = r?.waiting ? null : r && r.total > 0 && r.done > 0 && elapsed != null ? (elapsed / r.done) * (r.total - r.done) : r && avg[r.kind] != null && elapsed != null ? Math.max(0, avg[r.kind] - elapsed) : null;
   const today = new Date().toISOString().slice(0, 10);
   const doneToday = done.filter((j) => (j.finished_at ?? '').startsWith(today) || !LIVE).slice(0, 4);
-  const jobs = (r ? 1 : 0) + queue.queued;
+  const jobs = (r ? 1 : 0) + others.length + queue.queued;
   const left = queue.eta_s != null ? queue.eta_s + (runningLeft ?? 0) : runningLeft;
 
   return (
@@ -294,10 +302,21 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
             </p>
           )}
         </div>
-        {r && (
+        {(r || others.length > 0) && (
           <section className="qp-section">
             <div className="qp-label">Running</div>
             <ul>
+              {others.map((w) => (
+                <JobRow
+                  key={w.key}
+                  job={{ id: -1, kind: w.kind, label: w.label, priority: 0, done: w.done ?? 0, total: w.total ?? 0, started_at: null, finished_at: null }}
+                  eta={eta(w.eta_s)}
+                  sub={[(w.total ?? 0) > 0 ? `${w.done} / ${w.total}` : null, w.detail].filter(Boolean).join(' · ') || null}
+                  progress={(w.total ?? 0) > 0 ? (w.done ?? 0) / w.total! : undefined}
+                  onCancel={w.stop}
+                />
+              ))}
+              {r && (
               <JobRow
                 job={r as Job}
                 eta={eta(runningLeft)}
@@ -306,6 +325,7 @@ export function QueuePopover({ q, children }: { q: QueueStatus; children: ReactN
                 progress={r.total > 0 ? r.done / r.total : undefined}
                 onCancel={() => cancel(r.id)}
               />
+              )}
             </ul>
           </section>
         )}

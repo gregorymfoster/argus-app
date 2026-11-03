@@ -157,7 +157,8 @@ CREATE TABLE jobs (
   error       TEXT,
   created_at  TEXT NOT NULL,
   started_at  TEXT,
-  finished_at TEXT
+  finished_at TEXT,
+  interrupted TEXT                    -- queued again part way: 'asleep' | 'quit'
 );
 CREATE INDEX jobs_by_status ON jobs(status, priority DESC, id);
 
@@ -283,4 +284,29 @@ CREATE TABLE pass_log (
   author   TEXT NOT NULL,
   batch_id INTEGER REFERENCES batches(id),
   at       TEXT NOT NULL
+);
+
+-- Resumable runs (closing the lid, a quit or a crash mid-way): an Export or Import the
+-- window or a tool drives, recorded as it goes so the next start finishes it from the
+-- Photo it reached. `args` is what resumes it; `pid` the process driving it now.
+CREATE TABLE runs (
+  id         INTEGER PRIMARY KEY,
+  kind       TEXT NOT NULL,          -- 'export' | 'import'
+  label      TEXT NOT NULL,
+  args       TEXT NOT NULL,          -- JSON
+  status     TEXT NOT NULL,          -- 'running' | 'paused' | 'done' | 'stopped'
+  note       TEXT,                   -- why it is paused: 'quit' | 'card' ...
+  pid        INTEGER,
+  total      INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+-- One Photo of a run: the file name it claimed before writing, then done, so a resumed
+-- Export writes each file once, under the name it first chose.
+CREATE TABLE run_items (
+  run_id   INTEGER NOT NULL REFERENCES runs(id),
+  photo_id INTEGER NOT NULL,
+  path     TEXT,
+  done     INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (run_id, photo_id)
 );

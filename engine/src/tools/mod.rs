@@ -22,6 +22,7 @@ mod masks;
 mod people;
 mod presets;
 mod queue;
+mod runs;
 mod suggestions;
 mod usage;
 
@@ -168,8 +169,8 @@ impl Tools {
     /// the deterministic anchor the Agent and Suggestions start from.
     pub fn auto_recipe(&self, photo_id: PhotoId, own: &Recipe) -> Result<Recipe> {
         let lib = Library::open(&self.library)?;
-        let p = find_photo(&lib, photo_id)?;
-        let base = with_look(&lib, &p, &crate::auto::cleared(own))?;
+        let p = lib.find_photo(photo_id)?;
+        let base = lib.with_look(&p, &crate::auto::cleared(own))?;
         let masks = render::masks_for(&lib, &p, &base);
         let head = crate::auto::head_input(&lib, &p);
         let auto = crate::auto::auto_adjust_for(
@@ -236,6 +237,7 @@ const AREAS: &[(Specs, Call)] = &[
     (queue::specs, Tools::call_queue),
     (usage::specs, Tools::call_usage),
     (exports::specs, Tools::call_exports),
+    (runs::specs, Tools::call_runs),
     (backup::specs, Tools::call_backup),
     (masks::specs, Tools::call_masks),
 ];
@@ -288,7 +290,7 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     let photos: Vec<Photo> = match (&a.photo_ids, a.shoot_id) {
         (Some(ids), _) => ids
             .iter()
-            .map(|&id| find_photo(lib, id))
+            .map(|&id| lib.find_photo(id))
             .collect::<Result<_>>()?,
         (None, Some(shoot)) => lib.list_photos(&PhotoFilter {
             shoot: Some(shoot),
@@ -302,7 +304,7 @@ fn auto_edit(lib: &mut Library, a: AutoEdit, batch: Option<BatchId>) -> Result<V
     let jobs: Vec<(Photo, Recipe, AutoInput)> = photos
         .into_iter()
         .map(|p| {
-            let own = current_recipe(lib, p.id)?;
+            let own = lib.current_recipe(p.id)?;
             let mut input = auto_input(lib, &p, &own)?;
             input.fixes = a.fixes.unwrap_or(true);
             Ok((p, own, input))
@@ -375,7 +377,7 @@ pub(crate) struct AutoInput {
 
 pub(crate) fn auto_input(lib: &Library, p: &Photo, own: &Recipe) -> Result<AutoInput> {
     let (own, kept) = crate::quick_fixes::strip(own)?;
-    let base = with_look(lib, p, &crate::auto::cleared(&own))?;
+    let base = lib.with_look(p, &crate::auto::cleared(&own))?;
     let masks = render::masks_for(lib, p, &base);
     let head = crate::auto::head_input(lib, p);
     let scene = match head.as_ref().and_then(|h| h.analysis.clone()) {
@@ -441,26 +443,6 @@ fn batch_or(lib: &mut Library, batch: Option<BatchId>, label: &str) -> Result<Ba
     match batch {
         Some(b) => Ok(b),
         None => lib.begin_batch(Author::Ai, label),
-    }
-}
-
-/// What the renderer sees: the Recipe with its Look's sliders underneath its own. A Look
-/// this Shoot doesn't have (one from the prototype's demo set) is ignored.
-pub(crate) fn with_look(lib: &Library, photo: &Photo, recipe: &Recipe) -> Result<Recipe> {
-    let mut r = recipe.clone();
-    if let Some(id) = &recipe.look {
-        if let Some(look) = lib.look(photo.shoot_id, id)? {
-            r.global = look.adjust.plus(&recipe.global);
-        }
-    }
-    Ok(r)
-}
-
-/// The Photo's current Recipe, or an empty one if it was never edited.
-pub(crate) fn current_recipe(lib: &Library, id: PhotoId) -> Result<Recipe> {
-    match lib.read_recipe(id)? {
-        Some(v) => Recipe::from_value(&v.recipe),
-        None => Ok(Recipe::default()),
     }
 }
 
@@ -561,10 +543,10 @@ fn one(v: impl Serialize) -> Result<Vec<Part>> {
 
 /// `render_photo` at most `max_edge` on the long edge.
 fn render_parts(lib: &Library, a: RenderPhoto, max_edge: u32) -> Result<Vec<Part>> {
-    let photo = find_photo(lib, a.photo_id)?;
+    let photo = lib.find_photo(a.photo_id)?;
     let mut recipe = match &a.recipe {
         Some(v) => Recipe::from_value(v)?,
-        None => current_recipe(lib, a.photo_id)?,
+        None => lib.current_recipe(a.photo_id)?,
     };
     if let Some(id) = &a.preset {
         let amount = a.amount.unwrap_or(100.0) / 100.0;
@@ -576,7 +558,7 @@ fn render_parts(lib: &Library, a: RenderPhoto, max_edge: u32) -> Result<Vec<Part
     let img = render::render_in(
         lib,
         &photo,
-        &with_look(lib, &photo, &recipe)?,
+        &lib.with_look(&photo, &recipe)?,
         Some(edge as usize),
     )?;
     let light = crate::signals::light(&img);
@@ -614,7 +596,7 @@ pub fn edited_previews(
         let photo = photos
             .get(id)
             .ok_or_else(|| Error(format!("no Photo with id {id}")))?;
-        let recipe = with_look(lib, photo, &current_recipe(lib, *id)?)?;
+        let recipe = lib.with_look(photo, &lib.current_recipe(*id)?)?;
         let mut h = blake3::Hasher::new();
         h.update(recipe.to_value().to_string().as_bytes());
         h.update(env!("CARGO_PKG_VERSION").as_bytes());
@@ -684,13 +666,6 @@ fn write_edited(path: &Path, jpeg: &[u8]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-pub(crate) fn find_photo(lib: &Library, id: PhotoId) -> Result<Photo> {
-    lib.list_photos(&PhotoFilter::default())?
-        .into_iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| Error(format!("no Photo with id {id}")))
 }
 
 fn newest_shoot(lib: &Library) -> Result<ShootId> {

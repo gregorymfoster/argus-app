@@ -30,6 +30,7 @@ const STEPS: &[Step] = &[
     v11_albums,
     v12_people,
     v13_cull_rounds,
+    v14_resumable_runs,
 ];
 
 /// The schema version this Argus writes.
@@ -207,7 +208,32 @@ fn v13_cull_rounds(tx: &Transaction, _root: &Path) -> Result<()> {
         tx,
         &schema[schema
             .find("-- Cull Rounds (repeat")
-            .expect("cull rounds in schema")..],
+            .expect("cull rounds in schema")
+            ..schema.find("-- Resumable runs").expect("runs in schema")],
+    )
+}
+
+/// Resumable runs, and why a queued job stopped part way: the end of `schema.sql`.
+fn v14_resumable_runs(tx: &Transaction, _root: &Path) -> Result<()> {
+    let schema = include_str!("schema.sql");
+    // An older Library's `jobs` came from an earlier step's slice of `schema.sql`, which now
+    // has the column already.
+    let has: bool = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'interrupted'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(db_err)?
+        > 0;
+    if !has {
+        sql(tx, "ALTER TABLE jobs ADD COLUMN interrupted TEXT")?;
+    }
+    // Earlier steps that take `schema.sql` to its end may have made these already.
+    sql(
+        tx,
+        &schema[schema.find("-- Resumable runs").expect("runs in schema")..]
+            .replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "),
     )
 }
 

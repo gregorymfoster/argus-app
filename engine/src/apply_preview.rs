@@ -90,7 +90,7 @@ pub fn preview_within(
             let s = crate::tools::synced(lib, *from)?;
             for &id in ids.iter().filter(|&&id| id != *from) {
                 // As it will render: the new Look under its own sliders.
-                let mut r = crate::tools::current_recipe(lib, id)?;
+                let mut r = lib.current_recipe(id)?;
                 r.global = s.look.adjust.plus(&r.global);
                 r.look = None;
                 items.push(item(lib, id, Some(r))?);
@@ -166,7 +166,7 @@ fn frame(
     let recipe = match pasted {
         Some(r) => r,
         None => {
-            let own = crate::tools::current_recipe(lib, p.id)?;
+            let own = lib.current_recipe(p.id)?;
             let input = crate::tools::auto_input(lib, p, &own)?;
             let mut r = crate::tools::auto_from(p, &input)?;
             // As auto_edit does when it saves.
@@ -175,7 +175,7 @@ fn frame(
         }
     };
     // AI denoise can't be seen in a tile and costs seconds a Photo, so tiles skip it.
-    let mut shown = crate::tools::with_look(lib, p, &recipe)?;
+    let mut shown = lib.with_look(p, &recipe)?;
     shown.set("denoise", 0.0, false)?;
     let img = crate::render::render_in(lib, p, &shown, Some(long_edge))?;
     Ok(Frame {

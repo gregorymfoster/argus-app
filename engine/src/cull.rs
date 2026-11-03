@@ -594,6 +594,78 @@ struct Reporter<'a> {
     /// Held from snapshot to delivery, so the heartbeat thread's older snapshot can't
     /// arrive after a newer one from the request and move the bar back.
     sending: Mutex<()>,
+    /// Where each answered request is kept until the cull is saved ([`Memo`]).
+    memo: Option<&'a Memo>,
+}
+
+/// The model's answers to a cull's requests, kept on disk as each one lands, so a cull a
+/// quit, crash or closed lid stopped part way asks again only what it hadn't heard back
+/// (Greg, 2026-11-02: all CPU work resumes). A request is known by what it sends: the
+/// sheet's Photos, their images, its context and the Provider. Cleared once the cull is saved.
+pub struct Memo {
+    dir: std::path::PathBuf,
+}
+
+impl Memo {
+    /// The Shoot's answers in the Library's cache.
+    pub fn for_shoot(root: &std::path::Path, shoot: ShootId) -> Self {
+        Memo {
+            dir: root
+                .join(crate::library::CACHE_DIR)
+                .join("cull-answers")
+                .join(shoot.to_string()),
+        }
+    }
+
+    fn key(provider: &dyn Provider, sheet: &ContactSheet) -> String {
+        let mut h = blake3::Hasher::new();
+        h.update(std::any::type_name_of_val(provider).as_bytes());
+        h.update(sheet.context.as_deref().unwrap_or("").as_bytes());
+        for p in &sheet.photos {
+            h.update(&(p.n as u64).to_le_bytes());
+            h.update(&p.id.to_le_bytes());
+            h.update(blake3::hash(&p.jpeg).as_bytes());
+        }
+        h.finalize().to_hex()[..32].to_string()
+    }
+
+    fn get(&self, key: &str) -> Option<CullResult> {
+        serde_json::from_slice(&std::fs::read(self.dir.join(format!("{key}.json"))).ok()?).ok()
+    }
+
+    /// Kept through a temporary file and a rename, so a kill never leaves half an answer.
+    fn put(&self, key: &str, r: &CullResult) {
+        let Ok(data) = serde_json::to_vec(r) else {
+            return;
+        };
+        let tmp = self.dir.join(format!(".{key}.part"));
+        let ok = std::fs::create_dir_all(&self.dir).is_ok()
+            && std::fs::write(&tmp, data).is_ok()
+            && std::fs::rename(&tmp, self.dir.join(format!("{key}.json"))).is_ok();
+        if !ok {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
+    /// How many answers are kept (tests).
+    pub fn len(&self) -> usize {
+        std::fs::read_dir(&self.dir)
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The cull is saved: its answers are no longer needed.
+    pub fn clear(&self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 impl Reporter<'_> {
@@ -610,6 +682,26 @@ impl Reporter<'_> {
 
     /// Ask the Provider about `sheet`, counting its streamed Photos into the progress.
     fn ask(&self, provider: &dyn Provider, sheet: &ContactSheet) -> Result<CullResult> {
+        let n = sheet.photos.len();
+        let key = self.memo.map(|_| Memo::key(provider, sheet));
+        if let (Some(m), Some(k)) = (self.memo, &key) {
+            if let Some(r) = m.get(k) {
+                // Answered before the cull was stopped: counted as done, not asked again.
+                self.update(|l| {
+                    l.base += n;
+                    l.p.photos = l.base.min(l.p.photos_total);
+                });
+                return Ok(r);
+            }
+        }
+        let r = self.ask_model(provider, sheet);
+        if let (Some(m), Some(k), Ok(r)) = (self.memo, &key, &r) {
+            m.put(k, r);
+        }
+        r
+    }
+
+    fn ask_model(&self, provider: &dyn Provider, sheet: &ContactSheet) -> Result<CullResult> {
         let n = sheet.photos.len();
         self.update(|l| {
             l.asking = n;
@@ -672,9 +764,12 @@ pub fn cull_shoot_with(
     progress: &(dyn Fn(CullProgress) + Sync),
 ) -> Result<CullReport> {
     let sheet = ContactSheet::build(lib, shoot)?;
+    let memo = Memo::for_shoot(lib.root(), shoot);
     let result = match (taste(), provider.ask()) {
-        (Taste::Signals, Ask::Doubtful) => cull_doubtful(&sheet, provider, max, progress)?,
-        _ => cull_sheet(&sheet, provider, max, progress)?,
+        (Taste::Signals, Ask::Doubtful) => {
+            cull_doubtful_in(&sheet, provider, max, progress, Some(&memo))?
+        }
+        _ => cull_sheet_in(&sheet, provider, max, progress, Some(&memo))?,
     };
     // A model's check adds to the rules', never drops one of theirs.
     let result = match taste() {
@@ -682,7 +777,9 @@ pub fn cull_shoot_with(
         Taste::Model => result,
     };
     let result = crate::taste::rate(&sheet, result);
-    apply(lib, &sheet, &result)
+    let report = apply(lib, &sheet, &result)?;
+    memo.clear();
+    Ok(report)
 }
 
 /// Which Photos a model's Technical check sees.
@@ -713,6 +810,16 @@ pub fn cull_doubtful(
     max: usize,
     progress: &(dyn Fn(CullProgress) + Sync),
 ) -> Result<CullResult> {
+    cull_doubtful_in(sheet, provider, max, progress, None)
+}
+
+fn cull_doubtful_in(
+    sheet: &ContactSheet,
+    provider: &dyn Provider,
+    max: usize,
+    progress: &(dyn Fn(CullProgress) + Sync),
+    memo: Option<&Memo>,
+) -> Result<CullResult> {
     let mut out = crate::technical::Rules.cull(sheet)?;
     let doubt: Vec<usize> = sheet
         .photos
@@ -737,7 +844,7 @@ pub fn cull_doubtful(
             sheet.photos.len()
         ),
     );
-    let asked = cull_sheet(&sub, provider, max, progress)?;
+    let asked = cull_sheet_in(&sub, provider, max, progress, memo)?;
     for c in asked.photos.iter().filter(|c| c.verdict == Verdict::Reject) {
         let Some(&n) = c.n.checked_sub(1).and_then(|i| orig.get(i)) else {
             continue; // local models sometimes invent numbers
@@ -757,6 +864,16 @@ pub fn cull_sheet(
     provider: &dyn Provider,
     max: usize,
     progress: &(dyn Fn(CullProgress) + Sync),
+) -> Result<CullResult> {
+    cull_sheet_in(sheet, provider, max, progress, None)
+}
+
+fn cull_sheet_in(
+    sheet: &ContactSheet,
+    provider: &dyn Provider,
+    max: usize,
+    progress: &(dyn Fn(CullProgress) + Sync),
+    memo: Option<&Memo>,
 ) -> Result<CullResult> {
     let max = max.max(2);
     let chunks = if sheet.photos.len() <= max {
@@ -798,6 +915,7 @@ pub fn cull_sheet(
         }),
         progress,
         sending: Mutex::new(()),
+        memo,
     };
     let every = std::env::var("ARGUS_CULL_HEARTBEAT_MS")
         .ok()
@@ -1125,16 +1243,6 @@ pub fn apply(lib: &mut Library, sheet: &ContactSheet, result: &CullResult) -> Re
         shoot: Some(sheet.shoot),
         verdict: None,
     })?;
-    let person: HashSet<PhotoId> = current
-        .iter()
-        .filter(|p| p.verdict_by == Some(Author::Person))
-        .map(|p| p.id)
-        .collect();
-    let person_rated: HashSet<PhotoId> = current
-        .iter()
-        .filter(|p| p.stars_by == Some(Author::Person))
-        .map(|p| p.id)
-        .collect();
 
     let batch = lib.begin_batch(Author::Ai, "AI cull")?;
     let mut seen = HashSet::new();
@@ -1160,20 +1268,25 @@ pub fn apply(lib: &mut Library, sheet: &ContactSheet, result: &CullResult) -> Re
         if let Some(b) = c.best {
             best.push((b, c.stack, id));
         }
+        // The Library keeps a person's stars and Verdicts; count what it kept.
         if let Some(stars) = c.stars.map(|s| s.clamp(1, 5)) {
-            if person_rated.contains(&id) {
-                kept_ratings += 1;
-            } else {
-                lib.set_rating(&[id], stars, Author::Ai, Some(batch))?;
+            if lib
+                .set_rating(&[id], stars, Author::Ai, Some(batch))?
+                .is_empty()
+            {
                 star_counts[stars as usize] += 1;
+            } else {
+                kept_ratings += 1;
             }
         }
-        if person.contains(&id) {
+        let verdict = cautious(c);
+        if !lib
+            .set_verdict(&[id], verdict, Author::Ai, Some(&c.reason), Some(batch))?
+            .is_empty()
+        {
             kept += 1;
             continue;
         }
-        let verdict = cautious(c);
-        lib.set_verdict(&[id], verdict, Author::Ai, Some(&c.reason), Some(batch))?;
         match verdict {
             Verdict::Pick => picks += 1,
             Verdict::Reject => rejects += 1,

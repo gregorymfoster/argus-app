@@ -9,192 +9,25 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react
 import { toast } from 'sonner';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { Download, FolderOpen, Layers, Plus, X } from 'lucide-react';
-import { PHOTOS, SHOOT } from '../data/dummy';
+import { PHOTOS } from '../data/dummy';
 import { LIVE } from '../data/live';
 import { call, pickFolder } from '../data/backend';
 import { useLibrary } from '../store/library';
+import { BUILT_IN, ColorSpace, Corner, estimate, example, exportArgs, isCustom, KEY, learn, load, matches, pixelsOf, Preset, PRESET_KEYS, PRESETS_KEY, read, Settings, shootFolder, Size, write } from '../data/export';
+
 import { picksOf } from '../data/modes';
 import type { Photo } from '../domain/types';
 import { Kbd } from './kit';
-import { ProgressBar } from './Progress';
 import { EMPTY_ART } from './emptyArt';
+import { startWork } from '../data/work';
+import { useGooglePhotos } from '../data/googlePhotos';
+import { openSettings } from '../settings/Settings';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Slider } from '@/components/ui/slider';
 import { Select } from '@/components/ui/select';
 
-type Format = 'jpeg' | 'heic' | 'tiff' | 'original';
-type Naming = 'shoot' | 'sequence' | 'original';
-/** Full, a long edge in px, `short-N` a short edge, `mp-N` megapixels. */
-type Size = 'full' | '7680' | '4096' | '2048' | '1080' | 'short-1080' | 'mp-12' | `${number}`;
-/** The long edges the Size menu lists; any other number is a Custom long edge. */
-const LISTED_EDGES = ['7680', '4096', '2048', '1080'];
-const isCustom = (size: Size) => /^\d+$/.test(size) && !LISTED_EDGES.includes(size);
-/** Lightroom's Output sharpening for screen. */
-type Sharpen = 'off' | 'low' | 'standard' | 'high';
-
-interface Settings {
-  folder: string;
-  shootFolder: boolean;
-  naming: Naming;
-  format: Format;
-  quality: number;
-  size: Size;
-  sharpen: Sharpen;
-  reveal: boolean;
-  /** Lightroom's "Remove Location Info": GPS stays out of rendered files unless unticked. */
-  removeLocation: boolean;
-  /** The last Custom long edge, so picking Custom again brings it back. */
-  customEdge: number;
-  /** sRGB, or Display P3 for Apple screens (JPEG and HEIC). */
-  colorSpace: ColorSpace;
-  /** Lightroom's Watermark: a line of text in a corner, on when `on`. */
-  watermark: { on: boolean; text: string; corner: Corner; size: number; opacity: number };
-  /** Import the files into Apple Photos when done, into an album named after the Shoot. */
-  addToPhotos: boolean;
-}
-type ColorSpace = 'srgb' | 'display_p3';
-type Corner = 'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'center';
-
-interface Preset {
-  id: string;
-  label: string;
-  set: Partial<Settings>;
-}
-
-const BUILT_IN: Preset[] = [
-  // Measured on Greg's A7R V frames (2026-11-02, docs/export.md): past quality 85 the file
-  // grows fast for little visible gain, and a full 61 MP frame at 85 is still only ~6 MB.
-  { id: 'recommended', label: 'Recommended · JPEG 85 full', set: { format: 'jpeg', size: 'full', quality: 85, sharpen: 'off', colorSpace: 'srgb' } },
-  { id: 'full', label: 'Full size JPEG', set: { format: 'jpeg', size: 'full', quality: 92 } },
-  { id: 'web', label: 'Web · 2048 px', set: { format: 'jpeg', size: '2048', quality: 85 } },
-  { id: 'social', label: 'Instagram · 1080 short edge', set: { format: 'jpeg', size: 'short-1080', quality: 85, sharpen: 'standard' } },
-  { id: 'phone', label: 'Phone · HEIC 12 MP', set: { format: 'heic', size: 'mp-12', quality: 85, sharpen: 'low' } },
-  { id: 'print', label: 'Print · TIFF', set: { format: 'tiff', size: 'full' } },
-  { id: 'lightroom', label: 'To Lightroom · RAW + XMP', set: { format: 'original' } },
-];
-// What a preset carries: file settings, never where the files go.
-const PRESET_KEYS: (keyof Settings)[] = ['format', 'size', 'quality', 'naming', 'sharpen', 'colorSpace'];
-
-const DEFAULTS: Settings = { folder: '~/Pictures/Argus/Exports', shootFolder: true, naming: 'shoot', format: 'jpeg', quality: 85, size: 'full', sharpen: 'off', reveal: false, removeLocation: true, customEdge: 6000, colorSpace: 'srgb', watermark: { on: false, text: '©', corner: 'bottom_right', size: 3, opacity: 0.6 }, addToPhotos: false };
-const KEY = 'argus-export';
-const PRESETS_KEY = 'argus-export-presets';
-
-function read<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function write(key: string, v: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(v));
-  } catch {
-    // No storage: the defaults come back next time.
-  }
-}
-
-const load = (): Settings => {
-  const saved = read<Partial<Settings>>(KEY, {});
-  return { ...DEFAULTS, ...saved, watermark: { ...DEFAULTS.watermark, ...saved.watermark } };
-};
-
-/** Where exports go and what happens after, as Settings › Export shows them. */
-export type ExportPlace = Pick<Settings, 'folder' | 'shootFolder' | 'reveal'>;
-export const exportPlace = (): ExportPlace => {
-  const s = load();
-  return { folder: s.folder, shootFolder: s.shootFolder, reveal: s.reveal };
-};
-export const setExportPlace = (patch: Partial<ExportPlace>) => write(KEY, { ...load(), ...patch });
-/** Your own presets, saved from the Export dialog. */
-export const savedExportPresets = (): { id: string; label: string; summary: string }[] =>
-  read<Preset[]>(PRESETS_KEY, []).map((p) => ({ id: p.id, label: p.label, summary: summary(p.set) }));
-export const deleteExportPreset = (id: string) => write(PRESETS_KEY, read<Preset[]>(PRESETS_KEY, []).filter((p) => p.id !== id));
-
-function summary(s: Partial<Settings>): string {
-  const format = s.format === 'tiff' ? 'TIFF' : s.format === 'original' ? 'Original' : `${s.format === 'heic' ? 'HEIC' : 'JPEG'}${s.quality ? ` ${s.quality}` : ''}`;
-  const size = !s.size || s.size === 'full' ? 'full size' : sizeLabel(s.size);
-  const sharp = s.sharpen && s.sharpen !== 'off' ? ` · sharpen ${s.sharpen}` : '';
-  const p3 = s.colorSpace === 'display_p3' ? ' · P3' : '';
-  return s.format === 'original' ? format : `${format} · ${size}${sharp}${p3}`;
-}
-
-function sizeLabel(size: Size): string {
-  if (size.startsWith('short-')) return `${size.slice(6)} px short edge`;
-  if (size.startsWith('mp-')) return `${size.slice(3)} MP`;
-  return `${size} px`;
-}
-
-/** What `export_photos` takes for a size. */
-function sizeArgs(size: Size): Record<string, number> {
-  if (size === 'full') return {};
-  if (size.startsWith('short-')) return { short_edge: Number(size.slice(6)) };
-  if (size.startsWith('mp-')) return { megapixels: Number(size.slice(3)) };
-  return { long_edge: Number(size) };
-}
-
-function matches(p: Preset, s: Settings) {
-  return Object.entries(p.set).every(([k, v]) => s[k as keyof Settings] === v);
-}
-
-const stem = (file: string) => file.replace(/\.[^.]+$/, '').replace(/\s+/g, '-');
-/** The Shoot's folder name, as `engine::naming` makes it (no spaces, ever). */
-const shootFolder = () => SHOOT.name.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '');
-
-/** What the first file will be called, as the engine names it (docs/naming.md). */
-function example(s: Settings, file: string, total: number): string {
-  const ext = s.format === 'jpeg' ? 'jpg' : s.format === 'heic' ? 'heic' : s.format === 'tiff' ? 'tif' : (file.split('.').pop() ?? '');
-  const shoot = shootFolder();
-  const name = s.naming === 'original' ? stem(file) : s.naming === 'sequence' ? `${shoot}_${'1'.padStart(Math.max(3, String(total).length), '0')}` : `${shoot}_${stem(file)}`;
-  return `${name}.${ext}`;
-}
-
-/** A Photo's pixels when the Library knows them; dummy data and unknowns are A7R V frames. */
-const pixelsOf = (p?: Photo): [number, number] => p?.pixels ?? [9504, 6336];
-/** The pixels a Photo leaves at, for a size choice. Never upscales, as the engine. */
-export function outPixels(size: Size, [w, h]: [number, number]): [number, number] {
-  const long = Math.max(w, h);
-  const ratio = long / Math.max(1, Math.min(w, h));
-  const want = size === 'full' ? long : size.startsWith('mp-') ? Math.sqrt(Number(size.slice(3)) * 1e6 * ratio) : size.startsWith('short-') ? Number(size.slice(6)) * ratio : Number(size);
-  const k = Math.min(1, want / long);
-  return [Math.round(w * k), Math.round(h * k)];
-}
-/** Bytes per pixel the last real export of this format and quality came out at, so
- *  estimates match this person's Photos after one export. */
-const LEARNED_KEY = 'argus-export-bpp';
-const learnedKey = (s: Pick<Settings, 'format' | 'quality'>) => (s.format === 'jpeg' || s.format === 'heic' ? `${s.format}-${s.quality}` : s.format);
-/** Rough size and time for one Photo, before anything has run. */
-export function estimate(s: Pick<Settings, 'format' | 'quality' | 'size'>, pixels: [number, number]): { bytes: number | null; secs: number; out: [number, number] } {
-  const out = outPixels(s.size, pixels);
-  const px = out[0] * out[1];
-  const secs = 0.35 + (px / 1e6) * 0.02 + (s.format === 'heic' ? 0.4 : 0);
-  if (s.format === 'original') return { bytes: null, secs: 0.3, out: pixels };
-  const learned = read<Record<string, number>>(LEARNED_KEY, {})[learnedKey(s)];
-  if (learned) return { bytes: px * learned, secs, out };
-  if (s.format === 'tiff') return { bytes: px * 3, secs: secs + 0.3, out };
-  const jpeg = px * jpegBpp(s.quality);
-  return { bytes: s.format === 'heic' ? jpeg * 0.6 : jpeg, secs, out };
-}
-/** Bytes per pixel of Argus JPEGs by quality, measured on A7R V frames (docs/export.md). */
-const JPEG_BPP: [number, number][] = [[50, 0.03], [75, 0.057], [80, 0.069], [85, 0.086], [90, 0.12], [95, 0.203], [100, 0.42]];
-function jpegBpp(q: number): number {
-  const i = JPEG_BPP.findIndex(([at]) => at >= q);
-  if (i <= 0) return JPEG_BPP[Math.max(0, i)][1];
-  const [[q0, b0], [q1, b1]] = [JPEG_BPP[i - 1], JPEG_BPP[i]];
-  return b0 + ((b1 - b0) * (q - q0)) / (q1 - q0);
-}
-function learn(s: Settings, bytesOut: number, px: number) {
-  if (s.format === 'original' || !bytesOut || !px) return;
-  const all = read<Record<string, number>>(LEARNED_KEY, {});
-  const k = learnedKey(s);
-  const bpp = bytesOut / px;
-  // A running average, so one odd frame (a black sky) doesn't swing it.
-  write(LEARNED_KEY, { ...all, [k]: all[k] ? all[k] * 0.7 + bpp * 0.3 : bpp });
-}
 function bytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
   if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;
@@ -225,35 +58,17 @@ const emit = () => listeners.forEach((l) => l());
 const subscribe = (l: () => void) => (listeners.add(l), () => listeners.delete(l));
 const useRun = () => useSyncExternalStore(subscribe, () => run);
 
-/** The running Export, for the Status bar: done, total and seconds left. */
-export function useExportProgress(): { done: number; total: number; eta_s: number | null } | null {
+/** What the finished Export says: how many went where, and what failed. */
+function ExportDone() {
   const r = useRun();
-  if (!r || r.finished) return null;
-  return { done: r.done, total: r.total, eta_s: r.done > 0 ? ((Date.now() - r.started) / r.done) * (r.total - r.done) / 1000 : null };
-}
-
-function ExportToast() {
-  const r = useRun();
-  const [, tick] = useState(0);
-  // Re-render each second so the ETA counts down between Photos.
-  useEffect(() => {
-    if (!r || r.finished) return;
-    const t = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [r]);
   if (!r) return null;
-  const elapsed = Date.now() - r.started;
-  const left = r.done > 0 ? ((elapsed / r.done) * (r.total - r.done)) / 1000 : null;
   const ok = r.done - r.failed.length;
   return (
     <div className="export-toast" aria-live="polite">
-      {!r.finished && <ProgressBar label={r.current ?? 'Starting'} done={r.done} total={r.total} eta={left} testId="export-status" />}
-      {r.finished && (
-        <div className="export-done faint" data-testid="export-status">
-          {!r.cancelled && !r.failed.length && <img className="empty-art" src={EMPTY_ART.done} alt="" />}
-          <span>{`${r.cancelled ? 'Stopped. ' : 'Done. '}${ok} ${ok === 1 ? 'file' : 'files'} in ${r.folder ?? 'the export folder'}`}</span>
-        </div>
-      )}
+      <div className="export-done faint" data-testid="export-status">
+        {!r.cancelled && !r.failed.length && <img className="empty-art" src={EMPTY_ART.done} alt="" />}
+        <span>{`${r.cancelled ? 'Stopped. ' : 'Done. '}${ok} ${ok === 1 ? 'file' : 'files'} in ${r.folder ?? 'the export folder'}`}</span>
+      </div>
       {r.failed.slice(0, 3).map((f) => (
         <div key={f.file} className="mono" style={{ fontSize: 11.5, color: 'var(--reject)' }}>
           {f.file}: {f.error}
@@ -264,25 +79,16 @@ function ExportToast() {
   );
 }
 
-function showToast() {
+/** The result, once it ends. While it runs it shows with the rest of the background work. */
+function showDone() {
   const r = run!;
-  const title = r.finished ? (r.cancelled ? 'Export stopped' : r.failed.length ? `Exported with ${r.failed.length} failed` : `Exported ${r.done - r.failed.length}`) : `Exporting ${r.total}`;
+  const title = r.cancelled ? 'Export stopped' : r.failed.length ? `Exported with ${r.failed.length} failed` : `Exported ${r.done - r.failed.length}`;
   const folder = r.folder;
   toast(title, {
     id: 'export',
-    description: <ExportToast />,
-    duration: r.finished ? 10000 : Infinity,
-    action: r.finished
-      ? LIVE && folder
-        ? { label: 'Show in Finder', onClick: () => void reveal(folder) }
-        : undefined
-      : {
-          label: 'Stop',
-          onClick: (e) => {
-            e.preventDefault();
-            stop = true;
-          },
-        },
+    description: <ExportDone />,
+    duration: 10000,
+    action: LIVE && folder ? { label: 'Show in Finder', onClick: () => void reveal(folder) } : undefined,
   });
 }
 
@@ -303,35 +109,34 @@ async function startExport(photos: Photo[], s: Settings) {
     run = { ...r };
     emit();
   };
+  const work = startWork({ id: 'export', kind: 'export', label: `Exporting ${total}`, total, stop: () => (stop = true) });
   update();
-  showToast();
+  toast.dismiss('export');
   const paths: string[] = [];
-  for (const [i, p] of photos.entries()) {
-    if (stop) {
-      r.cancelled = true;
-      break;
+  // Recorded as it goes, so a quit or crash part way finishes on the next start, from the
+  // Photo it reached and each file written once (Greg, 2026-11-02). A closed lid just
+  // pauses this loop; it carries on at wake.
+  let runId: number | undefined;
+  if (LIVE) {
+    try {
+      const { photo_ids: _, sequence_start: __, ...settings } = exportArgs(s, 0, 1, total);
+      const send = s.format === 'original' ? [] : [...(s.addToPhotos ? ['apple_photos'] : []), ...(s.toGoogle ? ['google_photos'] : [])];
+      runId = (await call<{ run_id: number }>('start_run', { kind: 'export', label: `Exporting ${total}`, args: { photo_ids: photos.map((p) => Number(p.id)), export: settings, ...(send.length ? { send, album: shootFolder() } : {}) } })).run_id;
+    } catch {
+      // An older engine: the Export still runs, just not resumably.
     }
+  }
+  // Two Photos at a time: one renders while the other encodes and writes (a render uses
+  // every core, the JPEG encoder and the disk only one), and the Queue waits meanwhile.
+  let next = 0;
+  const one = async (i: number) => {
+    const p = photos[i];
     r.current = p.file;
     update();
+    work.update({ detail: p.file });
     if (LIVE) {
       try {
-        const out = await call<{ exported: { path: string; bytes?: number; width?: number; height?: number }[]; failed: { error: string }[] }>('export_photos', {
-          photo_ids: [Number(p.id)],
-          folder: s.folder,
-          shoot_folder: s.shootFolder,
-          format: s.format,
-          naming: s.naming,
-          ...(s.format === 'jpeg' || s.format === 'heic' ? { quality: s.quality } : {}),
-          ...(s.format === 'original' ? {} : sizeArgs(s.size)),
-          ...(s.format !== 'original' && s.sharpen !== 'off' ? { sharpen: s.sharpen } : {}),
-          ...(s.format !== 'original' && !s.removeLocation ? { keep_location: true } : {}),
-          ...(s.format !== 'original' && s.format !== 'tiff' && s.colorSpace !== 'srgb' ? { color_space: s.colorSpace } : {}),
-          ...(s.format !== 'original' && s.watermark.on && s.watermark.text.trim()
-            ? { watermark: { text: s.watermark.text.trim(), corner: s.watermark.corner, size: s.watermark.size, opacity: s.watermark.opacity } }
-            : {}),
-          sequence_start: i + 1,
-          sequence_total: total,
-        });
+        const out = await call<{ exported: { path: string; bytes?: number; width?: number; height?: number }[]; failed: { error: string }[] }>('export_photos', { ...exportArgs(s, Number(p.id), i + 1, total), ...(runId ? { run_id: runId } : {}) });
         if (out.failed.length) r.failed.push({ file: p.file, error: out.failed[0].error });
         const x = out.exported[0];
         if (x?.bytes && x.width && x.height) learn(s, x.bytes, x.width * x.height);
@@ -342,28 +147,48 @@ async function startExport(photos: Photo[], s: Settings) {
         r.failed.push({ file: p.file, error: String((e as Error).message ?? e) });
       }
     } else {
-      await new Promise((res) => setTimeout(res, 90));
+      // Dummy data: a pretend export; checks slow it down to watch it run.
+      await new Promise((res) => setTimeout(res, (window as { __argusExportDelay?: number }).__argusExportDelay ?? 90));
     }
-    r.done = i + 1;
+    r.done += 1;
     update();
-  }
+    work.update({ done: r.done });
+  };
+  const lane = async () => {
+    while (next < total) {
+      if (stop) {
+        r.cancelled = true;
+        return;
+      }
+      await one(next++);
+    }
+  };
+  await Promise.all([lane(), lane()]);
+  if (LIVE && paths.length) void call('enqueue_job', { kind: 'learn_edits', args: {}, dedupe_key: 'learn_edits' }).catch(() => {});
   r.finished = true;
   r.current = undefined;
+  if (runId) await call('finish_run', { run_id: runId, stopped: r.cancelled }).catch(() => {});
   update();
-  showToast();
+  work.end();
+  showDone();
   if (LIVE && s.reveal && r.folder && r.done > r.failed.length) void reveal(r.folder);
-  if (s.addToPhotos && s.format !== 'original' && paths.length) void toPhotos(paths, shootFolder());
+  if (s.format === 'original' || r.cancelled) return;
+  const sent = LIVE ? paths : photos.map((p) => p.file);
+  if (s.addToPhotos && sent.length) void sendTo('apple_photos', sent, shootFolder());
+  if (s.toGoogle && sent.length) void sendTo('google_photos', sent, shootFolder());
 }
 
-/** Hand the exported files to Apple Photos, with a notice either way. */
-async function toPhotos(paths: string[], album: string) {
-  const id = 'export-photos';
-  toast(`Adding ${paths.length} to Apple Photos…`, { id, duration: Infinity });
+const APP = { apple_photos: 'Apple Photos', google_photos: 'Google Photos' } as const;
+
+/** Queue the exported files for Apple Photos or Google Photos: the upload runs as a
+ *  background job, with its bar in the Status bar and Work mode. */
+async function sendTo(to: keyof typeof APP, paths: string[], album: string) {
+  const id = `export-${to}`;
   try {
-    await call('add_to_apple_photos', { paths, album });
-    toast(`Added ${paths.length} to Apple Photos, album ${album}`, { id, duration: 6000 });
+    if (LIVE) await call('send_to_photos', { to, paths, album });
+    toast(`Sending ${paths.length} to ${APP[to]}, album ${album}`, { id, description: 'Runs in the background, see Work (⌘5)', duration: 6000 });
   } catch (e) {
-    toast(`Couldn't add to Apple Photos: ${String((e as Error).message ?? e).replace(/^Error: /, '')}`, { id, duration: 10000 });
+    toast(`Couldn't send to ${APP[to]}: ${String((e as Error).message ?? e).replace(/^Error: /, '')}`, { id, duration: 10000 });
   }
 }
 
@@ -401,6 +226,7 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
   const [naming, setNaming] = useState<string | null>(null);
   const [free, setFree] = useState<number | null>(null);
   const running = !!useRun() && !run?.finished;
+  const google = useGooglePhotos();
   useEffect(() => {
     if (!open) return;
     setS(load());
@@ -521,14 +347,48 @@ function Export({ open, onOpenChange, ids, mode }: { open: boolean; onOpenChange
                   Open in Finder when done
                 </label>
               )}
-              {s.format !== 'original' && (
-                <label className="ex-row">
-                  <span className="k" />
-                  <Checkbox checked={s.addToPhotos} onCheckedChange={(c) => set({ addToPhotos: c === true })} data-testid="export-to-photos" />
-                  Add to Apple Photos, in the Shoot's album
-                </label>
-              )}
             </section>
+
+            {s.format !== 'original' && (
+              <section className="ex-sec" data-testid="export-send-to">
+                <h3>Send to</h3>
+                <div className="ex-row">
+                  <span className="k">Apps</span>
+                  <label className="ex-app">
+                    <Checkbox checked={s.addToPhotos} onCheckedChange={(c) => set({ addToPhotos: c === true })} data-testid="export-to-photos" />
+                    Apple Photos
+                  </label>
+                  <label className="ex-app">
+                    <Checkbox
+                      checked={s.toGoogle}
+                      onCheckedChange={(c) => {
+                        set({ toGoogle: c === true });
+                        if (c === true && !google?.connected) openSettings('export');
+                      }}
+                      data-testid="export-to-google"
+                    />
+                    Google Photos
+                  </label>
+                </div>
+                {(s.addToPhotos || s.toGoogle) && (
+                  <div className="ex-row">
+                    <span className="k" />
+                    {s.toGoogle && google && !google.connected ? (
+                      <span className="ex-note trunc">
+                        Google Photos isn't connected.{' '}
+                        <button className="ex-link" onClick={() => openSettings('export')}>
+                          Connect in Settings
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="ex-note trunc" title={shootFolder()}>
+                        Into the album <span className="mono">{shootFolder()}</span>, in the background
+                      </span>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
 
             <section className="ex-sec">
               <h3>File naming</h3>

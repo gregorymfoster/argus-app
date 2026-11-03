@@ -6,6 +6,7 @@
 // zooms the app.
 
 import { IN_APP } from '../data/backend';
+import { onAppEvent, setWebviewZoom } from '../data/shell';
 
 const KEY = 'argus-pref-zoom';
 export const ZOOM_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.5];
@@ -51,8 +52,7 @@ async function apply(z: number) {
     /* private window: not remembered */
   }
   if (IN_APP) {
-    const { getCurrentWebview } = await import('@tauri-apps/api/webview');
-    await getCurrentWebview().setZoom(z);
+    await setWebviewZoom(z);
   } else {
     document.documentElement.style.zoom = z === 1 ? '' : String(z);
   }
@@ -75,7 +75,5 @@ export function initZoom() {
   const menu = (step: 'in' | 'out' | 'reset') => (photoZoom ? photoZoom(step) : void zoom(step));
   // The same path as a window event, so headless checks (live.mjs) can drive View › Zoom.
   window.addEventListener('argus:zoom', (e) => menu((e as CustomEvent<'in' | 'out' | 'reset'>).detail));
-  if (IN_APP) {
-    void import('@tauri-apps/api/event').then(({ listen }) => listen<'in' | 'out' | 'reset'>('zoom', (e) => menu(e.payload)));
-  }
+  onAppEvent<'in' | 'out' | 'reset'>('zoom', menu);
 }

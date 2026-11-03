@@ -7,11 +7,12 @@
 
 import { useMemo, useState, type ReactNode } from 'react';
 import { PHOTOS, SHOOT } from '../data/dummy';
-import { LIVE, asPerson } from '../data/live';
+import { LIVE, aiError } from '../data/live';
 import { useFraming } from '../data/framing';
 import { picksOf } from '../data/modes';
 import type { Photo } from '../domain/types';
 import { useLibrary, verdictOf } from '../store/library';
+import { changePhotos } from '../store/changePhotos';
 import { PhotoView } from './PhotoView';
 import { Kbd, Seg } from './kit';
 import { ApplyBody, ApplyPopover, type ApplyTile, type Scope } from './ApplyPopover';
@@ -55,13 +56,16 @@ function Body({ before, onClose }: { before: boolean; onClose: () => void }) {
       dispatch({ type: 'toast', text: `${withCrop ? 'Cropped and straightened' : 'Straightened'} ${n} Photo${n === 1 ? '' : 's'}. ⌘Z undoes it.` });
       onClose();
     };
-    if (!LIVE) {
-      dispatch({ type: 'batch', label, actions: targets.map((id) => ({ type: 'recipe/set' as const, id, recipe: { ...state.recipes[id], crop: framing.frames[id].crop ?? undefined }, label, by: 'ai' as const })) });
-      return done(n);
-    }
-    const w = asPerson('apply_framing', { photo_ids: targets.map(Number), crop: withCrop }, label, (r) => (r.applied as number[]) ?? []);
-    dispatch({ type: 'engine/saved', label, batch: w });
-    return w.then((r) => done(Object.keys(r.recipes ?? {}).length || n)).catch((e) => dispatch({ type: 'toast', text: `Couldn't crop: ${String(e).replace(/^Error: /, '')}` }));
+    return changePhotos(dispatch, {
+      label,
+      tool: 'apply_framing',
+      args: { photo_ids: targets.map(Number), crop: withCrop },
+      written: (r) => (r.applied as number[]) ?? [],
+      local: () => targets.map((id) => ({ id, recipe: { ...state.recipes[id], crop: framing.frames[id].crop ?? undefined } })),
+      by: 'ai',
+    })
+      .then(({ changed }) => done(LIVE ? changed || n : n))
+      .catch((e) => dispatch({ type: 'toast', text: `Couldn't crop: ${aiError(e)}` }));
   };
 
   const tiles: ApplyTile[] = proposed.flatMap((id) => {

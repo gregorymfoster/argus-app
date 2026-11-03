@@ -171,6 +171,9 @@
 .export-v2 .ex-row > .k { width: 110px; flex: none; color: var(--text-3); }
 .export-v2 .ex-path { flex: 1 1 auto; min-width: 0; height: 26px; line-height: 24px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg); font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .export-v2 .ex-note { font-size: 11px; color: var(--text-3); }
+.export-v2 .ex-app { display: inline-flex; align-items: center; gap: 6px; margin-right: 10px; }
+.export-v2 .ex-link { border: 0; background: none; padding: 0; color: var(--text-2); font-size: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.export-v2 .ex-link:hover { color: var(--text); }
 /* Long folders lose their start, not the Shoot folder at the end. */
 .export-v2 .ex-path-tail { direction: rtl; text-align: left; }
 .export-v2 .ex-num { flex: none; width: 90px; appearance: textfield; -moz-appearance: textfield; }
@@ -202,18 +205,29 @@
 .mode-switch button:hover { background: var(--hover); color: var(--text); }
 .mode-switch button.on { background: var(--chip); color: var(--text); }
 .mode-switch .count { font-size: 10.5px; color: var(--text-3); }
-/* Tight bars drop the counts first, then the Library grid's Shoot name (the sidebar shows it). */
-@container (max-width: 1300px) { .mode-switch .count { display: none; } }
+/* The switch never moves between modes (Greg, 2026-11-02: "it layout shifts a ton"). It starts
+   right after a --rail-w left column in every mode (the sidebar, a rail, or a HeadLead), and it
+   folds by window width, never by its own header's, so all five headers fold alike and the open
+   mode looks like the rest but for its chip. Under 1600px every mode is an icon (the tip names
+   it); wider, every mode is its name with Cull's and Edit's progress. `just layout` holds it. */
 .mode-switch .mode-icon { display: none; flex: none; }
-/* Tighter still: the other modes fold to icons (the tip names them), the open one keeps its name. */
-@container (max-width: 1400px) { .mode-switch .mode-icon { display: block; } .mode-switch button:not(.on) .mode-label { display: none; } .mode-switch button:not(.on) { padding: 0 7px; } }
-@container (max-width: 860px) { .mode-switch .mode-label { display: none; } .mode-switch button { padding: 0 7px; } }
+@media (max-width: 1599px) { .mode-switch .mode-icon { display: block; } .mode-switch .mode-label, .mode-switch .count { display: none; } .mode-switch button { padding: 0 7px; } }
+.panel-head:has(> .mode-switch) { padding-left: 10px; }
+.panel-head:has(> .head-lead:not(.edit-lead)) { padding-left: 0; }
+.head-lead { width: var(--rail-w); align-self: stretch; flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 10px 0 14px; margin-right: 2px; border-right: 1px solid var(--border); }
+.head-lead > * { flex: none; }
+.head-lead .trunc { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mac-app .workspace.full > .panel:first-child .panel-head:has(> .head-lead:not(.edit-lead)) { padding-left: 0; }
+.mac-app .head-lead { padding-left: 84px; }
+/* Edit's lead stands in for the Picks rail only while the rail is hidden. */
+.head-lead.edit-lead { display: none; }
+@media (max-width: 1180px) { .head-lead.edit-lead { display: flex; } .panel-head:has(> .edit-lead) { padding-left: 0; } }
 @container (max-width: 1100px) { .cull-head h1 { display: none; } }
 
 /* Cull mode: the moments rail, then the Survey or rows of moments. */
 .cull-mode { flex: 1 1 auto; min-width: 0; display: flex; height: 100%; min-height: 0; }
 .cull-mode > .panel { flex: 1 1 auto; min-width: 0; }
-.moment-rail { width: 232px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--border); }
+.moment-rail { width: var(--rail-w); flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--border); }
 .rail-head { height: 40px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-size: 12px; color: var(--text-2); }
 .rail-filter { flex: none; padding: 0 10px 8px; }
 .rail-head .mono { font-size: 10.5px; }
@@ -241,6 +255,7 @@
 .export-v2.export-mode { width: auto !important; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .export-v2.export-mode .ex-body { flex: 1 1 auto; max-height: none; min-height: 0; }
 .export-v2.export-mode .ex-row > .k { width: 80px; }
+.export-v2.export-mode .ex-presets { width: var(--rail-w); }
 .export-v2.export-mode .ex-form { width: 360px; flex: none; overflow-y: auto; border-left: 1px solid var(--border); }
 .export-photos { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
 .export-warn { height: 34px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
@@ -266,7 +281,9 @@
 .pick-note { font-size: 10.5px; flex: none; }
 .rail-empty { padding: 10px 8px; font-size: 12px; }
 
-/* A narrow window gives Edit's stage the room; ⌘← ⌘→ still walk the Picks. */
+/* A narrow window gives Edit's stage the room; ⌘← ⌘→ still walk the Picks. The rail's right
+   edge is the column edge, so the panel after it adds no second hairline. */
+.workspace > .moment-rail + .panel { border-left: none; }
 @media (max-width: 1180px) { .picks-rail { display: none; } }
 /* Under the Mac's traffic lights (no sidebar): the rail starts below them, as the sidebar does. */
 .mac-app .workspace.full .moment-rail { padding-top: 26px; }
@@ -328,6 +345,8 @@
 .wm-sparks { display: flex; flex-direction: column; gap: 6px; }
 .wm-spark { display: grid; grid-template-columns: 72px minmax(0, 1fr) 104px; align-items: center; gap: 8px; }
 .wm-job { grid-template-columns: 8px minmax(0, 1fr) minmax(60px, 0.8fr) 56px; }
+.wm-job.wm-paused { grid-template-columns: 8px minmax(0, 1fr) auto; }
+.wm-job.wm-run { grid-template-columns: 8px minmax(0, 1fr) minmax(60px, 0.8fr) 56px 64px 18px; }
 .wm-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--text-3); }
 .wm-dot.on { background: var(--accent); }
 .imp-countdown { font-size: 11.5px; white-space: nowrap; }

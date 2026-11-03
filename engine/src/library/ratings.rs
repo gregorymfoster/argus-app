@@ -66,14 +66,40 @@ impl Library {
     }
 
     /// Set one star Rating (0-5) on many Photos. A person changing an AI Rating is logged
-    /// as an Override. Unknown Photo ids are an error and nothing is changed.
+    /// as an Override; the AI never changes a person's, so those Photos keep theirs and
+    /// come back as the result. Unknown Photo ids are an error and nothing is changed.
     pub fn set_rating(
         &mut self,
         photos: &[PhotoId],
         stars: u8,
         author: Author,
         batch: Option<BatchId>,
+    ) -> Result<Vec<PhotoId>> {
+        self.write_rating(photos, stars, author, batch, true)
+    }
+
+    /// [`Self::set_rating`] for the person's own command, which may put an AI Rating back
+    /// over theirs (the app's Undo does), so nothing is kept.
+    pub fn restore_rating(
+        &mut self,
+        photos: &[PhotoId],
+        stars: u8,
+        author: Author,
+        batch: Option<BatchId>,
     ) -> Result<()> {
+        self.write_rating(photos, stars, author, batch, false)
+            .map(|_| ())
+    }
+
+    fn write_rating(
+        &mut self,
+        photos: &[PhotoId],
+        stars: u8,
+        author: Author,
+        batch: Option<BatchId>,
+        keep_person: bool,
+    ) -> Result<Vec<PhotoId>> {
+        let mut kept = Vec::new();
         if stars > 5 {
             return Err(Error(format!("stars must be 0 to 5, not {stars}")));
         }
@@ -96,6 +122,13 @@ impl Library {
                 )
                 .optional()
                 .map_err(db_err)?;
+            if keep_person
+                && author == Author::Ai
+                && prev.as_ref().is_some_and(|(_, a)| a == "person")
+            {
+                kept.push(id);
+                continue;
+            }
             if let Some((ai_stars, prev_author)) = prev {
                 if author == Author::Person && prev_author == "ai" && ai_stars != stars {
                     tx.execute(
@@ -120,14 +153,14 @@ impl Library {
             .map_err(db_err)?;
         }
         tx.commit().map_err(db_err)?;
-        for &id in photos {
+        for &id in photos.iter().filter(|id| !kept.contains(id)) {
             self.log_usage(
                 id,
                 "stars",
                 serde_json::json!({ "stars": stars, "author": author.as_str(), "batch_id": batch }),
             );
         }
-        Ok(())
+        Ok(kept)
     }
 
     /// Replace a Shoot's Best Photos with `photos`, best first. Photos not in the Shoot

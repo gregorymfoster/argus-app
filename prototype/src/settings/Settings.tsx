@@ -4,7 +4,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { LIVE, PROVIDERS, chooseProvider, chosenProvider, loadProviders } from '../data/live';
-import { call, onAppEvent } from '../data/backend';
+import { call } from '../data/backend';
+import { onAppEvent } from '../data/shell';
 import { toastFailure } from '@/lib/utils';
 import { toast } from 'sonner';
 import { bytes } from '../data/libraries';

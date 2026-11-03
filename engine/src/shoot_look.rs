@@ -92,9 +92,7 @@ pub fn preview_within(
         }
     }
     for p in &others {
-        if let Some(s) =
-            shoot_match::sample_with(lib, p, &crate::tools::current_recipe(lib, p.id)?)?
-        {
+        if let Some(s) = shoot_match::sample_with(lib, p, &lib.current_recipe(p.id)?)? {
             samples.push(s);
             anchors.push(p.id);
         }
@@ -115,7 +113,7 @@ pub fn preview_within(
         let own = if p.id == hero.id {
             Some(recipe.clone())
         } else if matches!(lib.read_recipe(p.id)?, Some(v) if v.author == Author::Person) {
-            Some(crate::tools::current_recipe(lib, p.id)?)
+            Some(lib.current_recipe(p.id)?)
         } else {
             None
         };
@@ -187,9 +185,9 @@ fn frame(
             (shoot_match_recipe(lib, p, base, &want)?, reach, true)
         }
         // A JPEG, or nothing edited yet: it shows as it is.
-        None => (crate::tools::current_recipe(lib, p.id)?, 0.0, false),
+        None => (lib.current_recipe(p.id)?, 0.0, false),
     };
-    let shown = crate::tools::with_look(lib, p, &recipe)?;
+    let shown = lib.with_look(p, &recipe)?;
     let values = crate::edit_head::sliders(&shown.global);
     let sliders = if p.kind == "raw" {
         SLIDERS.iter().copied().zip(values).collect()
@@ -255,7 +253,7 @@ pub struct Skipped {
 /// edited by hand, and the hero, are skipped. Any Shoot match still waiting on an applied frame
 /// is closed, since the look it offered is now on the frame.
 pub fn apply(lib: &mut Library, hero: &Photo, ids: &[PhotoId], batch: BatchId) -> Result<Applied> {
-    let recipe = crate::tools::current_recipe(lib, hero.id)?;
+    let recipe = lib.current_recipe(hero.id)?;
     let ids: Vec<PhotoId> = ids.iter().copied().filter(|&id| id != hero.id).collect();
     let pv = preview(lib, hero, &recipe, &ids, None)?;
     let mut applied = Vec::new();
@@ -278,7 +276,7 @@ pub fn apply(lib: &mut Library, hero: &Photo, ids: &[PhotoId], batch: BatchId) -
             continue;
         }
         let mut r = f.recipe.expect("checked above");
-        let own = crate::tools::current_recipe(lib, f.photo_id)?;
+        let own = lib.current_recipe(f.photo_id)?;
         r.crop = own.crop;
         r.spots = own.spots;
         lib.write_recipe(f.photo_id, &r.to_value(), Author::Ai, Some(batch))?;

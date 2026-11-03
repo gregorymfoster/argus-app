@@ -272,6 +272,10 @@ _Avoid_: Smart sync, auto sync, style transfer
 The AI work waiting to run in the background (Suggestions, "apply to the rest", culls), kept in the Library so it survives a quit, and worked at the Compute level. Each item in it is a job of one kind (`jobs::KINDS`, the `jobs` table, `enqueue_job`).
 _Avoid_: Tasks, jobs list, pipeline
 
+**Run**:
+An Export or Import recorded in the Library as it goes, Photo by Photo, so closing the lid, a quit or a crash part way never loses it (Greg, 2026-11-02). A run its process left behind is finished by the Queue on the next start (`resume_run`), from the Photo it reached and each file written once; an Import whose card went away waits for the card ("Paused: card not connected"). A Queue job that fails across the Mac's sleep is queued again as "Paused while asleep" (`engine::library::Run`, `start_run`, `list_runs`, `jobs.interrupted`).
+_Avoid_: Session, task, transfer
+
 **Prepare**:
 The heavy work for a new Shoot done up front, so the person can walk away and come back to a Shoot where nothing waits (Greg, 2026-11-02): previews, the Analyzers, the cull, then model Suggestions and a denoised base for every likely keeper. Import starts it by itself. Its jobs go first in the Queue, skip the idle and overnight holds and run at Full while the Mac is kept awake; "Cull now" drops it to the Compute level. Keywords and the backup wait for Finish (`engine::prepare`, `prepare_shoot`, `prepare_status`).
 _Avoid_: Processing, baking, ingest
@@ -285,7 +289,7 @@ The last step of a Shoot: Keywords and a backup to every connected Backup place,
 _Avoid_: Wrap up, close Shoot
 
 **Work mode**:
-The full-screen mode (⌘5) for the Queue: Prepare's stages and when it will be ready, a timeline, what the Mac is doing, the running and waiting jobs, Run it all and Finish. The Status bar's Background work popover is its quick look.
+The full-screen mode (⌘5) for all background work, the Queue and the work running beside it (Import, Export, AI culls): Prepare's stages and when it will be ready, a timeline, what the Mac is doing, the running and waiting jobs, Run it all and Finish. The Status bar's Background work popover is its quick look.
 _Avoid_: Queue screen, activity, jobs view
 
 **Mask**:

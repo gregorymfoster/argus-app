@@ -4,6 +4,8 @@
     "decode_ms[ILCE-7RM5]": 129.4,
     "edit_open_ms": 222.6,
     "edit_slider_ms": 27.0,
+    "export_ms_per_photo[2048]": 399.0,
+    "export_ms_per_photo[full]": 2400.7,
     "import_ms_per_photo": 55.2,
     "preview_kb": 328.3,
     "previews_ms_per_photo[full]": 195.6,
@@ -17,6 +19,8 @@
     "import_ms_per_photo": 20.2,
     "preview_kb": 328.3,
     "previews_ms_per_photo[full]": 20.8,
-    "previews_ms_per_photo[gentle]": 403.9
+    "previews_ms_per_photo[gentle]": 403.9,
+    "export_ms_per_photo[full]": 343.3,
+    "export_ms_per_photo[2048]": 53.7
   }
 }

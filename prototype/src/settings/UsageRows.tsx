@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { asWork } from '../data/work';
 import { Switch } from '@/components/ui/switch';
 import { call, pickFolder } from '../data/backend';
 import { LIVE } from '../data/live';
@@ -27,12 +28,12 @@ export function UsageRows() {
   const exportBench = async () => {
     const dir = await pickFolder('Export training data to…');
     if (!dir || !LIVE) return;
-    const t = toast.loading('Exporting training data…');
+    // Shows with the rest of the background work while it runs, never a spinner of its own.
     try {
-      const r = await call<{ edit_cases: number; cull_shoots: number }>('export_usage_bench', { folder: dir });
-      toast.success(`Exported ${r.edit_cases} edit cases and ${r.cull_shoots} culled Shoots`, { id: t });
+      const r = await asWork({ id: 'usage-bench', kind: 'data', label: 'Exporting training data' }, () => call<{ edit_cases: number; cull_shoots: number }>('export_usage_bench', { folder: dir }));
+      toast.success(`Exported ${r.edit_cases} edit cases and ${r.cull_shoots} culled Shoots`);
     } catch (e) {
-      toast.error(`Export failed: ${(e as Error).message}`, { id: t });
+      toast.error(`Export failed: ${(e as Error).message}`);
     }
   };
   const since = s?.since ? new Date(s.since).toLocaleDateString() : null;

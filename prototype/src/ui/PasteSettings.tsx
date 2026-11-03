@@ -9,9 +9,10 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { PHOTO_BY_ID } from '../data/dummy';
-import { LIVE, asPerson } from '../data/live';
+import { LIVE } from '../data/live';
 import { DEFAULT_GROUPS, GROUPS, groupsLabel, pasteRecipe, type GroupId } from '../domain/settings';
 import { recipeOf, useLibrary, type Action, type State } from '../store/library';
+import { changePhotos } from '../store/changePhotos';
 import { routeNow } from '../router';
 import { Kbd } from './kit';
 import { openApply } from './ApplyEdit';
@@ -60,14 +61,17 @@ function applyPaste(state: State, dispatch: (a: Action) => void, from: string, t
   if (!targets.length || !groups.length) return saveGroups(groups);
   saveGroups(groups);
   const label = `Pasted ${groupsLabel(groups)} from ${fileOf(from)} to ${plural(targets.length)}`;
-  if (LIVE) {
-    const args = { from: Number(from), photo_ids: targets.map(Number), groups };
-    dispatch({ type: 'engine/saved', label, batch: asPerson('paste_settings', args, label, () => targets.map(Number)) });
-    dispatch({ type: 'toast', text: label });
-    return;
-  }
   const src = recipeOf(state, from);
-  dispatch({ type: 'batch', label, actions: targets.map((id) => ({ type: 'recipe/set', id, recipe: pasteRecipe(src, recipeOf(state, id), groups), label: 'Pasted settings', by: 'you' })) });
+  void changePhotos(dispatch, {
+    label,
+    tool: 'paste_settings',
+    args: { from: Number(from), photo_ids: targets.map(Number), groups },
+    written: () => targets.map(Number),
+    local: () => targets.map((id) => ({ id, recipe: pasteRecipe(src, recipeOf(state, id), groups) })),
+    by: 'you',
+    each: 'Pasted settings',
+  }).catch(() => {});
+  if (LIVE) dispatch({ type: 'toast', text: label });
 }
 
 type Ask = { mode: 'copy' | 'sync'; from: string; targets: string[] };

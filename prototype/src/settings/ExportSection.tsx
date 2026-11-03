@@ -1,4 +1,5 @@
-// Settings › Export: where Exports go, what happens when they finish, and your own presets.
+// Settings › Export: where Exports go, what happens when they finish (Finder, Apple Photos,
+// Google Photos and its sign-in), and your own presets.
 // The Export dialog reads and writes the same settings, so either place changes both.
 
 import { useState } from 'react';
@@ -6,8 +7,9 @@ import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { pickFolder } from '../data/backend';
-import { deleteExportPreset, exportPlace, savedExportPresets, setExportPlace, type ExportPlace } from '../ui/Export';
+import { deleteExportPreset, exportPlace, savedExportPresets, setExportPlace, type ExportPlace } from '../data/export';
 import { Row } from './Row';
+import { GoogleAccount } from './GooglePhotos';
 
 export function ExportSection() {
   const [place, setPlace] = useState(exportPlace);
@@ -39,6 +41,14 @@ export function ExportSection() {
       <Row title="Show in Finder when done">
         <Switch checked={place.reveal} onCheckedChange={(c) => set({ reveal: c })} aria-label="Show in Finder when done" data-testid="settings-export-reveal" />
       </Row>
+      <h3>Send to photo apps</h3>
+      <Row title="Add to Apple Photos" note="After each export, into an album named after the Shoot. macOS asks once to let Argus use Photos">
+        <Switch checked={place.addToPhotos} onCheckedChange={(c) => set({ addToPhotos: c })} aria-label="Add to Apple Photos" data-testid="settings-export-apple" />
+      </Row>
+      <Row title="Upload to Google Photos" note="After each export, into an album named after the Shoot, in the background">
+        <Switch checked={place.toGoogle} onCheckedChange={(c) => set({ toGoogle: c })} aria-label="Upload to Google Photos" data-testid="settings-export-google" />
+      </Row>
+      <GoogleAccount />
       <h3>Your presets</h3>
       {presets.length === 0 ? (
         <p className="set-note">None yet. In the Export dialog, set it up and choose Save as preset.</p>

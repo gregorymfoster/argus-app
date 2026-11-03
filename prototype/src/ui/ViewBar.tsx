@@ -7,6 +7,7 @@ import { Activity, Columns2, Download, Layers, LayoutGrid, Library as LibraryIco
 import { go } from '../router';
 import { useLibrary } from '../store/library';
 import { cullProgress, currentPass, editTarget, isEdited, picksOf, type Mode } from '../data/modes';
+import { SHOOT } from '../data/dummy';
 import { Kbd, Tip } from './kit';
 
 export type View = 'grid' | 'loupe' | 'compare' | 'edit';
@@ -75,11 +76,21 @@ export function ModeSwitch({ mode, current }: { mode: Mode; current?: string }) 
   );
 }
 
+/** The head of the left column for a screen that has none (Export, Work, Loupe, Compare, Look,
+ *  Edit in a narrow window): `--rail-w` wide, so the mode switch after it sits where it does over
+ *  the sidebar or a rail, and never moves between modes (Greg, 2026-11-02). */
+export function HeadLead({ children, className = '' }: { children?: ReactNode; className?: string }) {
+  return <span className={`head-lead ${className}`}>{children}</span>;
+}
+
 /** The mode switch (in the Library), then a hairline: where Loupe, Compare and Look headers
  *  start. G still goes back to the grid. */
 export function BackToGrid({ current }: { current?: string }) {
   return (
     <>
+      <HeadLead>
+        <span className="view-file trunc">{SHOOT.name}</span>
+      </HeadLead>
       <ModeSwitch mode="library" current={current} />
       <span className="vsep" />
     </>

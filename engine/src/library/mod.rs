@@ -20,6 +20,7 @@ mod places;
 mod previews;
 mod ratings;
 mod remove;
+mod runs;
 mod scan;
 mod search;
 mod shoots;
@@ -37,7 +38,7 @@ use std::path::{Path, PathBuf};
 pub use backup::Backup;
 pub(crate) use facts::FactRow;
 pub(crate) use import::read_jpeg_upright;
-pub use import::{ImportOptions, ImportReport};
+pub use import::{ImportOptions, ImportReport, ImportResume};
 
 /// Shutter, aperture, ISO, focal length and lens from a file's EXIF (the whole file's bytes),
 /// as Import reads them.
@@ -57,6 +58,7 @@ pub use places::{
 pub use previews::PreviewReport;
 pub use ratings::{BestPhoto, CullState};
 pub use remove::{Removal, RemoveReport, RestoreReport, TRASH_FILE};
+pub use runs::{alive as process_alive, Run, RunId};
 pub use scan::{find_cards, is_on_card, Card, Scan, ScanShoot, ScannedPhoto};
 pub use search::{Album, Hit as SearchHit};
 pub use shoots::{MoveTo, PhotoMoveReport, RenameReport};
@@ -305,6 +307,16 @@ impl Library {
 
     /// Photos in capture order, optionally narrowed to one Shoot or one Verdict.
     pub fn list_photos(&self, filter: &PhotoFilter) -> Result<Vec<Photo>> {
+        self.query_photos(filter, None)
+    }
+
+    /// [`Library::list_photos`], or just the Photo `only` (an indexed lookup: Export used to
+    /// read the whole Library for every Photo it wrote).
+    pub(crate) fn query_photos(
+        &self,
+        filter: &PhotoFilter,
+        only: Option<PhotoId>,
+    ) -> Result<Vec<Photo>> {
         let mut q = self
             .db
             .prepare(
@@ -318,12 +330,13 @@ impl Library {
                  LEFT JOIN best_photos b ON b.photo_id = p.id
                  WHERE (?1 IS NULL OR p.shoot_id = ?1)
                    AND (?2 IS NULL OR COALESCE(v.verdict, 'unflagged') = ?2)
+                   AND (?3 IS NULL OR p.id = ?3)
                  ORDER BY p.captured_at, p.file_name",
             )
             .map_err(db_err)?;
         let rows = q
             .query_map(
-                params![filter.shoot, filter.verdict.map(Verdict::as_str)],
+                params![filter.shoot, filter.verdict.map(Verdict::as_str), only],
                 |r| {
                     let verdict: String = r.get(10)?;
                     let by: Option<String> = r.get(11)?;
@@ -387,7 +400,8 @@ impl Library {
     }
 
     /// Set one Verdict on many Photos. A person overruling an AI Verdict is logged as an
-    /// Override. Unknown Photo ids are an error and nothing is changed.
+    /// Override; the AI never overrules a person's, so those Photos keep theirs and come
+    /// back as the result. Unknown Photo ids are an error and nothing is changed.
     pub fn set_verdict(
         &mut self,
         photos: &[PhotoId],
@@ -395,7 +409,34 @@ impl Library {
         author: Author,
         reason: Option<&str>,
         batch: Option<BatchId>,
+    ) -> Result<Vec<PhotoId>> {
+        self.write_verdict(photos, verdict, author, reason, batch, true)
+    }
+
+    /// [`Self::set_verdict`] for the person's own command, which may put an AI Verdict back
+    /// over theirs (the app's Undo does), so nothing is kept.
+    pub fn restore_verdict(
+        &mut self,
+        photos: &[PhotoId],
+        verdict: Verdict,
+        author: Author,
+        reason: Option<&str>,
+        batch: Option<BatchId>,
     ) -> Result<()> {
+        self.write_verdict(photos, verdict, author, reason, batch, false)
+            .map(|_| ())
+    }
+
+    fn write_verdict(
+        &mut self,
+        photos: &[PhotoId],
+        verdict: Verdict,
+        author: Author,
+        reason: Option<&str>,
+        batch: Option<BatchId>,
+        keep_person: bool,
+    ) -> Result<Vec<PhotoId>> {
+        let mut kept = Vec::new();
         let at = time::now();
         let tx = self
             .db
@@ -418,6 +459,13 @@ impl Library {
                 )
                 .optional()
                 .map_err(db_err)?;
+            if keep_person
+                && author == Author::Ai
+                && prev.as_ref().is_some_and(|(_, a)| a == "person")
+            {
+                kept.push(id);
+                continue;
+            }
             if let Some((ai_value, prev_author)) = &prev {
                 if author == Author::Person && prev_author == "ai" && ai_value != verdict.as_str() {
                     tx.execute(
@@ -445,11 +493,16 @@ impl Library {
             }
         }
         tx.commit().map_err(db_err)?;
+        let changed: Vec<PhotoId> = photos
+            .iter()
+            .copied()
+            .filter(|id| !kept.contains(id))
+            .collect();
         // A Pick is likely to be edited: make its Denoise base while the Mac is idle.
         if verdict == Verdict::Pick {
-            crate::denoise::queue_precompute(self, photos)?;
+            crate::denoise::queue_precompute(self, &changed)?;
         }
-        for &id in photos {
+        for &id in &changed {
             self.log_usage(
                 id,
                 "verdict",
@@ -457,7 +510,7 @@ impl Library {
                                     "reason": reason, "batch_id": batch }),
             );
         }
-        Ok(())
+        Ok(kept)
     }
 
     /// Replace a Shoot's Stacks. Each inner list is one Stack, best frame first; Photos
@@ -532,6 +585,14 @@ impl Library {
             .query_map([author.as_str()], |r| r.get(0))
             .map_err(db_err)?;
         rows.collect::<std::result::Result<_, _>>().map_err(db_err)
+    }
+
+    /// The Photo's current Recipe, or an empty one if it was never edited.
+    pub fn current_recipe(&self, photo: PhotoId) -> Result<crate::recipe::Recipe> {
+        match self.read_recipe(photo)? {
+            Some(v) => crate::recipe::Recipe::from_value(&v.recipe),
+            None => Ok(crate::recipe::Recipe::default()),
+        }
     }
 
     /// The current Recipe Version, or None if the Photo has never been edited.

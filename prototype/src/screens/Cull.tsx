@@ -3,11 +3,11 @@ import { useHotkeys } from 'react-hotkeys-hook';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Award, Check, ChevronDown, Columns2, Copy, Download, Flag, Folder, FolderInput, FolderPlus, Grid2x2, Grid3x3, Layers, Scissors, SlidersHorizontal, Sparkles, Square, Star, Trash2, Wand2, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { acceptMany, useShootTakes } from '../data/suggestions';
+import { acceptMany } from '../data/suggestions';
 import { undoBatch } from '../data/liveAgent';
 import { LIVE, importingBytes, inCollection, movePhotos, revealInFinder } from '../data/live';
 import { call } from '../data/backend';
-import { useAiStatus, type AiState } from '../data/aiStatus';
+import { type AiState } from '../data/aiStatus';
 import { useEyeFlags, type EyeFlags } from '../data/facts';
 import { EyeBadges } from '../ui/EyeBadges';
 import { askRemove } from '../ui/Remove';
@@ -16,6 +16,7 @@ import type { Photo, Suggestion, Verdict } from '../domain/types';
 import { recipeOf, roundIn, starsOf, useLibrary, verdictOf } from '../store/library';
 import { autoAction, runAuto } from '../data/auto';
 import { usePref } from '../store/variants';
+import { FILTERS, useGridFilter, type Filter } from '../data/gridFilter';
 import { MIN_FLAGS, useLearnAsYouCull, type Learning } from '../data/learn';
 import { keeperRank, keepersAt, keepersReset, useKeepers } from '../data/keepers';
 import { acceptCropOffers, dismissCropOffers, useCropOffers, type CropOffers } from '../data/cropOffer';
@@ -42,7 +43,6 @@ import { Slider } from '@/components/ui/slider';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
 import { StatusFoot } from '../ui/StatusBar';
 
-type Filter = 'all' | Verdict | 'best';
 
 // Thumbnail width in CSS pixels, before tiles stretch to fill the row.
 export const THUMB_MIN = 72;
@@ -380,12 +380,10 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
   const [thumb, setThumb] = usePref<string>('thumb', String(THUMB_DEFAULT));
   // Lightroom's grid view styles, cycled with J: everything, compact (flag, Stack, stars), or the photo alone.
   const [tileInfo, setTileInfo] = usePref<TileInfo>('tile-info', 'compact');
-  const [filter, setFilter] = useState<Filter>('all');
-  const [minStars, setMinStars] = useState(0);
-  // Lightroom-ish attribute filter for Cull Rounds: Round 2 and up, 3 and up...
-  const [minRound, setMinRound] = useState(0);
-  // Lightroom has no AI filter; ours narrows to what the background AI has done or not yet.
-  const [aiFilter, setAiFilter] = useState<'any' | 'ready' | 'waiting'>('any');
+  // The grid's filters stay on, as Lightroom's Library filter does, until the person changes them:
+  // leaving for the Loupe, Edit or another mode and coming back keeps them (Greg, 2026-11-02:
+  // "I keep filtering on flagged, and the filter keeps unsetting"). The Loupe's filmstrip follows them.
+  const { filter, setFilter, minStars, setMinStars, minRound, setMinRound, aiFilter, setAiFilter, takes, aiStatus, openTakes, aiOf, aiOk } = useGridFilter();
   const [sort, setSort] = useSort();
   // Learn as you cull: the AI's stars refresh from the person's flags (data/learn.ts).
   const learn = useLearnAsYouCull(state, dispatch, true);
@@ -415,12 +413,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
     () => (culled ? all.filter((p) => p.best != null && !(state.overrides[p.id] === 'reject')).sort((a, b) => a.best! - b.best!) : []),
     [all, culled, state.overrides],
   );
-  const takes = useShootTakes();
-  const openTakes = (id: string) => (takes[id] ?? []).filter((t) => t.status === 'open').length;
-  const aiStatus = useAiStatus();
   const eyesOf = useEyeFlags();
-  const aiOf = (id: string) => aiStatus.of(id, openTakes(id) > 0);
-  const aiOk = (p: Photo) => aiFilter === 'any' || (aiFilter === 'ready' ? openTakes(p.id) > 0 : aiOf(p.id) != null);
   // A collapsed Stack shows the frame that was kept (its best Pick, the one that went furthest in
   // the Cull Rounds), else its best frame.
   const cover = useMemo(() => {
@@ -815,7 +808,7 @@ export function CullScreen({ onExport, onCull }: { onExport: (ids?: string[]) =>
               setCur(0);
               setSel(new Set());
             }}
-            items={(['all', 'pick', 'reject', 'unflagged', 'best'] as Filter[]).map((f) => ({
+            items={FILTERS.map((f) => ({
               value: f,
               title: { all: 'All', pick: 'Picks', reject: 'Rejects', unflagged: 'Unflagged', best: 'Best Photos (B)' }[f],
               label: (

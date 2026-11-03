@@ -12,7 +12,7 @@ import { isEdited, picksOf } from '../data/modes';
 import { go } from '../router';
 import { PhotoView } from '../ui/PhotoView';
 import { ExportModeBody } from '../ui/Export';
-import { Hints, ModeSwitch } from '../ui/ViewBar';
+import { HeadLead, Hints, ModeSwitch } from '../ui/ViewBar';
 import { Kbd, ESC_OUTSIDE_DIALOGS } from '../ui/kit';
 import { EmptyState } from '../ui/Empty';
 import { Button } from '@/components/ui/button';
@@ -81,10 +81,11 @@ export function ExportScreen() {
           middle,
           head: ({ n, facts, start, running }) => (
             <header className="panel-head view-head">
+              <HeadLead>
+                <span className="view-file">{n === picks.length ? `${n} Picks` : `${n} of ${picks.length} Picks`}</span>
+                <span className="mono faint view-meta trunc">{SHOOT.name}</span>
+              </HeadLead>
               <ModeSwitch mode="export" />
-              <span className="vsep" />
-              <span className="view-file trunc">{n === picks.length ? `${n} Picks` : `${n} of ${picks.length} Picks`}</span>
-              <span className="mono faint view-meta">{SHOOT.name}</span>
               <span className="grow" />
               <span className="faint view-meta wide-only">{facts}</span>
               <FinishShoot shootId={LIVE ? Number(SHOOT.id) || null : 1} shootName={SHOOT.name} />

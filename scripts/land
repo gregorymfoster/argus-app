@@ -3,7 +3,8 @@
 # Works from any branch (cloud sessions often start on claude/*): commits go to origin main.
 # Retries the push on network errors and re-rebases if another thread pushed first.
 #   scripts/land            (or `just land`)
-#   LAND_SKIP_CHECK=1 scripts/land   docs-only change, skips `just check`
+#   LAND_SKIP_CHECK=1 scripts/land   docs-only change, skips `just check` (and the UI checks)
+# A change under prototype/ also runs `scripts/ui-gate --land` (layout + shots, ~3 min, cloud).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,6 +22,13 @@ for attempt in 1 2 3 4 5; do
   fi
   if [ "${LAND_SKIP_CHECK:-}" != "1" ] && [ "${checked:-}" != "$(git rev-parse "HEAD^{tree}")" ]; then
     just check
+    # A change to the UI also runs its layout and shots checks here, so a break surfaces with its
+    # author and not at release (Greg, 2026-11-02). Cloud only: the shot baselines are Linux
+    # Chromium's. Cached, so a rerun after an unrelated rebase costs nothing.
+    if git diff --quiet origin/main HEAD -- prototype; then :
+    elif [ "$(uname)" = Linux ]; then scripts/progress land-ui --stall 900 -- scripts/ui-gate --land
+    else echo "land: this change touches prototype/; its layout and shots checks run in the cloud (scripts/ui-gate --land), so run them there or expect the release gate to" >&2
+    fi
     checked=$(git rev-parse "HEAD^{tree}")
   fi
   # A time limit, so a stalled connection retries instead of hanging the thread (CLAUDE.md).

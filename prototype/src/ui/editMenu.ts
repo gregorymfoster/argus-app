@@ -3,7 +3,7 @@
 // In a text field they keep their native behaviour; anywhere else they replay the
 // same keys the screens already handle (⌘Z, ⇧⌘Z, ⌘A), so the menu and the keyboard
 // can't drift apart. `argus:edit-menu` on window is the same path for tests.
-import { IN_APP } from '../data/backend';
+import { onAppEvent } from '../data/shell';
 
 export type EditAction = 'undo' | 'redo' | 'select-all';
 
@@ -50,5 +50,5 @@ export function initEditMenu() {
     true,
   );
   window.addEventListener('argus:edit-menu', (e) => runEditMenu((e as CustomEvent<EditAction>).detail));
-  if (IN_APP) void import('@tauri-apps/api/event').then(({ listen }) => listen<EditAction>('edit-menu', (e) => runEditMenu(e.payload)));
+  onAppEvent<EditAction>('edit-menu', runEditMenu);
 }

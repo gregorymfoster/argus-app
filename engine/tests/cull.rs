@@ -668,7 +668,7 @@ fn ollama_streams_its_reply_and_progress_moves_photo_by_photo() {
 struct Slow;
 impl Provider for Slow {
     fn cull(&self, sheet: &ContactSheet) -> argus_engine::Result<CullResult> {
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        std::thread::sleep(std::time::Duration::from_millis(1500)); // 30 heartbeats, so a loaded Mac still sends 4
         Ok(CullResult {
             summary: String::new(),
             photos: sheet
@@ -739,8 +739,10 @@ fn the_bar_moves_while_the_model_reads_the_sheet() {
     let seen = seen.into_inner().unwrap();
     let reading: Vec<_> = seen
         .iter()
-        .filter(|p| p.done == 0 && p.tokens == 0)
+        .filter(|p| p.done == 0 && p.tokens == 0 && p.photos == 0)
         .collect();
+    // (A reply that didn't stream sets no tokens, so photos == 0 is what marks the time
+    // before it; a heartbeat between the reply and the saved request showed read 10.)
     // Moves before the model says a word, in the Shoot's Photos, but never claims the
     // whole sheet read (or half the work done) before the model replies.
     assert!(reading.iter().any(|p| p.bar().0 > 0), "{seen:?}");
@@ -1261,4 +1263,43 @@ fn a_models_check_sees_only_the_doubtful_frames_and_rejects_only_among_them() {
         vec![2, 5],
         "its rejects land on the right frames of the whole sheet"
     );
+}
+
+/// [`Chunky`] until its `left` requests run out, then fails as a killed cull would.
+struct Dies(Chunky, std::cell::Cell<usize>);
+impl Provider for Dies {
+    fn cull(&self, sheet: &ContactSheet) -> argus_engine::Result<CullResult> {
+        if self.1.get() == 0 {
+            return Err(argus_engine::Error("the lid closed".into()));
+        }
+        self.1.set(self.1.get() - 1);
+        self.0.cull(sheet)
+    }
+}
+
+#[test]
+fn a_cull_stopped_part_way_asks_again_only_what_it_had_not_heard_back() {
+    let (_tmp, mut lib, shoot) = library_with(7);
+    // Two of the three chunks answered, then the Mac slept for good (or Argus quit).
+    let dying = Dies(Chunky(RefCell::new(vec![])), std::cell::Cell::new(2));
+    assert!(cull_shoot_with(&mut lib, shoot, &dying, 3, &|_| {}).is_err());
+    let memo = argus_engine::cull::Memo::for_shoot(lib.root(), shoot);
+    assert_eq!(memo.len(), 2);
+    // Run again: only the third chunk and the Best Photos pass go to the model.
+    let chunky = Chunky(RefCell::new(vec![]));
+    let seen = std::sync::Mutex::new(vec![]);
+    let r = cull_shoot_with(&mut lib, shoot, &chunky, 3, &|p| {
+        seen.lock().unwrap().push(p)
+    })
+    .unwrap();
+    assert_eq!(chunky.0.borrow().len(), 2, "{:?}", chunky.0.borrow());
+    assert_eq!(r.rated, 7);
+    let seen = seen.into_inner().unwrap();
+    assert!(
+        seen.windows(2).all(|w| w[0].photos <= w[1].photos),
+        "never goes back"
+    );
+    assert_eq!(seen.last().unwrap().bar(), (7, 7));
+    // Saved: the answers are cleared, so a later cull asks afresh.
+    assert!(memo.is_empty());
 }

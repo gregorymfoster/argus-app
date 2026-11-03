@@ -7,13 +7,12 @@
 
 import { createContext, Fragment, useContext, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, ArrowDownToLine, ArrowUpCircle, Download, Play, Sparkles, Upload } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowUpCircle, Play, Sparkles } from 'lucide-react';
 import { clockIn, heldCount, runAll, usePrepare } from '../data/prepare';
 import { MeterLine } from './Meter';
 import { QueuePopover, queueLine, useQueueOrDemo } from './Queue';
-import { useExportProgress } from './Export';
+import { runningIcon, useRunning } from './Running';
 import { eta } from './Progress';
-import { useLibrary } from '../store/library';
 import { plain, type QueueStatus } from '../data/suggestions';
 import { restartToUpdate, useUpdate } from '../data/updates';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -33,9 +32,6 @@ export function StatusFoot({ className = '', children }: { className?: string; c
   if (!slot) return null;
   return createPortal(<div className={`status-foot ${className}`}>{children}</div>, slot);
 }
-
-/** Engine tasks outside the Queue that the person started and watches, by `progress` kind. */
-const FOREGROUND: Record<string, string> = { cull: 'AI cull', auto: 'Auto', rank_presets: 'Presets' };
 
 /** One running piece of work: icon, label, done of total, a short bar and time left. */
 function Work({ q, icon, label, done, total, eta_s, testid, title, more }: { q: QueueStatus; icon: ReactNode; label: string; done?: number; total?: number; eta_s?: number | null; testid: string; title?: string; more?: number }) {
@@ -66,8 +62,7 @@ function Work({ q, icon, label, done, total, eta_s, testid, title, more }: { q: 
 /** Everything running behind the screen, what the person is waiting on first. */
 function WorkItems() {
   const q = useQueueOrDemo();
-  const { state } = useLibrary();
-  const exporting = useExportProgress();
+  const running = useRunning(q, { queue: false });
   const prep = usePrepare();
   if (!q) return null;
   const items: [string, ReactNode][] = [];
@@ -104,18 +99,8 @@ function WorkItems() {
       </button>,
     ]);
   }
-  if (state.importing && state.importTotal) {
-    const label = (state.importLabel ?? 'Importing').startsWith('Importing') ? 'Importing' : (state.importLabel ?? 'Importing');
-    items.push(['import', <Work q={q} icon={<Upload size={12} className="sb-icon" />} label={label} done={state.importDone ?? state.imported} total={state.importTotal} eta_s={state.importEta ?? null} testid="status-import" />]);
-  }
-  if (exporting) items.push(['export', <Work q={q} icon={<Download size={12} className="sb-icon on" />} label="Exporting" done={exporting.done} total={exporting.total} eta_s={exporting.eta_s} testid="status-export" />]);
-  // Work this window started outside the Queue (an AI cull from the chat, Auto all): the
-  // person is watching it, and the Queue itself may be idle (Greg, 2026-10-21).
-  for (const t of q.tasks ?? []) {
-    if (!FOREGROUND[t.kind]) continue;
-    const label = t.waiting ? `${FOREGROUND[t.kind]} · waiting: ${plain(t.waiting)}` : t.kind === 'auto' ? t.label : `${FOREGROUND[t.kind]} · ${t.label}`;
-    items.push([`task-${t.kind}`, <Work q={q} icon={<Sparkles size={12} className="sb-icon on" />} label={label} done={t.done} total={t.total} eta_s={t.waiting ? null : t.eta_s} testid="status-task" />]);
-  }
+  // Import, Export, Apple Photos, an AI cull or Auto: the same list Work mode's Running shows.
+  for (const w of running) items.push([w.key, <Work q={q} icon={runningIcon(w.kind, 12, `sb-icon${w.kind === 'import' ? '' : ' on'}`)} label={w.kind === 'export' ? 'Exporting' : w.label} done={w.done} total={w.total} eta_s={w.eta_s} testid={w.testid} title={w.detail ? `${w.label} · ${w.detail}` : undefined} />]);
   // The Queue (Suggestions, culls, previews, Keywords): only while it has something to say.
   const r = q.running;
   // While Prepare runs its line stands for the Queue's.

@@ -20,6 +20,10 @@ check:
     scripts/cached test {{rust_inputs}} --in scripts/test-parallel -- scripts/progress test -- scripts/test-parallel --workspace --profile fast
     scripts/cached install-sh --in scripts/release/install.sh --in scripts/release/install.test.sh --in scripts/release/stamp-install.sh -- scripts/release/install.test.sh
     scripts/cached lock-lint --in engine/src --in cli/src --in app/src --in scripts/lock-lint.py -- python3 scripts/lock-lint.py
+    # The UI's TypeScript, so a broken type in prototype/ fails the push and not the release build (~9 s, skipped when prototype/ is unchanged).
+    scripts/cached prototype-npm --in prototype/package.json --in prototype/package-lock.json --out prototype/node_modules -- sh -c 'cd prototype && npm install --no-audit --no-fund --silent'
+    scripts/cached typecheck --in prototype/src --in prototype/tsconfig.json --in prototype/package-lock.json --in prototype/vite.config.ts -- sh -c 'cd prototype && npx tsc -b'
+    @sh -c 'bad=$(grep -rl "@tauri-apps" prototype/src | grep -vE "prototype/src/data/(backend|shell)[.]ts$"); [ -z "$bad" ] || { echo "seam-lint: only data/backend.ts (engine) and data/shell.ts (app shell) may import @tauri-apps: $bad"; exit 1; }'
     scripts/cached design-lint --in prototype/src --in prototype/scripts/design-lint.mjs --in prototype/scripts/design-lint-baseline.json -- node prototype/scripts/design-lint.mjs
     @scripts/progress slower
     @ls fixtures/raw/*.ARW >/dev/null 2>&1 || echo "warning: fixtures/raw is empty, so golden and RAW tests were SKIPPED (see CLAUDE.md for getting the RAWs)"

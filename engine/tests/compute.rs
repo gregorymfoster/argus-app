@@ -44,6 +44,12 @@ fn gentle_backgrounds_and_duty_cycles_ollama_then_lets_it_go() {
     let rec = Recorder::default();
     let t = Throttle::start(Compute::Gentle, rec.clone());
     std::thread::sleep(Duration::from_millis(4500)); // past one 4 s run phase
+                                                     // Interactive is process-wide: another test's Agent request or preview can hold it and
+                                                     // skip a pause, so wait for one (up to 30 s) rather than trusting the first phase.
+    let t0 = std::time::Instant::now();
+    while !rec.log().contains(&"pause 42".into()) && t0.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     drop(t);
     let log = rec.log();
     assert_eq!(
@@ -64,6 +70,14 @@ fn gentle_backgrounds_and_duty_cycles_ollama_then_lets_it_go() {
     std::thread::sleep(Duration::from_millis(300));
     let waiting = Interactive::begin();
     std::thread::sleep(Duration::from_millis(4500));
+    // The lift lands when the running 4 s phase ends; another test's Interactive at the
+    // start can push that phase later, so give it up to 10 s more.
+    let t0 = std::time::Instant::now();
+    while rec.log().last().map(String::as_str) != Some("bg 42 false")
+        && t0.elapsed() < Duration::from_secs(10)
+    {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let during = rec.log().len();
     assert!(!rec.log().contains(&"pause 42".into()), "{:?}", rec.log());
     assert_eq!(rec.log().last().unwrap(), "bg 42 false", "lifted");

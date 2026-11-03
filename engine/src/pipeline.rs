@@ -915,17 +915,30 @@ pub fn orient_pixels<T: Copy + Default + Send + Sync>(
         Orientation::Rotate90 | Orientation::Rotate270 => {
             let (nw, nh) = (h, w);
             let mut out = vec![T::default(); data.len()];
-            // clockwise 90: (x,y) -> (h-1-y, x); 270: (x,y) -> (y, w-1-x). Gather per output row.
-            out.par_chunks_mut(nw * 3)
+            // clockwise 90: (x,y) -> (h-1-y, x); 270: (x,y) -> (y, w-1-x). Gather a band of
+            // output rows at a time in short runs of output columns, so the source rows it
+            // reads stay in cache (a plain per-row gather walks a whole source column per
+            // output row: a third of a second for a 61 MP portrait).
+            const BAND: usize = 32;
+            out.par_chunks_mut(nw * 3 * BAND)
                 .enumerate()
-                .for_each(|(ny, orow)| {
-                    for (nx, d) in orow.as_chunks_mut::<3>().0.iter_mut().enumerate() {
-                        let (x, y) = if o == Orientation::Rotate90 {
-                            (ny, h - 1 - nx)
-                        } else {
-                            (w - 1 - ny, nx)
-                        };
-                        d.copy_from_slice(&data[(y * w + x) * 3..(y * w + x) * 3 + 3]);
+                .for_each(|(band, chunk)| {
+                    let rows = chunk.len() / (nw * 3);
+                    for nx0 in (0..nw).step_by(BAND) {
+                        let nx1 = (nx0 + BAND).min(nw);
+                        for r in 0..rows {
+                            let ny = band * BAND + r;
+                            let orow = &mut chunk[r * nw * 3..(r + 1) * nw * 3];
+                            for nx in nx0..nx1 {
+                                let (x, y) = if o == Orientation::Rotate90 {
+                                    (ny, h - 1 - nx)
+                                } else {
+                                    (w - 1 - ny, nx)
+                                };
+                                orow[nx * 3..nx * 3 + 3]
+                                    .copy_from_slice(&data[(y * w + x) * 3..(y * w + x) * 3 + 3]);
+                            }
+                        }
                     }
                 });
             (out, nw, nh)

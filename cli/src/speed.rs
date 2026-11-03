@@ -125,6 +125,24 @@ pub fn run(folders: &[PathBuf], baseline: &Path, save: bool) -> Result<bool, Box
     m.insert("edit_open_ms".into(), json!(mean(&open)));
     m.insert("edit_slider_ms".into(), json!(mean(&slide)));
 
+    // Export: a full-size JPEG at the Recommended preset, and a 2048 px one (Greg 2026-11-02:
+    // "exports should be super efficient and fast"). One Photo per call, as the app does.
+    let out = tempfile::tempdir()?;
+    for (key, size) in [("full", json!({})), ("2048", json!({ "long_edge": 2048 }))] {
+        let mut took = Vec::new();
+        for p in &photos {
+            let mut args = json!({ "photo_ids": [p.id], "folder": out.path(), "quality": 85,
+                                   "shoot_folder": false, "record": false, "learn": false });
+            args.as_object_mut()
+                .unwrap()
+                .extend(size.as_object().unwrap().clone());
+            let t = Instant::now();
+            tools.call("export_photos", args)?;
+            took.push(ms(t));
+        }
+        m.insert(format!("export_ms_per_photo[{key}]"), json!(mean(&took)));
+    }
+
     // Grid: what each tile's preview costs to load.
     let bytes: u64 = photos
         .iter()

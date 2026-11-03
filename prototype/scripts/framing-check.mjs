@@ -7,15 +7,9 @@
 //
 //   node scripts/framing-check.mjs
 
-import { createServer } from 'vite';
-import { chromium } from 'playwright';
-import { execFileSync, spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { benchLibrary, launchBrowser, startBridge, startVite } from './harness.mjs';
 
-const root = new URL('../../', import.meta.url).pathname;
-const bin = process.env.ARGUS_BIN ?? join(root, 'target/fast/argus');
 const out = new URL('../out/shots/', import.meta.url).pathname;
 mkdirSync(out, { recursive: true });
 
@@ -27,34 +21,15 @@ const FRAMES = [
   ['2025-12-28_DSC04634.jpg', 'A4_park.jpg'],
   ['2024-06-04_DSC04427.jpg', 'A5_cropped.jpg'],
 ];
-const tmp = mkdtempSync(join(tmpdir(), 'argus-framing-'));
-const src = join(tmp, '2026-11-01_Framing');
-mkdirSync(src);
-const t0 = 1_792_000_000;
-FRAMES.forEach(([from, to], i) => {
-  copyFileSync(join(root, 'fixtures/bench/edit/greg', from), join(src, to));
-  utimesSync(join(src, to), t0 + i * 20, t0 + i * 20);
-});
-const library = join(tmp, 'lib');
-execFileSync(bin, ['tool', 'import_folder', JSON.stringify({ folder: src }), '--library', library], { stdio: 'ignore' });
+const library = benchLibrary('framing', '2026-11-01_Framing', FRAMES);
 
 const failures = [];
 const check = (ok, msg) => (ok ? console.log(`ok   ${msg}`) : (failures.push(msg), console.log(`FAIL ${msg}`)));
 const api = (cmd, body = {}) => fetch(`http://127.0.0.1:7881/api/${cmd}`, { method: 'POST', body: JSON.stringify(body) }).then((r) => r.json());
-const serve = spawn(bin, ['serve', '--library', library, '--port', '7881'], {
-  env: { ...process.env, ARGUS_COMPUTE: 'full', ARGUS_MODEL_LOCK_DIR: mkdtempSync(join(tmpdir(), 'argus-model-')), ARGUS_FOREGROUND_DIR: mkdtempSync(join(tmpdir(), 'argus-foreground-')) },
-  stdio: ['ignore', 'inherit', 'inherit'],
-});
-// A crash must not leave the engine holding its port for the next run ("Address already in use").
-process.on('exit', () => serve.kill());
-const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5201, strictPort: true, proxy: { '/api': 'http://127.0.0.1:7881', '/previews': 'http://127.0.0.1:7881' } }, logLevel: 'error' });
-await vite.listen();
-const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
+const { proc: serve } = await startBridge({ library, port: 7881, env: { ARGUS_COMPUTE: 'full' } });
+const vite = await startVite(5201, 7881);
+const browser = await launchBrowser();
 try {
-  for (let i = 0; i < 100; i++) {
-    if (await fetch('http://127.0.0.1:7881/api/list_shoots').then((r) => r.ok, () => false)) break;
-    await new Promise((r) => setTimeout(r, 200));
-  }
   for (const j of await api('list_jobs', { status: 'queued' })) await api('cancel_job', { job_id: j.id });
   const photos = await api('list_photos', {});
   const id = (n) => photos.find((ph) => ph.file_name === n).id;

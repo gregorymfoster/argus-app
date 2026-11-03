@@ -118,7 +118,7 @@ impl Tools {
             }
             "match_to_photo" => {
                 let a: MatchToPhoto = parse(args)?;
-                find_photo(&lib, a.photo_id)?;
+                lib.find_photo(a.photo_id)?;
                 let mut args = json!({ "photo_id": a.photo_id });
                 if let Some(ids) = a.photo_ids {
                     args["photo_ids"] = json!(ids);
@@ -192,7 +192,7 @@ impl Tools {
                         encode_jpeg(&img)?
                     }
                     None => {
-                        let photo = find_photo(&lib, sug.photo_id)?;
+                        let photo = lib.find_photo(sug.photo_id)?;
                         let recipe = Recipe::from_value(&match amount {
                             Some(v) => lib.suggestion_at(&sug, v)?,
                             None => sug.recipe.clone(),
@@ -200,7 +200,7 @@ impl Tools {
                         let img = render::render_in(
                             &lib,
                             &photo,
-                            &with_look(&lib, &photo, &recipe)?,
+                            &lib.with_look(&photo, &recipe)?,
                             Some(edge as usize),
                         )?;
                         render::encode_jpeg(&img, 85)?

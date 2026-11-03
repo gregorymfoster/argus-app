@@ -102,7 +102,7 @@ pub fn propose_with(
     let mut open = Vec::new();
     let mut frames: Vec<Option<Frame>> = Vec::with_capacity(photos.len());
     for p in &photos {
-        let r = crate::tools::current_recipe(lib, p.id)?;
+        let r = lib.current_recipe(p.id)?;
         if !r.crop.is_identity() {
             frames.push(Some(kept(p.id, "already cropped")));
         } else {
@@ -240,9 +240,9 @@ pub fn to_crop(angle: f64, rect: Option<compose::Rect>, w: f64, h: f64) -> Crop 
 }
 
 fn render(lib: &Library, p: &Photo, crop: &Crop, edge: usize) -> Result<Vec<u8>> {
-    let mut r = crate::tools::current_recipe(lib, p.id)?;
+    let mut r = lib.current_recipe(p.id)?;
     r.crop = *crop;
-    let shown = crate::tools::with_look(lib, p, &r)?;
+    let shown = lib.with_look(p, &r)?;
     crate::render::encode_jpeg(&crate::render::render_in(lib, p, &shown, Some(edge))?, 82)
 }
 
@@ -268,7 +268,7 @@ pub fn apply(lib: &mut Library, items: &[(PhotoId, Crop)], batch: BatchId) -> Re
             skipped.push(skip("no such Photo"));
             continue;
         }
-        let mut r = crate::tools::current_recipe(lib, id)?;
+        let mut r = lib.current_recipe(id)?;
         if !r.crop.is_identity() {
             skipped.push(skip("already cropped"));
             continue;

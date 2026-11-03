@@ -507,3 +507,35 @@ fn apple_photos_script_quotes_paths_and_albums() {
         assert!(err.contains("needs macOS"), "{err}");
     }
 }
+
+#[test]
+fn an_export_holds_the_queue_and_learns_once_at_the_end() {
+    let l = library("Held");
+    let out = l.tmp.path().join("Exports");
+    let learn_jobs = || {
+        json1(&l.tools, "list_jobs", json!({ "kind": "learn_edits" }))
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let export = |extra: Value| {
+        let mut a = json!({ "photo_ids": [l.ids[0]], "folder": out, "long_edge": 64 });
+        a.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        json1(&l.tools, "export_photos", a);
+    };
+    export(json!({ "learn": false }));
+    assert_eq!(learn_jobs(), 0, "no lesson between the Photos of an export");
+    // The Library's own root: on macOS the temp dir resolves through /private.
+    let root = l.tmp.path().join("library").canonicalize().unwrap();
+    assert!(
+        argus_engine::compute::exporting(&root),
+        "the Queue waits while exporting"
+    );
+    assert!(!argus_engine::compute::exporting(
+        &l.tmp.path().join("other")
+    ));
+    export(json!({}));
+    assert_eq!(learn_jobs(), 1, "one lesson once the export is done");
+}

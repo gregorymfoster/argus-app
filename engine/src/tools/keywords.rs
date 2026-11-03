@@ -128,7 +128,7 @@ impl Tools {
                     .into_iter()
                     .take(a.limit.unwrap_or(24))
                     .map(|h| {
-                        let p = find_photo(&lib, h.photo_id)?;
+                        let p = lib.find_photo(h.photo_id)?;
                         let preview = p.preview.strip_prefix(lib.root()).unwrap_or(&p.preview).to_string_lossy().replace('\\', "/");
                         Ok(json!({ "photo_id": h.photo_id, "shoot_id": h.shoot_id, "file_name": p.file_name,
                                    "preview": preview, "score": h.score, "matched": h.matched }))

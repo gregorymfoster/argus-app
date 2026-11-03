@@ -93,24 +93,3 @@ export async function pickFolder(title = 'Import a Shoot', defaultPath?: string)
   }
   return window.prompt(`${title}: a folder path on the machine running argus serve`, defaultPath ?? '');
 }
-
-/**
- * Run `f` on each app-shell event `name` (the app menu's items arrive this way); nothing in a
- * browser. Returns the stop function, safe to call before the listener is up.
- */
-export function onAppEvent<T = unknown>(name: string, f: (payload: T) => void): () => void {
-  if (!IN_APP) return () => {};
-  let off = () => {};
-  let gone = false;
-  void import('@tauri-apps/api/event')
-    .then(({ listen }) => listen<T>(name, (e) => f(e.payload)))
-    .then((u) => {
-      if (gone) u();
-      else off = u;
-    })
-    .catch((e) => console.warn(`listen ${name}:`, e));
-  return () => {
-    gone = true;
-    off();
-  };
-}

@@ -156,9 +156,9 @@ fn save_preset(lib: &Library, a: SavePreset) -> Result<Vec<Part>> {
     let p = match (a.photo_id, &a.id) {
         (None, Some(id)) => crate::presets::rename(lib, id, &a.name)?,
         (Some(photo_id), _) => {
-            let photo = find_photo(lib, photo_id)?;
+            let photo = lib.find_photo(photo_id)?;
             // What the Photo looks like, its Look included.
-            let recipe = with_look(lib, &photo, &current_recipe(lib, photo_id)?)?;
+            let recipe = lib.with_look(&photo, &lib.current_recipe(photo_id)?)?;
             let groups: Vec<&str> = match &a.groups {
                 Some(g) => g.iter().map(String::as_str).collect(),
                 None => crate::presets::default_groups(),
@@ -181,8 +181,8 @@ fn apply_preset(lib: &mut Library, a: ApplyPreset, batch: Option<BatchId>) -> Re
     let amount = a.amount.unwrap_or(100.0).clamp(0.0, 200.0) / 100.0;
     let mut todo = Vec::new();
     for &id in &a.photo_ids {
-        find_photo(lib, id)?;
-        let own = current_recipe(lib, id)?;
+        lib.find_photo(id)?;
+        let own = lib.current_recipe(id)?;
         let r = if a.remove {
             crate::presets::remove(&own, p)?
         } else {

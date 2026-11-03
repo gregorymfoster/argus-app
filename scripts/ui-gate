@@ -6,6 +6,10 @@
 #   scripts/ui-gate            run them all; on green, write release/ui-gate.txt (commit it)
 #   scripts/ui-gate --verify   what `just release-candidate` runs on the Mac: fails unless
 #                              release/ui-gate.txt was written for this exact UI and engine
+#   scripts/ui-gate --land     only layout and shots (dummy data, ~3 min), no stamp: what
+#                              `just land` runs when the change touches prototype/ (Greg
+#                              2026-11-02: UI breaks surface at landing, not at release). Same
+#                              cache keys, so the release gate skips them if the UI is unchanged.
 #
 # What it runs, side by side (about 4 minutes on the 4-core cloud box; 12+ one after another):
 #   layout                 every screen at 1024/1280/1500 px plus the ?stress=1 demo
@@ -40,6 +44,7 @@ if [ "${1:-}" = "--verify" ]; then
   exit 1
 fi
 
+LAND=; [ "${1:-}" = "--land" ] && LAND=1
 if [ -n "$(git status --porcelain --untracked-files=no -- prototype engine)" ]; then echo "ui-gate: commit prototype/ and engine/ first, so the stamp names what was checked" >&2; exit 1; fi
 export PW_CHROMIUM="${PW_CHROMIUM:-$(ls -d /opt/pw-browsers/chromium-*/chrome-linux64/chrome 2>/dev/null | tail -1)}"
 [ -n "$PW_CHROMIUM" ] || unset PW_CHROMIUM
@@ -48,7 +53,7 @@ export PW_CHROMIUM="${PW_CHROMIUM:-$(ls -d /opt/pw-browsers/chromium-*/chrome-li
 # prototype/node_modules/.vite at the same moment.
 (cd prototype && npx vite optimize >/dev/null 2>&1) || true
 # Build the engine once up front, so the engine-backed steps don't queue on cargo's lock.
-scripts/progress build-cli -- cargo build --profile fast -p argus-cli
+[ -n "$LAND" ] || scripts/progress build-cli -- cargo build --profile fast -p argus-cli
 
 # What every step's result depends on besides its own script.
 APP=(--in prototype/src --in prototype/index.html --in prototype/package.json --in prototype/package-lock.json
@@ -65,9 +70,9 @@ step() { # step NAME [cached args...] -- CMD...
 }
 step layout --in prototype/scripts/layout.mjs -- sh -c 'cd prototype && node scripts/layout.mjs'
 step shots --in prototype/scripts/shots.mjs -- sh -c 'cd prototype && node scripts/shots.mjs'
-step shoot-look-check "${RAWS[@]}" --in prototype/scripts/shoot-look-check.mjs -- sh -c 'cd prototype && node scripts/shoot-look-check.mjs'
-step framing-check "${RAWS[@]}" --in prototype/scripts/framing-check.mjs -- sh -c 'cd prototype && node scripts/framing-check.mjs'
-step mac-e2e "${RAWS[@]}" --in prototype/scripts/mac-e2e.mjs --in prototype/scripts/live.mjs -- sh -c 'cd prototype && ../scripts/timeout 900 node scripts/mac-e2e.mjs'
+[ -z "$LAND" ] && step shoot-look-check "${RAWS[@]}" --in prototype/scripts/shoot-look-check.mjs -- sh -c 'cd prototype && node scripts/shoot-look-check.mjs'
+[ -z "$LAND" ] && step framing-check "${RAWS[@]}" --in prototype/scripts/framing-check.mjs -- sh -c 'cd prototype && node scripts/framing-check.mjs'
+[ -z "$LAND" ] && step mac-e2e "${RAWS[@]}" --in prototype/scripts/mac-e2e.mjs --in prototype/scripts/live.mjs -- sh -c 'cd prototype && ../scripts/timeout 900 node scripts/mac-e2e.mjs'
 echo "ui-gate: running ${names[*]} side by side (logs in out/logs/ui-gate-*.out; 'just status' for progress)"
 
 failed=()
@@ -85,6 +90,7 @@ if [ ${#failed[@]} -gt 0 ]; then
   echo "ui-gate: FAILED: ${failed[*]} (logs in out/logs/ui-gate-*.out, shots in prototype/out/shots/). No stamp written. Rerunning skips the steps that passed." >&2
   exit 1
 fi
+if [ -n "$LAND" ]; then echo "ui-gate: layout and shots green"; exit 0; fi
 mkdir -p release
 { echo "# Written by scripts/ui-gate when the release UI checks passed. Releases check it (scripts/ui-gate --verify)."; trees; echo "passed $(TZ=America/New_York date '+%Y-%m-%d %H:%M ET') at $(git rev-parse --short HEAD)"; } > "$STAMP"
 echo "ui-gate: all green; commit $STAMP and land it, then the Mac can release"

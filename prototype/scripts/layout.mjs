@@ -1,5 +1,7 @@
 // Every main screen at Greg's window widths (1280 and 1500 px): fails when a header or
 // footer wraps, or a label in one is clipped or sticks out, the Status bar included, plus the sidebar squeezed. Shots in out/shots/layout-*.png.
+// Also fails when a mode switch button sits in a different place on any screen at the same width
+// (Greg, 2026-11-02: the bar must stay put between modes), at 1680 px too, where it shows names.
 //
 //   node scripts/layout.mjs
 
@@ -15,6 +17,10 @@ await server.listen();
 const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
 const SCREENS = { import: '#/import', grid: '?demo=culled&update=ready#/cull', loupe: '?demo=culled#/loupe/p5', compare: '?demo=culled#/compare/p4,p5', cull: '?demo=culled#/moments', export: '?demo=culled#/export', work: '?demo=culled#/work', edit: '?demo=culled#/edit/p15', look: '?demo=culled#/look' };
 const failures = [];
+// Where each mode switch button sits, per width: { [w]: { [screen]: 'x+w …' } }.
+const modeSpots = {};
+const modeSpot = (p) =>
+  p.$$eval('[data-testid=mode-switch] button', (bs) => bs.map((b) => { const r = b.getBoundingClientRect(); return `${b.dataset.testid?.slice(5)}@${Math.round(r.x)}+${Math.round(r.width)}`; }).join(' '));
 try {
   for (const w of WIDTHS)
     for (const [name, path] of Object.entries(SCREENS)) {
@@ -22,6 +28,8 @@ try {
       const p = await ctx.newPage();
       await p.goto(`http://localhost:5197/${path}`);
       await p.waitForTimeout(900);
+      const spot = await modeSpot(p);
+      if (spot) (modeSpots[w] ??= {})[name] = spot;
       const problems = [...(await barProblems(p)), ...(await layoutProblems(p))];
       await p.screenshot({ path: `${out}layout-${name}-${w}.png` });
       console.log(`${problems.length ? 'FAIL' : 'ok  '} ${name} at ${w}px${problems.length ? '\n       ' + problems.join('\n       ') : ''}`);
@@ -62,6 +70,27 @@ try {
       if (problems.length) failures.push(`${name}@${w}`);
       await ctx.close();
     }
+  // Wide enough for the switch to show names: the five modes only (the rest above holds it narrower).
+  for (const name of ['grid', 'cull', 'edit', 'export', 'work']) {
+    const ctx = await browser.newContext({ viewport: { width: 1680, height: 860 } });
+    const p = await ctx.newPage();
+    await p.goto(`http://localhost:5197/${SCREENS[name]}`);
+    await p.waitForTimeout(900);
+    (modeSpots[1680] ??= {})[name] = await modeSpot(p);
+    if (name === 'edit') {
+      const problems = [...(await barProblems(p)), ...(await layoutProblems(p))];
+      console.log(`${problems.length ? 'FAIL' : 'ok  '} edit at 1680px${problems.length ? '\n       ' + problems.join('\n       ') : ''}`);
+      if (problems.length) failures.push('edit@1680');
+    }
+    await ctx.close();
+  }
+  // The mode switch stays put: every screen at a width puts each mode button in the same place.
+  for (const [w, spots] of Object.entries(modeSpots)) {
+    const [first, ...rest] = Object.entries(spots);
+    const moved = rest.filter(([, s]) => s !== first[1]);
+    console.log(`${moved.length ? 'FAIL' : 'ok  '} mode switch stays put at ${w}px across ${Object.keys(spots).join(', ')}${moved.map(([n, s]) => `\n       ${n}: ${s}\n       ${first[0]}: ${first[1]}`).join('')}`);
+    if (moved.length) failures.push(`mode-switch@${w}`);
+  }
   // A squeezed sidebar, since Greg's fonts and zoom run wider than Chromium's here.
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } });
   const p = await ctx.newPage();

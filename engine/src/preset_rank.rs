@@ -302,7 +302,7 @@ pub fn rank(
             Some(v) => Recipe::from_value(&v.recipe)?,
             None => Recipe::default(),
         };
-        let base = crate::tools::with_look(lib, photo, &own)?;
+        let base = lib.with_look(photo, &own)?;
         // The Analysis finds the scene and the Adaptive Presets' Masks, once per Photo.
         let analysis = render::analysis(lib, photo).ok();
         let fit: Vec<&Preset> = match &analysis {

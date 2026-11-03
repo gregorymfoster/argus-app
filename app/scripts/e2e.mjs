@@ -100,6 +100,13 @@ const wd = async (method, path, body) => {
   return j.value;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// After a key or click: the pause a person would take, then keep asking until `ok` holds or
+// 10 s pass, instead of reading once after a fixed pause (2026-11-02). The check after it reads
+// again and reports what it found.
+const settle = async (ms, ok) => {
+  await sleep(ms);
+  for (const t0 = Date.now(); !(await ok().catch(() => false)) && Date.now() - t0 < 10000; ) await sleep(150);
+};
 for (let i = 0; ; i++) {
   try {
     await fetch(`http://127.0.0.1:${port}/status`);
@@ -156,20 +163,26 @@ try {
   await waitFor('[data-testid="import-dialog"]');
   check(true, 'an empty Library opens on Import');
   await js(`document.querySelector('.fixed.inset-0').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); document.querySelector('.fixed.inset-0').click()`);
-  await sleep(300);
+  await settle(300, async () => { const stays = await js(`return [!!document.querySelector('[data-testid="import-dialog"]'), !!document.querySelector('[data-testid="import-cancel"]'), !!document.querySelector('[data-testid="import-dialog"] [aria-label="Close"]')]`); return stays.every(Boolean); });
   const stays = await js(`return [!!document.querySelector('[data-testid="import-dialog"]'), !!document.querySelector('[data-testid="import-cancel"]'), !!document.querySelector('[data-testid="import-dialog"] [aria-label="Close"]')]`);
   check(stays.every(Boolean), 'a click outside does not close Import, and it has Cancel and ✕');
-  await press('\uE00C');
-  for (const t0 = Date.now(); Date.now() - t0 < 3000 && (await js(`return !!document.querySelector('[data-testid="import-dialog"]')`)); ) await sleep(100);
+  // A card in the reader starts Import and prepare's countdown (df8ce07), maybe a moment after
+  // the dialog opens: an Esc during it stops the countdown and keeps Import open, the next one
+  // closes. So press Esc until Import closes, at most twice, and say which it took.
+  let escs = 0;
+  for (; escs < 2 && (await js(`return !!document.querySelector('[data-testid="import-dialog"]')`)); escs++) {
+    await press('\uE00C');
+    for (const t0 = Date.now(); Date.now() - t0 < 1500 && (await js(`return !!document.querySelector('[data-testid="import-dialog"]')`)); ) await sleep(100);
+  }
   const afterEsc = await js(`return [location.hash, !!document.querySelector('[data-testid="import-dialog"]'), document.activeElement?.outerHTML.slice(0, 80)]`);
-  check(!afterEsc[1], `Esc closes Import, even on an empty Library (now at ${afterEsc[0]})`);
+  check(!afterEsc[1], `Esc closes Import, even on an empty Library (${escs} Esc, the first stops a card countdown; now at ${afterEsc[0]})`);
 
   await wd('POST', `/session/${sid}/actions`, { actions: [{ type: 'key', id: 'kb', actions: [{ type: 'keyDown', value: '\uE009' }, { type: 'keyDown', value: ',' }, { type: 'keyUp', value: ',' }, { type: 'keyUp', value: '\uE009' }] }] });
   await waitFor('[data-testid="settings"]', 5000).catch(() => {});
   check(await js(`return !!document.querySelector('[data-testid="settings"] [data-testid="settings-ai"]')`), 'Ctrl/⌘ + , opens Settings');
   await shot('settings');
   await press('\uE00C');
-  await sleep(300);
+  await settle(300, async () => !(await js(`return !!document.querySelector('[data-testid="settings"]')`)));
   check(!(await js(`return !!document.querySelector('[data-testid="settings"]')`)), 'Esc closes Settings');
   // Updates: the app answers update_status; a test build has no update feed, so it says so
   // and offers no Restart to update.
@@ -225,8 +238,8 @@ try {
   await openMenu('import-show');
   await waitFor('[data-testid="import-show-new"]');
   await js(`document.querySelector('[data-testid="import-show-new"]').click()`);
-  await sleep(200);
-  check(/Import 6\b/.test(await js(`return document.querySelector('[data-testid="import-start"]').textContent`)), 'the Import button counts the 6 new photos');
+  await settle(200, async () => /Import (and prepare )?6\b/.test(await js(`return document.querySelector('[data-testid="import-start"]').textContent`)));
+  check(/Import (and prepare )?6\b/.test(await js(`return document.querySelector('[data-testid="import-start"]').textContent`)), 'the Import button counts the 6 new photos');
   const space = await js(`return document.querySelector('[data-testid="import-space"]')?.textContent ?? ''`);
   check(/6 photos · .+ · (about|a few).+\s.+ free/.test(space), `Import shows the photos, space and time it needs and what's free ("${space}")`);
   // The background cull after import is covered by its own step below, so it runs by hand here.
@@ -238,7 +251,7 @@ try {
   await openMenu('import-source');
   await waitFor('[data-testid="import-card"]');
   await js(`document.querySelector('[data-testid="import-card"]').click()`);
-  await sleep(50);
+  await settle(50, async () => { const mid = await js(`return document.querySelector('[data-testid="import-name"]').value`); return !/Pickleball/.test(mid); });
   const mid = await js(`return document.querySelector('[data-testid="import-name"]').value`);
   check(!/Pickleball/.test(mid), `changing source clears the old suggested name (field: "${mid}")`);
   for (const t0 = Date.now(); Date.now() - t0 < 15000 && !/_Pickleball$/.test(await js(`return document.querySelector('[data-testid="import-name"]').value`)); ) await sleep(150);
@@ -253,7 +266,7 @@ try {
   await js(`document.querySelector('[data-testid="import-start"]').click()`);
   // The grid behind still shows the earlier Shoot until the import opens the new one.
   for (const t0 = Date.now(); Date.now() - t0 < 20000 && (await js(`return !!document.querySelector('[data-testid="import-dialog"]') || document.querySelectorAll('.tile img').length !== 6`).catch(() => true)); ) await sleep(200);
-  await sleep(1000);
+  await settle(1000, async () => { const imgs = await js(`return [...document.querySelectorAll('.tile img')].map((i) => [i.getAttribute('src'), i.naturalWidth])`); return imgs.length === 6; });
   const imgs = await js(`return [...document.querySelectorAll('.tile img')].map((i) => [i.getAttribute('src'), i.naturalWidth])`);
   check(imgs.length === 6, `the grid shows the new Shoot's 6 Photos (${imgs.length} tiles)`);
   const shoots = await invoke('list_shoots', {});
@@ -270,14 +283,14 @@ try {
     await wd('POST', `/session/${sid}/element/${Object.values(el)[0]}/click`, {});
   })();
   await press('z');
-  await sleep(600);
+  await settle(600, async () => { const after = (await invoke('photos', {})).find((p) => p.id === first); return after.verdict === 'pick' && after.verdict_by === 'person'; });
   const after = (await invoke('photos', {})).find((p) => p.id === first);
   check(after.verdict === 'pick' && after.verdict_by === 'person', `Z wrote a Pick to the Library (got ${after.verdict} by ${after.verdict_by})`);
   if (process.env.E2E_QUICK) throw QUICK_DONE;
 
   await js(`location.hash = '#/loupe/${first}'`);
   await waitFor('.loupe img, [data-testid="loupe"] img, img');
-  await sleep(800);
+  await settle(800, async () => { const loupe = await js(`return [...document.querySelectorAll('img')].filter((i) => i.naturalWidth > 0 && i.getBoundingClientRect().width > 400).length`); return loupe > 0; });
   const loupe = await js(`return [...document.querySelectorAll('img')].filter((i) => i.naturalWidth > 0 && i.getBoundingClientRect().width > 400).length`);
   check(loupe > 0, 'the loupe shows the Photo large');
   const side0 = await js(`return document.querySelector('aside.side')?.textContent ?? ''`);
@@ -292,7 +305,7 @@ try {
   check(portrait && portrait.height > portrait.width, `the portrait is stored upright (${portrait?.width}×${portrait?.height})`);
   if (portrait) {
     await js(`location.hash = '#/loupe/${portrait.id}'`);
-    await sleep(1200);
+    await settle(1200, async () => { const box = await js(`const el = document.querySelector('.stage-fit > .photo'); const img = el?.querySelector('img'); const r = el?.getBoundingClientRect(); return r && img ? [r.width, r.height, img.naturalWidth, img.naturalHeight] : null`); return box && box[1] > box[0] && Math.abs(box[0] / box[1] - box[2] / box[3]) < 0.02; });
     const box = await js(`const el = document.querySelector('.stage-fit > .photo'); const img = el?.querySelector('img'); const r = el?.getBoundingClientRect(); return r && img ? [r.width, r.height, img.naturalWidth, img.naturalHeight] : null`);
     check(box && box[1] > box[0] && Math.abs(box[0] / box[1] - box[2] / box[3]) < 0.02, `the Loupe shows the portrait upright and uncut (box ${box?.slice(0, 2).map(Math.round).join('×')}, image ${box?.slice(2).join('×')})`);
     await shot('loupe-portrait');
@@ -300,7 +313,7 @@ try {
     check(fits.length > 0 && fits.every((f) => f === 'contain'), `the filmstrip shows whole photos (${[...new Set(fits)].join(', ')})`);
     // Cull mode's frames too (Greg, 2026-11-01: DSC08034 cut off again in 0.1.15's Cull).
     await js(`location.hash = '#/moments'`);
-    await sleep(1500);
+    await settle(1500, async () => { const cell = await js(`const el = document.querySelector('[data-testid="burst-${portrait.id}"] > .photo'); const img = el?.querySelector('img'); const r = el?.getBoundingClientRect(); return r && img ? [r.width, r.height, img.naturalWidth, img.naturalHeight, getComputedStyle(img).objectFit] : null`); return cell && (cell[4] === 'contain' || Math.abs(cell[0] / cell[1] - cell[2] / cell[3]) < 0.02); });
     const cell = await js(`const el = document.querySelector('[data-testid="burst-${portrait.id}"] > .photo'); const img = el?.querySelector('img'); const r = el?.getBoundingClientRect(); return r && img ? [r.width, r.height, img.naturalWidth, img.naturalHeight, getComputedStyle(img).objectFit] : null`);
     check(cell && (cell[4] === 'contain' || Math.abs(cell[0] / cell[1] - cell[2] / cell[3]) < 0.02), `Cull mode shows the portrait whole, never cut to its frame (${JSON.stringify(cell)})`);
     await shot('cull-mode-portrait');
@@ -312,24 +325,26 @@ try {
   await clickWhenReady(`[data-testid="tile-${first}"]`);
   // Let the grid settle (sorts, previews) between keys, as a person's keystrokes would.
   await sleep(300);
+  // Wait on the Library, not fixed sleeps: on a busy box the X used to land before P had (2026-11-02 flake).
+  const until = async (ok, ms = 10000) => { let all = []; for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(150)) { all = await invoke('photos', {}); if (ok(all)) break; } return all; };
   await press('p');
-  await sleep(300);
+  await until((all) => all.find((p) => p.id === first)?.verdict === 'pick');
+  await sleep(200); // the cursor's move to the next Photo after the flag
   await press('x');
-  await sleep(600);
-  const flagged = await invoke('photos', {});
+  const flagged = await until((all) => all.find((p) => p.id === photos[1].id)?.verdict === 'reject', 5000);
   const second = flagged.find((p) => p.id === photos[1].id);
   const rejected = flagged.filter((p) => p.verdict === 'reject').map((p) => p.file_name ?? p.id);
   check(second.verdict === 'reject', `P then X flags the next Photo (second got ${second.verdict}; rejected: ${rejected.join(', ') || 'none'})`);
 
   await js(`location.hash = '#/compare/${photos[0].id},${photos[1].id}'`);
-  await sleep(1200);
+  await settle(1200, async () => { const side = await js(`return [...document.querySelectorAll('img')].filter((i) => i.naturalWidth > 0 && i.getBoundingClientRect().width > 200).length`); return side >= 2; });
   const side = await js(`return [...document.querySelectorAll('img')].filter((i) => i.naturalWidth > 0 && i.getBoundingClientRect().width > 200).length`);
   check(side >= 2, `Compare shows the Photos side by side (${side} large)`);
   const compareText = await js(`return document.body.textContent`);
   check(!/ranks .* best/.test(compareText) && !/focus 0\.00/.test(compareText), 'before any cull Compare shows no AI ranking and no empty focus score');
   await shot('compare');
   await press('\uE00C'); // Escape
-  await sleep(400);
+  await settle(400, async () => (await js(`return location.hash`)).startsWith('#/cull'));
   check((await js(`return location.hash`)).startsWith('#/cull'), 'Escape leaves Compare for the grid');
 
   // The provider menu names the Provider a cull really uses (ARGUS_PROVIDER=ollama here).
@@ -375,7 +390,7 @@ try {
   let after2 = before;
   for (const t0 = Date.now(); after2 === before && Date.now() - t0 < 20000; await sleep(200)) after2 = await renderedSrc();
   check(after2 !== before, 'moving Exposure re-renders the Photo through the engine');
-  await sleep(1200); // edits save once the slider settles
+  await settle(1200, async () => { const saved = await invoke('read_recipe', { photo_id: first }); return saved?.author === 'person' && saved.recipe.global.exposure > 0; });
   const saved = await invoke('read_recipe', { photo_id: first });
   check(saved?.author === 'person' && saved.recipe.global.exposure > 0, `the edit was saved as the person's Recipe (exposure ${saved?.recipe?.global?.exposure})`);
   await shot('edit');

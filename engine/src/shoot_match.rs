@@ -412,7 +412,7 @@ pub fn anchors_of(
 pub fn samples(lib: &Library, anchors: &[Photo]) -> Result<Vec<Sample>> {
     let mut samples = Vec::new();
     for p in anchors {
-        let own = crate::tools::current_recipe(lib, p.id)?;
+        let own = lib.current_recipe(p.id)?;
         if let Some(s) = sample_with(lib, p, &own)? {
             samples.push(s);
         }
@@ -423,7 +423,7 @@ pub fn samples(lib: &Library, anchors: &[Photo]) -> Result<Vec<Sample>> {
 /// One anchor as the model reads it, edited as `recipe` (saved or not, so a slider drag on
 /// the hero re-matches the Shoot before it is saved). None when it can't be measured.
 pub fn sample_with(lib: &Library, p: &Photo, recipe: &Recipe) -> Result<Option<Sample>> {
-    let own = crate::tools::with_look(lib, p, recipe)?;
+    let own = lib.with_look(p, recipe)?;
     // An odd file costs that anchor, not the match.
     let Ok((facts, auto)) = measure(lib, p) else {
         return Ok(None);

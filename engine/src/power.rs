@@ -157,3 +157,20 @@ impl Drop for Awake {
         self.set(false);
     }
 }
+
+/// Keep the Mac from idle sleep while any of the named pieces of work runs (an Export or
+/// Import run), as Lightroom does during an export. Closing the lid still sleeps it; the
+/// run then resumes on wake, or on the next start if Argus quit. Ends with the process.
+pub fn hold_awake(what: &str, on: bool) {
+    static HELD: std::sync::Mutex<Option<(std::collections::BTreeSet<String>, Awake)>> =
+        std::sync::Mutex::new(None);
+    // lock-lint: ok, held only to update the set and start or stop `caffeinate`, never across work.
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    let (names, awake) = held.get_or_insert_with(Default::default);
+    if on {
+        names.insert(what.to_string());
+    } else {
+        names.remove(what);
+    }
+    awake.set(!names.is_empty());
+}

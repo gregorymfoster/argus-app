@@ -105,6 +105,7 @@ claude mcp add argus -- /path/to/argus/target/release/argus mcp --library /Users
 | `apply_shoot_look` | Edit's Apply look to Shoot: the hero's saved edit onto the ticked Photos of its Shoot, each a Shoot match to its own light (no model call), one batch; hand edits skipped, crops and spots kept |
 | `remove_look` | Take a Look off every Photo under it (the Look is kept, so undo puts it back) |
 | `export_photos` | Write edited JPEGs to a folder, never overwriting |
+| `start_run` / `finish_run` / `list_runs` | Make an Export resumable: record it before it starts, pass its `run_id` to each `export_photos`, end it; a run left part way by a quit or crash finishes on the next start (`resume_run` job). `list_runs` shows the ones not finished |
 | `crop.*` settings | `edit_recipe` also straightens (`crop.angle`, degrees) and crops (`crop.x/y/w/h`, fractions of the straightened frame, never empty corners) |
 | `suggest_edits` | Queue Suggestions (2-3 whole edits each) for one Photo, a list, or a Shoot (rejects skipped, Picks first) |
 | `match_to_photo` | "Apply this look to the rest": the Hero Photo's style becomes a Look, the others get 2 matched Suggestions under it (on a RAW the first is the Shoot match, worked out from the Shoot's hand edits without a model call) |

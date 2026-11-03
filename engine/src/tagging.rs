@@ -103,7 +103,7 @@ pub fn tag(
     for (i, &id) in photos.iter().enumerate() {
         // Opened per Photo so the person's edits in between are never held up.
         let lib = Library::open(library)?;
-        let photo = crate::tools::find_photo(&lib, id)?;
+        let photo = lib.find_photo(id)?;
         if let Some((caption, keywords)) = photo.stack.and_then(|s| stacks.get(&s)) {
             let mut lib = lib;
             lib.suggest_tags(id, Some(caption), keywords)?;

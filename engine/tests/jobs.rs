@@ -711,6 +711,64 @@ fn on_battery_only_the_open_photos_work_runs() {
 }
 
 #[test]
+fn argus_work_goes_round_the_queue_as_the_app_does() {
+    let (_t, tools, ids, _) = library(1, false);
+    let mut rounds = jobs::Rounds::default();
+    let drain = jobs::TickOptions {
+        drain: true,
+        compute: Some(Compute::Full),
+    };
+    // Whatever the import queued runs first.
+    while !matches!(rounds.tick(&tools, drain).unwrap(), jobs::Tick::Empty) {}
+
+    // Run now and a battery override, then plugged in with nothing left: both end, as in
+    // the app (the CLI used to keep them on forever).
+    let lib = Library::open(tools.library()).unwrap();
+    let cfg = jobs::config(&lib).unwrap();
+    jobs::set_config(
+        &lib,
+        &jobs::QueueConfig {
+            go_ahead: true,
+            battery_override: true,
+            ..cfg
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        rounds.tick(&tools, jobs::TickOptions::default()).unwrap(),
+        jobs::Tick::Empty
+    ));
+    let cfg = jobs::config(&lib).unwrap();
+    assert!(!cfg.go_ahead && !cfg.battery_override);
+
+    // A paused queue says why; --drain runs past it and reports what ran.
+    jobs::set_config(
+        &lib,
+        &jobs::QueueConfig {
+            paused: true,
+            ..cfg
+        },
+    )
+    .unwrap();
+    json1(
+        &tools,
+        "enqueue_job",
+        json!({ "kind": "suggest", "args": { "photo_id": ids[0] } }),
+    );
+    assert!(matches!(
+        rounds.tick(&tools, jobs::TickOptions::default()).unwrap(),
+        jobs::Tick::Wait("the queue is paused")
+    ));
+    match rounds.tick(&tools, drain).unwrap() {
+        jobs::Tick::Ran { job, compute } => {
+            assert_eq!(job.kind, "suggest");
+            assert_eq!(compute, Compute::Full);
+        }
+        other => panic!("expected a job to run, got {other:?}"),
+    }
+}
+
+#[test]
 fn queued_jobs_survive_a_quit_and_cancel_and_settings_stick() {
     let (_t, tools, ids, _) = library(2, false);
     let a = json1(
@@ -1768,14 +1826,15 @@ fn apply_preview_draws_paste_and_auto_without_saving_and_never_hangs() {
         "the kept-out Photo went under the Look: {kept:?}"
     );
 
-    // A budget no RAW decode fits in stands in for a Photo that hangs.
+    // A zero budget stands in for a Photo that hangs: no frame can be back before the
+    // first wait (1 ms wasn't enough on an M4 Max with the base already cached).
     let t = std::time::Instant::now();
     let stuck = argus_engine::apply_preview::preview_within(
         &lib,
         &argus_engine::apply_preview::Change::Auto,
         &[other],
         96,
-        std::time::Duration::from_millis(1),
+        std::time::Duration::ZERO,
     )
     .unwrap();
     assert!(
@@ -1887,7 +1946,12 @@ fn cull_now_keeps_prepare_but_drops_it_to_the_queues_level() {
     let jobs::Gate::Run { compute, first, .. } = jobs::gate(&lib, &cfg) else {
         panic!()
     };
-    assert_eq!((compute, first), (cfg.compute, vec![shoot]));
+    // The Queue's own level, which is Full overnight or when the Mac is idle: that boost
+    // reads the clock, so the test fails at night when it compares with cfg.compute.
+    assert_eq!(
+        (compute, first),
+        (jobs::effective_compute(&cfg), vec![shoot])
+    );
     drop(lib);
     let s = json1(&tools, "prepare_shoot", json!({ "stop": true }));
     assert!(s["prepare"].is_null());

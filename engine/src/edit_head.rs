@@ -512,13 +512,13 @@ pub fn learn_library(lib: &crate::library::Library) -> crate::Result<Learned> {
     let mut keep = std::collections::BTreeMap::new();
     let mut read = 0;
     for id in exported {
-        let Ok(p) = crate::tools::find_photo(lib, id) else {
+        let Ok(p) = lib.find_photo(id) else {
             continue;
         };
         if p.kind != "raw" {
             continue;
         }
-        let own = crate::tools::current_recipe(lib, id)?;
+        let own = lib.current_recipe(id)?;
         let hash = blake3::hash(own.to_value().to_string().as_bytes())
             .to_hex()
             .to_string();
@@ -529,7 +529,7 @@ pub fn learn_library(lib: &crate::library::Library) -> crate::Result<Learned> {
                 continue;
             }
         }
-        let base = crate::tools::with_look(lib, &p, &crate::auto::cleared(&own))?;
+        let base = lib.with_look(&p, &crate::auto::cleared(&own))?;
         let masks = crate::render::masks_for(lib, &p, &base);
         let render = |s: &Adjust| {
             let r = Recipe {

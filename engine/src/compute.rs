@@ -186,6 +186,35 @@ pub fn interactive() -> bool {
     INTERACTIVE.load(Ordering::SeqCst) > 0
 }
 
+/// Until when each Library's Export holds its Queue. The UI exports one Photo per call, so
+/// each call renews a short lease rather than holding a guard across calls; a crashed or
+/// stopped export frees the Queue a few seconds later on its own.
+static EXPORT_UNTIL: std::sync::Mutex<Vec<(std::path::PathBuf, std::time::Instant)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// An Export from the Library at `root` is running: its Queue starts no new job for the next
+/// `secs` seconds, so background work (learning from edits, Suggestions, Denoise) doesn't
+/// slow the export the person is waiting on (Greg, 2026-11-02).
+pub fn hold_for_export(root: &std::path::Path, secs: u64) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut held = EXPORT_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
+    held.retain(|(_, t)| *t > std::time::Instant::now());
+    match held.iter_mut().find(|(r, _)| r == root) {
+        Some((_, t)) => *t = (*t).max(until),
+        None => held.push((root.to_path_buf(), until)),
+    }
+}
+
+/// Whether an Export holds the Queue of the Library at `root` now ([`hold_for_export`]).
+pub fn exporting(root: &std::path::Path) -> bool {
+    let now = std::time::Instant::now();
+    EXPORT_UNTIL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|(r, t)| r == root && *t > now)
+}
+
 static FOREGROUND: AtomicUsize = AtomicUsize::new(0);
 static MARKERS: AtomicUsize = AtomicUsize::new(0);
 

@@ -40,6 +40,11 @@
 //! | `import_result` | {}                                    | {running, report?, error?}    |
 //! | `render_detail` | as `render_photo`, long_edge up to full size | as `render_photo`: the zoomed view's sharp render |
 //! | `cancel_import` | {}                                    | {cancelled}: stops after the files in hand, keeping them |
+//! | `google_photos_status` | {}                              | {client, client_id, connected, waiting, waited_s, auth_url, error}: Settings › Export ([`crate::google_photos`]) |
+//! | `google_photos_client` | {client_id, client_secret}       | as `google_photos_status`: the person's own Desktop OAuth client, kept on this Mac |
+//! | `google_photos_connect` | {open = true}                   | {auth_url}: opens Google's consent page; poll `google_photos_status` |
+//! | `google_photos_console` | {}                              | {opened}: Google Cloud's Credentials page in the browser, to make the client |
+//! | `google_photos_disconnect` | {}                           | as `google_photos_status` |
 //! | `cancel_task` | {kind: "auto"\|"cull"\|"import"}       | {cancelled}: Auto stops between Photos (keeping those done, as one undoable batch); the AI cull stops at the next piece of the model's reply and changes nothing |
 //!
 //! `thumbnail` and `suggest_name` serve the Import dialog, for files not imported yet;
@@ -390,6 +395,7 @@ fn split_import(mut a: Value) -> Result<Vec<Value>> {
 
 /// Polled every few seconds: in the Debug log only when slow or failing.
 const POLLS: &[&str] = &[
+    "google_photos_status",
     "queue_status",
     "progress",
     "import_result",
@@ -476,6 +482,25 @@ mod running {
 
 fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
     match command {
+        "google_photos_status" => Ok(crate::google_photos::status(
+            &crate::google_photos::Config::from_env(),
+        )),
+        "google_photos_client" => crate::google_photos::set_client(
+            &crate::google_photos::Config::from_env(),
+            a["client_id"].as_str().unwrap_or(""),
+            a["client_secret"].as_str().unwrap_or(""),
+        ),
+        "google_photos_connect" => crate::google_photos::connect(
+            &crate::google_photos::Config::from_env(),
+            a["open"].as_bool().unwrap_or(true),
+        ),
+        "google_photos_console" => {
+            crate::google_photos::open_console();
+            Ok(json!({ "opened": crate::google_photos::CONSOLE }))
+        }
+        "google_photos_disconnect" => {
+            crate::google_photos::disconnect(&crate::google_photos::Config::from_env())
+        }
         "resource_usage" => Ok(crate::meter::snapshot(
             a["watch"].as_bool().unwrap_or(true),
             a["points"].as_u64().map(|n| n as usize),
@@ -567,7 +592,7 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
                 .ok_or_else(|| Error(format!("no Photo with id {}", a.hero_id)))?;
             let recipe = match &a.recipe {
                 Some(v) => crate::recipe::Recipe::from_value(v)?,
-                None => crate::tools::current_recipe(&lib, hero.id)?,
+                None => lib.current_recipe(hero.id)?,
             };
             let ids = match a.photo_ids {
                 Some(ids) => ids,
@@ -884,7 +909,7 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             let mut lib = Library::open(tools.library())?;
             let label = format!("Flagged {} {}", ids.len(), a.verdict.as_str());
             let batch = person_batch(&mut lib, a.author, a.batch_id, a.label, label)?;
-            lib.set_verdict(&ids, a.verdict, a.author, a.reason.as_deref(), batch)?;
+            lib.restore_verdict(&ids, a.verdict, a.author, a.reason.as_deref(), batch)?;
             let photos = lib.cull_states(&ids)?;
             Ok(json!({ "flagged": ids.len(), "batch_id": batch, "photos": photos }))
         }
@@ -920,7 +945,7 @@ fn run(tools: &Tools, command: &str, a: Value) -> Result<Value> {
             let mut lib = Library::open(tools.library())?;
             let label = format!("Rated {} at {} stars", ids.len(), a.stars);
             let batch = person_batch(&mut lib, a.author, a.batch_id, a.label, label)?;
-            lib.set_rating(&ids, a.stars, a.author, batch)?;
+            lib.restore_rating(&ids, a.stars, a.author, batch)?;
             let photos = lib.cull_states(&ids)?;
             Ok(json!({ "rated": ids.len(), "batch_id": batch, "photos": photos }))
         }

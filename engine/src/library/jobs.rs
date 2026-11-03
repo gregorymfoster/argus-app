@@ -53,6 +53,9 @@ pub struct Job {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// Queued again part way, and why: `asleep` (it failed across the Mac's sleep) or
+    /// `quit` (Argus quit or crashed while it ran). Cleared when it runs again.
+    pub interrupted: Option<String>,
 }
 
 /// How the queue stands, for the app's progress line.
@@ -94,7 +97,7 @@ pub struct ShootJobs {
     pub last_finished: Option<String>,
 }
 
-const COLS: &str = "id, kind, args, priority, label, status, done, total, result, error, created_at, started_at, finished_at";
+const COLS: &str = "id, kind, args, priority, label, status, done, total, result, error, created_at, started_at, finished_at, interrupted";
 
 fn job(r: &Row) -> rusqlite::Result<Job> {
     let json = |s: Option<String>| s.and_then(|s| serde_json::from_str(&s).ok());
@@ -113,6 +116,7 @@ fn job(r: &Row) -> rusqlite::Result<Job> {
         created_at: r.get(10)?,
         started_at: r.get(11)?,
         finished_at: r.get(12)?,
+        interrupted: r.get(13)?,
     })
 }
 
@@ -120,9 +124,15 @@ impl Library {
     /// One Photo by id, or None.
     pub fn photo(&self, id: super::PhotoId) -> Result<Option<super::Photo>> {
         Ok(self
-            .list_photos(&super::PhotoFilter::default())?
+            .query_photos(&super::PhotoFilter::default(), Some(id))?
             .into_iter()
-            .find(|p| p.id == id))
+            .next())
+    }
+
+    /// One Photo by id, or an error naming the id.
+    pub fn find_photo(&self, id: super::PhotoId) -> Result<super::Photo> {
+        self.photo(id)?
+            .ok_or_else(|| crate::Error(format!("no Photo with id {id}")))
     }
 
     /// A raw value from the Library's settings table.
@@ -265,7 +275,7 @@ impl Library {
         // Another process may have taken it between the read and the write.
         let took = tx
             .execute(
-                "UPDATE jobs SET status = 'running', started_at = ?2 WHERE id = ?1 AND status = 'queued'",
+                "UPDATE jobs SET status = 'running', started_at = ?2, interrupted = NULL WHERE id = ?1 AND status = 'queued'",
                 params![j.id, now],
             )
             .map_err(db_err)?;
@@ -275,6 +285,7 @@ impl Library {
         }
         j.status = JobStatus::Running;
         j.started_at = Some(now);
+        j.interrupted = None;
         Ok(Some(j))
     }
 
@@ -455,9 +466,21 @@ impl Library {
     pub fn requeue_stale_jobs(&self) -> Result<usize> {
         self.db
             .execute(
-                "UPDATE jobs SET status = 'queued', started_at = NULL WHERE status = 'running'",
+                "UPDATE jobs SET status = 'queued', started_at = NULL, interrupted = 'quit' WHERE status = 'running'",
                 [],
             )
+            .map_err(db_err)
+    }
+
+    /// Put a running job back in the queue, keeping how far it got, with why it stopped
+    /// (`asleep`): it runs again from where its own work left off.
+    pub fn interrupt_job(&self, id: JobId, why: &str) -> Result<()> {
+        self.db
+            .execute(
+                "UPDATE jobs SET status = 'queued', started_at = NULL, interrupted = ?2 WHERE id = ?1 AND status = 'running'",
+                params![id, why],
+            )
+            .map(|_| ())
             .map_err(db_err)
     }
 

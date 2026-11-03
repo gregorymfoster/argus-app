@@ -10,11 +10,12 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Sparkles } from 'lucide-react';
 import { PHOTOS, SHOOT } from '../data/dummy';
-import { LIVE, asPerson } from '../data/live';
+import { LIVE, aiError } from '../data/live';
 import { useShootLook } from '../data/shootLook';
 import { picksOf } from '../data/modes';
 import type { Photo, Recipe } from '../domain/types';
 import { useLibrary, verdictOf } from '../store/library';
+import { changePhotos } from '../store/changePhotos';
 import { PhotoView } from './PhotoView';
 import { Kbd } from './kit';
 import { ApplyBody, ApplyPopover, type ApplyTile, type Scope } from './ApplyPopover';
@@ -71,17 +72,16 @@ function Body({ hero, recipe, before, onClose, onApplied }: { hero: Photo; recip
       onApplied();
       onClose();
     };
-    if (!LIVE) {
-      dispatch({ type: 'batch', label, actions: targets.map((id) => ({ type: 'recipe/set' as const, id, recipe: { ...recipe, crop: state.recipes[id]?.crop ?? recipe.crop }, label, by: 'ai' as const })) });
-      return done(n);
-    }
-    let skipped: { photo_id: number; why: string }[] = [];
-    const w = asPerson('apply_shoot_look', { photo_id: Number(hero.id), photo_ids: targets.map(Number) }, label, (r) => {
-      skipped = (r.skipped as typeof skipped) ?? [];
-      return (r.applied as number[]) ?? [];
-    });
-    dispatch({ type: 'engine/saved', label, batch: w });
-    return w.then((r) => done(Object.keys(r.recipes ?? {}).length, skipped)).catch((e) => dispatch({ type: 'toast', text: `Couldn't apply the look: ${String(e).replace(/^Error: /, '')}` }));
+    return changePhotos(dispatch, {
+      label,
+      tool: 'apply_shoot_look',
+      args: { photo_id: Number(hero.id), photo_ids: targets.map(Number) },
+      written: (r) => (r.applied as number[]) ?? [],
+      local: () => targets.map((id) => ({ id, recipe: { ...recipe, crop: state.recipes[id]?.crop ?? recipe.crop } })),
+      by: 'ai',
+    })
+      .then(({ changed, reply }) => done(LIVE ? changed : n, (reply.skipped as { photo_id: number; why: string }[]) ?? []))
+      .catch((e) => dispatch({ type: 'toast', text: `Couldn't apply the look: ${aiError(e)}` }));
   };
 
   const tiles: ApplyTile[] = ids.flatMap((id) => {

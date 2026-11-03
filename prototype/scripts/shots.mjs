@@ -417,6 +417,20 @@ if (!filters.length || filters.some((f) => 'first-run'.includes(f))) enqueue(asy
 });
 
 // Smoke checks
+// After a key or click: wait the pause a person would, then keep re-checking for up to 10 s
+// before failing. A fixed pause alone lost races on a busy box (2026-11-02: most shots flakes);
+// the pause stays first so a check that something did NOT happen still waits for it.
+async function settled(p, ms, assert) {
+  await p.waitForTimeout(ms);
+  for (const t0 = Date.now(); ; await p.waitForTimeout(150)) {
+    try {
+      return await assert();
+    } catch (e) {
+      if (Date.now() - t0 > 10000) throw e;
+    }
+  }
+}
+
 async function check(name, fn) {
   if (filters.length && !filters.some((f) => name.includes(f))) return;
   enqueue(async () => {
@@ -578,8 +592,9 @@ await check('smoke-keys-stay-in-dialogs', async () => {
   await p.keyboard.press('x');
   await p.waitForTimeout(300);
   await p.keyboard.press('Escape');
-  await p.waitForTimeout(300);
-  if ((await verdicts()) !== before) throw new Error('X behind the Export dialog flagged a frame');
+  await settled(p, 300, async () => {
+    if ((await verdicts()) !== before) throw new Error('X behind the Export dialog flagged a frame');
+  });
   await ctx.close();
 });
 
@@ -638,6 +653,68 @@ await check('smoke-sort-by-stars', async () => {
   await ctx.close();
 });
 
+// The grid's flag filter stays on (Greg, 2026-11-02: "I keep filtering on flagged, and the filter
+// keeps unsetting"): it survives the Loupe, Edit, other modes and a reload, as in Lightroom.
+await check('smoke-filter-sticks', async () => {
+  const { p, ctx } = await page('#/cull');
+  const picks = p.locator('.filter-seg [title="Picks"]');
+  // Wait until the grid has really gone, or React folds the round trip into one render and keeps it mounted.
+  const away = async (url) => {
+    await p.waitForURL(url);
+    await p.locator('.grid-v').waitFor({ state: 'detached' });
+  };
+  const on = async (why) => {
+    await p.waitForURL(/#\/cull/);
+    await p.locator('.grid-v .tile').first().waitFor();
+    if ((await picks.getAttribute('data-state')) !== 'on') throw new Error(`the Picks filter turned off after ${why}`);
+    const verdicts = await p.locator('.grid-v .tile').evaluateAll((els) => els.map((e) => e.getAttribute('data-verdict')));
+    if (verdicts.some((v) => v !== 'pick')) throw new Error(`a non-Pick shows under the Picks filter after ${why}: ${verdicts}`);
+  };
+  await picks.click();
+  await on('choosing it');
+  // Off the toggle, so Space opens the Loupe instead of pressing the button.
+  await p.locator('.grid-v .tile').first().click();
+  await p.keyboard.press('Space');
+  await away(/#\/loupe/);
+  await p.keyboard.press('g');
+  await on('the Loupe and back');
+  await p.keyboard.press('d');
+  await away(/#\/edit/);
+  await p.keyboard.press('ControlOrMeta+1');
+  await on('Edit and back to Library');
+  await p.keyboard.press('ControlOrMeta+2');
+  await away(/#\/moments/);
+  await p.keyboard.press('ControlOrMeta+1');
+  await on('Cull mode and back');
+  await p.reload();
+  await on('a reload');
+  await p.locator('.filter-seg [title="All"]').click();
+  await ctx.close();
+});
+
+// The Loupe follows the grid's filter, as Lightroom's filmstrip does: under Picks, the filmstrip
+// shows only Picks and ← → step from Pick to Pick (Greg's Lightroom rule, 2026-11-02).
+await check('smoke-loupe-follows-filter', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.locator('.filter-seg [title="Picks"]').click();
+  await p.locator('.grid-v .tile').first().waitFor();
+  await p.locator('.grid-v .tile').first().click();
+  await p.keyboard.press('Space');
+  const strip = p.getByTestId('filmstrip');
+  await strip.locator('button').first().waitFor();
+  // Every frame on the strip wears the Pick dot.
+  const notPicks = async () => strip.locator('button').evaluateAll((els) => els.filter((e) => !e.querySelector('.dot.pick')).map((e) => e.getAttribute('aria-label')));
+  const odd = await notPicks();
+  if (odd.length) throw new Error(`the filmstrip shows non-Picks under the Picks filter: ${odd.slice(0, 3).join('; ')}`);
+  for (let i = 0; i < 3; i++) {
+    const from = p.url();
+    await p.keyboard.press('ArrowRight');
+    await p.waitForFunction((f) => location.href !== f, from);
+    if (!(await strip.locator('button.on .dot.pick').count())) throw new Error(`→ under the Picks filter went to a Photo that is not a Pick (${p.url()})`);
+  }
+  await ctx.close();
+});
+
 // Flags stick (Greg, 2026-11-01): Pick on a Pick keeps it; only U clears.
 await check('smoke-flag-click-sticks', async () => {
   const { p, ctx } = await page('#/cull');
@@ -660,8 +737,9 @@ await check('smoke-multiselect-flag', async () => {
   await p.keyboard.press('x');
   for (let i = 0; i <= 3; i++) if ((await verdict(p, i)) !== 'reject') throw new Error(`tile ${i} not rejected`);
   await p.keyboard.press('Control+z');
-  await p.waitForTimeout(100);
-  if ((await verdict(p, 0)) === 'reject' && (await verdict(p, 3)) === 'reject') throw new Error('undo did not revert the batch');
+  await settled(p, 100, async () => {
+    if ((await verdict(p, 0)) === 'reject' && (await verdict(p, 3)) === 'reject') throw new Error('undo did not revert the batch');
+  });
   await ctx.close();
 });
 
@@ -694,15 +772,17 @@ await check('smoke-stack-toggle', async () => {
   // S from another frame collapses and lands back on the cover.
   await p.keyboard.press('ArrowRight');
   await p.keyboard.press('s');
-  await p.waitForTimeout(200);
-  if (await p.locator('.tile.stk-open').count()) throw new Error('S did not collapse');
+  await settled(p, 200, async () => {
+    if (await p.locator('.tile.stk-open').count()) throw new Error('S did not collapse');
+  });
   if ((await p.locator('.tile.cur').getAttribute('data-testid')) !== id) throw new Error('collapse did not land on the cover');
   // The band collapses on click too.
   await p.locator('.tile.stk-shut [data-testid=stack-badge]').first().click();
   await p.waitForTimeout(200);
   await p.locator('[data-testid=stack-band]').first().click({ position: { x: 2, y: 40 } });
-  await p.waitForTimeout(200);
-  if (await p.locator('.tile.stk-open').count()) throw new Error('clicking the band did not collapse');
+  await settled(p, 200, async () => {
+    if (await p.locator('.tile.stk-open').count()) throw new Error('clicking the band did not collapse');
+  });
   await ctx.close();
 });
 
@@ -711,8 +791,9 @@ await check('smoke-modes', async () => {
   const mode = async () => p.locator('[data-testid=mode-switch] button.on').textContent();
   if (!(await mode())?.startsWith('Library')) throw new Error(`grid is not the Library: ${await mode()}`);
   await p.keyboard.press('ControlOrMeta+2');
-  await p.waitForTimeout(300);
-  if (!(await mode())?.startsWith('Cull')) throw new Error('⌘2 did not open Cull');
+  await settled(p, 300, async () => {
+    if (!(await mode())?.startsWith('Cull')) throw new Error('⌘2 did not open Cull');
+  });
   const rows = await p.locator('.moment-row').count();
   if (rows < 10) throw new Error(`expected every moment in the rail, got ${rows}`);
   // Every Photo is in exactly one moment: the rail's frame counts add up to the Shoot.
@@ -723,26 +804,31 @@ await check('smoke-modes', async () => {
   const before = await p.getByTestId('bursts-progress-count').textContent();
   await p.keyboard.press('z');
   await p.keyboard.press('Enter');
-  await p.waitForTimeout(200);
-  if ((await p.getByTestId('bursts-progress-count').textContent()) === before) throw new Error('↵ did not finish the moment');
+  await settled(p, 200, async () => {
+    if ((await p.getByTestId('bursts-progress-count').textContent()) === before) throw new Error('↵ did not finish the moment');
+  });
   // Space opens the Loupe; Esc comes back to the same moment.
   const where = await p.locator('.view-file').textContent();
   await p.keyboard.press('Space');
   await p.waitForTimeout(300);
   await p.keyboard.press('Escape');
-  await p.waitForTimeout(300);
-  if ((await p.locator('.view-file').textContent()) !== where) throw new Error(`Esc from the Loupe went to ${await p.locator('.view-file').textContent()}, not back to ${where}`);
+  await settled(p, 300, async () => {
+    if ((await p.locator('.view-file').textContent()) !== where) throw new Error(`Esc from the Loupe went to ${await p.locator('.view-file').textContent()}, not back to ${where}`);
+  });
   // ⇧↓ shows the next moment too, as rows; ⇧↑ takes it away.
   await p.keyboard.press('Shift+ArrowDown');
-  await p.waitForTimeout(200);
-  if ((await p.locator('.moment-band').count()) !== 2) throw new Error('⇧↓ did not add a row');
+  await settled(p, 200, async () => {
+    if ((await p.locator('.moment-band').count()) !== 2) throw new Error('⇧↓ did not add a row');
+  });
   await p.keyboard.press('Shift+ArrowUp');
-  await p.waitForTimeout(200);
-  if (await p.locator('.moment-band').count()) throw new Error('⇧↑ did not drop the row');
+  await settled(p, 200, async () => {
+    if (await p.locator('.moment-band').count()) throw new Error('⇧↑ did not drop the row');
+  });
   // Edit mode lists the Picks; Export mode shows what goes out.
   await p.keyboard.press('ControlOrMeta+3');
-  await p.waitForTimeout(500);
-  if (!(await p.getByTestId('picks-rail').count())) throw new Error('⌘3 did not open Edit on a Pick');
+  await settled(p, 500, async () => {
+    if (!(await p.getByTestId('picks-rail').count())) throw new Error('⌘3 did not open Edit on a Pick');
+  });
   await p.keyboard.press('ControlOrMeta+4');
   await p.waitForTimeout(400);
   const tiles = await p.locator('.export-tile').count();
@@ -750,8 +836,9 @@ await check('smoke-modes', async () => {
   await p.keyboard.press('Backspace');
   await p.locator('.export-tile').first().click();
   await p.keyboard.press('Backspace');
-  await p.waitForTimeout(150);
-  if (!(await p.getByTestId('export-start').textContent())?.includes(`Export ${tiles - 1}`)) throw new Error('⌫ did not leave a Photo out');
+  await settled(p, 150, async () => {
+    if (!(await p.getByTestId('export-start').textContent())?.includes(`Export ${tiles - 1}`)) throw new Error('⌫ did not leave a Photo out');
+  });
   // Remove location really toggles, and the Estimate follows the Size (Greg 2026-11-02).
   const loc = p.getByTestId('export-remove-location');
   const was = await loc.getAttribute('data-state');
@@ -762,8 +849,9 @@ await check('smoke-modes', async () => {
   const full = await est();
   await p.getByRole('combobox', { name: 'Size' }).click();
   await p.getByRole('option', { name: /7680/ }).click();
-  await p.waitForTimeout(100);
-  if (!(await est())?.includes('7680 px') || (await est()) === full) throw new Error(`8K size did not change the Estimate: ${await est()}`);
+  await settled(p, 100, async () => {
+    if (!(await est())?.includes('7680 px') || (await est()) === full) throw new Error(`8K size did not change the Estimate: ${await est()}`);
+  });
   await p.getByRole('combobox', { name: 'Size' }).click();
   await p.getByRole('option', { name: /Custom/ }).click();
   await p.getByTestId('export-custom-edge').fill('3000');
@@ -776,8 +864,9 @@ await check('smoke-modes', async () => {
   await p.getByRole('combobox', { name: 'Color space' }).click();
   await p.getByRole('option', { name: 'Display P3' }).click();
   await p.getByTestId('export-to-photos').click();
-  await p.waitForTimeout(100);
-  if (!(await p.getByTestId('export-watermark-text').inputValue()).includes('Greg')) throw new Error('watermark text did not stick');
+  await settled(p, 100, async () => {
+    if (!(await p.getByTestId('export-watermark-text').inputValue()).includes('Greg')) throw new Error('watermark text did not stick');
+  });
   await p.locator('.ex-form').evaluate((el) => (el.scrollTop = el.scrollHeight));
   await p.locator('.ex-form').screenshot({ path: `${out}05i-export-advanced.png` });
   await p.getByRole('combobox', { name: 'Size' }).click();
@@ -799,8 +888,9 @@ await check('smoke-cull-merge', async () => {
   if (!(await p.getByTestId('merge-stacks').count())) throw new Error('no two Stacks to merge');
   const n = stackFrames;
   await p.keyboard.press('Shift+M');
-  await p.waitForTimeout(300);
-  if (await p.locator('.moment-band').count()) throw new Error('merge should leave one Stack');
+  await settled(p, 300, async () => {
+    if (await p.locator('.moment-band').count()) throw new Error('merge should leave one Stack');
+  });
   // A big merged Stack may come in pages: count its frames from the footer.
   const merged = Number(((await p.locator('.view-foot').textContent()) ?? '').match(/(\d+) frames/)?.[1]);
   if (merged !== n) throw new Error(`merged Stack has ${merged} frames, want ${n}`);
@@ -820,8 +910,9 @@ await check('smoke-bursts-keep-and-next', async () => {
   const ids = await cells.evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
   // Enter keeps the focused (AI best) frame, rejects the rest (Cull flags every Photo) and moves on.
   await p.keyboard.press('Enter');
-  await p.waitForTimeout(200);
-  if ((await p.locator('.view-file').textContent()) === first) throw new Error('Enter did not move to the next Stack');
+  await settled(p, 200, async () => {
+    if ((await p.locator('.view-file').textContent()) === first) throw new Error('Enter did not move to the next Stack');
+  });
   await p.keyboard.press('ArrowUp');
   await p.waitForTimeout(200);
   const vs = await Promise.all(ids.map((id) => p.getByTestId(id).getAttribute('data-verdict')));
@@ -853,16 +944,20 @@ await check('smoke-cull-flags-every-photo', async () => {
   for (let i = 0; i < 40 && !(await p.locator('.view-file').textContent())?.startsWith('Singles'); i++) await p.keyboard.press('Tab');
   const n = await p.locator('.burst-cell').count();
   await p.keyboard.press('Enter');
-  await p.waitForTimeout(200);
-  if ((await count()) !== before - n) throw new Error(`unflagged went ${before} -> ${await count()} after Enter on ${n} singles`);
+  await settled(p, 200, async () => {
+    if ((await count()) !== before - n) throw new Error(`unflagged went ${before} -> ${await count()} after Enter on ${n} singles`);
+  });
   // Skipped moments come back: Go to next lands on the first moment still unflagged.
   await p.getByTestId('next-unflagged').click();
-  await p.waitForTimeout(200);
-  if (!/^(Single|Stack) 1 of/.test(await p.locator('.view-file').textContent())) throw new Error(`Go to next opened ${await p.locator('.view-file').textContent()}`);
+  await settled(p, 200, async () => {
+    if (!/^(Single|Stack) 1 of/.test(await p.locator('.view-file').textContent())) throw new Error(`Go to next opened ${await p.locator('.view-file').textContent()}`);
+  });
   // Leaving with Photos unflagged says how many.
   await p.keyboard.press('Escape');
   // Enter's own "Kept 0, rejected 3" toast may still be up, so look for the warning among them all.
-  const warned = await p.locator('[data-sonner-toast]', { hasText: 'still unflagged' }).first().waitFor({ timeout: 3000 }).then(() => true, () => false);
+  // Attached, not visible: under load Sonner can still be stacking it behind that toast (a flake
+  // in the landing gate, 2026-11-02, with the warning already in the DOM).
+  const warned = await p.locator('[data-sonner-toast]', { hasText: 'still unflagged' }).first().waitFor({ state: 'attached', timeout: 5000 }).then(() => true, () => false);
   if (!warned) throw new Error(`no unflagged warning on leaving: ${await p.locator('[data-sonner-toast]').allTextContents()}`);
   await ctx.close();
 });
@@ -886,8 +981,9 @@ await check('smoke-cull-big-stack-pages', async () => {
   // Drop one in the final look; ↵ ends the moment.
   await p.keyboard.press('x');
   await p.keyboard.press('Enter');
-  await p.waitForTimeout(200);
-  if ((await p.locator('.view-file').textContent()) === title) throw new Error('the moment did not end');
+  await settled(p, 200, async () => {
+    if ((await p.locator('.view-file').textContent()) === title) throw new Error('the moment did not end');
+  });
   const name = title.split(' of ')[0];
   const row = p.getByTestId('moment-rail').locator('.moment-row').filter({ has: p.locator('.trunc', { hasText: new RegExp(`^${name}$`) }) }).first();
   const state = (await row.locator('.moment-state').textContent())?.trim();
@@ -933,8 +1029,9 @@ await check('smoke-cull-round-two', async () => {
   if ((await badges()) !== 1) throw new Error(`${await badges()} R2 badges in the Library, wanted 1`);
   await p.getByTestId('stars-filter').click();
   await p.getByTestId('round-filter-2').click();
-  await p.waitForTimeout(200);
-  if ((await p.locator('.grid-v figure.tile').count()) !== 1) throw new Error(`Round 2 filter shows ${await p.locator('.grid-v figure.tile').count()} Photos`);
+  await settled(p, 200, async () => {
+    if ((await p.locator('.grid-v figure.tile').count()) !== 1) throw new Error(`Round 2 filter shows ${await p.locator('.grid-v figure.tile').count()} Photos`);
+  });
   await p.getByTestId('stars-filter').click();
   await p.getByTestId('round-filter-0').click();
   // Undo every Round 2 ↵: no Photo is past Round 1 again.
@@ -966,17 +1063,20 @@ await check('smoke-edit-arrow-keys', async () => {
   await p.mouse.click(box.x + box.width * 0.8, box.y + box.height / 2);
   const before = await slider.getAttribute('aria-valuenow');
   await p.keyboard.press('ArrowRight');
-  await p.waitForTimeout(300);
-  if ((await at()) === second) throw new Error('→ after dragging a slider did not move on');
+  await settled(p, 300, async () => {
+    if ((await at()) === second) throw new Error('→ after dragging a slider did not move on');
+  });
   await p.keyboard.press('ArrowLeft');
-  await p.waitForTimeout(300);
-  if ((await at()) !== second) throw new Error(`← went to ${await at()}, wanted ${second}`);
+  await settled(p, 300, async () => {
+    if ((await at()) !== second) throw new Error(`← went to ${await at()}, wanted ${second}`);
+  });
   if ((await p.getByRole('slider', { name: 'Exposure' }).first().getAttribute('aria-valuenow')) !== before) throw new Error('the arrow also moved the slider');
   // A slider reached with the keyboard keeps its arrows.
   await p.getByRole('slider', { name: 'Exposure' }).first().focus();
   await p.keyboard.press('ArrowRight');
-  await p.waitForTimeout(300);
-  if ((await at()) !== second) throw new Error('→ on a keyboard-focused slider changed Photo');
+  await settled(p, 300, async () => {
+    if ((await at()) !== second) throw new Error('→ on a keyboard-focused slider changed Photo');
+  });
   await ctx.close();
 });
 
@@ -988,18 +1088,21 @@ await check('smoke-cull-todo-filter', async () => {
   await p.keyboard.press('Enter'); // finish moment 1
   await p.waitForTimeout(200);
   await p.keyboard.press('t');
-  await p.waitForTimeout(200);
-  if ((await p.getByTestId('cull-todo').locator('xpath=ancestor::button[1]').getAttribute('aria-checked')) !== 'true' && (await p.getByTestId('cull-todo').locator('xpath=ancestor::button[1]').getAttribute('data-state')) !== 'on') throw new Error('T did not turn on To do');
+  await settled(p, 200, async () => {
+    if ((await p.getByTestId('cull-todo').locator('xpath=ancestor::button[1]').getAttribute('aria-checked')) !== 'true' && (await p.getByTestId('cull-todo').locator('xpath=ancestor::button[1]').getAttribute('data-state')) !== 'on') throw new Error('T did not turn on To do');
+  });
   const todo = await rows();
   if (todo !== all - 1) throw new Error(`To do lists ${todo} moments, wanted ${all - 1}`);
   // Shift+Tab from moment 2 skips the finished moment 1, so it stays on 2.
   const title = await p.locator('.view-file').textContent();
   await p.keyboard.press('Shift+Tab');
-  await p.waitForTimeout(200);
-  if ((await p.locator('.view-file').textContent()) !== title) throw new Error(`Shift+Tab went back to a finished moment: ${await p.locator('.view-file').textContent()}`);
+  await settled(p, 200, async () => {
+    if ((await p.locator('.view-file').textContent()) !== title) throw new Error(`Shift+Tab went back to a finished moment: ${await p.locator('.view-file').textContent()}`);
+  });
   await p.keyboard.press('t');
-  await p.waitForTimeout(200);
-  if ((await rows()) !== all) throw new Error('T again did not show All');
+  await settled(p, 200, async () => {
+    if ((await rows()) !== all) throw new Error('T again did not show All');
+  });
   await ctx.close();
 });
 
@@ -1012,8 +1115,9 @@ await check('smoke-cull-rows-no-overlap', async () => {
   await p.getByTestId('merge-stacks').click();
   await p.waitForTimeout(300);
   await p.keyboard.press('Shift+ArrowDown');
-  await p.waitForTimeout(400);
-  if (!(await p.getByTestId('moment-rows').count())) throw new Error('Show next too did not show rows');
+  await settled(p, 400, async () => {
+    if (!(await p.getByTestId('moment-rows').count())) throw new Error('Show next too did not show rows');
+  });
   const boxes = await p.locator('.moment-rows .burst-cell > .photo').evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; }));
   if (boxes.length < 8) throw new Error(`only ${boxes.length} frames in rows`);
   for (let i = 0; i < boxes.length; i++)
@@ -1046,8 +1150,9 @@ await check('smoke-cull-page-bar', async () => {
   if (!/^Page 2 of/.test(await label())) throw new Error(`a finished page did not turn: ${await label()}`);
   // Going back to it stays there.
   await p.keyboard.press('BracketLeft');
-  await p.waitForTimeout(300);
-  if (!/^Page 1 of/.test(await label())) throw new Error(`[ back to a finished page bounced to ${await label()}`);
+  await settled(p, 300, async () => {
+    if (!/^Page 1 of/.test(await label())) throw new Error(`[ back to a finished page bounced to ${await label()}`);
+  });
   await ctx.close();
 });
 
@@ -1180,8 +1285,9 @@ await check('smoke-lens-corrections', async () => {
   await p.screenshot({ path: `${out}smoke-lens-corrections.png` });
   // ⌘Z puts it back.
   await p.keyboard.press('Control+z');
-  await p.waitForTimeout(150);
-  if ((await seg.getByRole('radio', { name: 'What the camera corrected in its own JPEG' }).getAttribute('data-state')) !== 'on') throw new Error('Undo should put Lens corrections back to As camera');
+  await settled(p, 150, async () => {
+    if ((await seg.getByRole('radio', { name: 'What the camera corrected in its own JPEG' }).getAttribute('data-state')) !== 'on') throw new Error('Undo should put Lens corrections back to As camera');
+  });
   await ctx.close();
 });
 
@@ -1190,8 +1296,15 @@ await check('smoke-copy-paste-settings', async () => {
   const temp = async () => Number((await p.locator('.slider', { hasText: 'Temp' }).first().locator('.val').textContent()).replace('−', '-'));
   // Waits for the slider to show what it should (a loaded machine is slower than a fixed pause).
   const tempBecomes = async (ok) => {
-    for (let i = 0; i < 30 && !ok(await temp()); i++) await p.waitForTimeout(100);
+    for (let i = 0; i < 100 && !ok(await temp()); i++) await p.waitForTimeout(100);
     return temp();
+  };
+  // Wait for what each key does instead of fixed pauses: the dialog closes, the Photo changes.
+  const closed = () => p.getByTestId('settings-dialog').waitFor({ state: 'detached', timeout: 10000 });
+  const step = async (key) => {
+    const was = await p.evaluate(() => location.hash);
+    await p.keyboard.press(key);
+    await p.waitForFunction((h) => location.hash !== h, was, { timeout: 10000 });
   };
   await applyPresetTab(p, 'warm-film', 'Film');
   // ⇧⌘C asks which groups, Lightroom-style; untick White balance and nothing of it travels.
@@ -1200,32 +1313,39 @@ await check('smoke-copy-paste-settings', async () => {
   await p.screenshot({ path: `${out}smoke-copy-settings-dialog.png` });
   await p.getByTestId('paste-wb').click();
   await p.keyboard.press('Enter');
-  await p.keyboard.press('Control+ArrowRight');
-  await p.waitForTimeout(300);
+  await closed();
+  await step('Control+ArrowRight');
   await p.keyboard.press('Control+Shift+v');
-  await p.waitForTimeout(200);
-  if ((await temp()) !== 0) throw new Error(`White balance was unticked but temp is ${await temp()}`);
+  await settled(p, 200, async () => {
+    if ((await temp()) !== 0) throw new Error(`White balance was unticked but temp is ${await temp()}`);
+  });
   // ⌥⌘V pastes the previous Photo's settings with the groups last chosen; tick wb again first.
   await p.keyboard.press('Control+Shift+c');
+  await p.getByTestId('settings-dialog').waitFor();
   await p.getByTestId('paste-wb').click();
   await p.keyboard.press('Escape');
+  await closed();
   await p.keyboard.press('Control+Alt+v');
-  await p.waitForTimeout(200);
-  if ((await temp()) !== 0) throw new Error('Esc should not have changed the remembered groups');
+  await settled(p, 200, async () => {
+    if ((await temp()) !== 0) throw new Error('Esc should not have changed the remembered groups');
+  });
   // The dialog remembers the last groups, Lightroom-style: tick White balance and copy.
-  await p.keyboard.press('Control+ArrowLeft');
+  await step('Control+ArrowLeft');
   await p.keyboard.press('Control+Shift+c');
+  await p.getByTestId('settings-dialog').waitFor();
   if ((await p.getByTestId('paste-wb').getAttribute('data-state')) !== 'unchecked') throw new Error('the dialog forgot the last groups');
   await p.getByTestId('paste-wb').click();
   await p.keyboard.press('Enter');
-  await p.keyboard.press('Control+ArrowRight');
-  await p.waitForTimeout(300);
+  await closed();
+  await step('Control+ArrowRight');
   await p.keyboard.press('Control+Shift+v');
-  await p.waitForTimeout(200);
-  if ((await tempBecomes((t) => t !== 0)) === 0) throw new Error('pasting with White balance ticked left temp at 0');
+  await settled(p, 200, async () => {
+    if ((await tempBecomes((t) => t !== 0)) === 0) throw new Error('pasting with White balance ticked left temp at 0');
+  });
   await p.keyboard.press('Control+z');
-  await p.waitForTimeout(200);
-  if ((await tempBecomes((t) => t === 0)) !== 0) throw new Error(`Undo left temp at ${await temp()}`);
+  await settled(p, 200, async () => {
+    if ((await tempBecomes((t) => t === 0)) !== 0) throw new Error(`Undo left temp at ${await temp()}`);
+  });
   // ⇧⌘V straight after ⌘→, with no pause: it lands on the Photo now in front, never on the
   // one just left (the keys read the current Photo when pressed, not from the last render).
   await p.keyboard.press('Control+ArrowRight');
@@ -1246,8 +1366,9 @@ await check('smoke-esc-on-a-menu-keeps-the-selection', async () => {
   await p.getByRole('menu').waitFor({ state: 'detached' });
   if ((await selected()) !== before) throw new Error(`Esc on the menu changed the selection (${before} -> ${await selected()})`);
   await p.keyboard.press('Escape');
-  await p.waitForTimeout(100);
-  if ((await selected()) >= before) throw new Error('a second Esc should clear the selection');
+  await settled(p, 100, async () => {
+    if ((await selected()) >= before) throw new Error('a second Esc should clear the selection');
+  });
   await ctx.close();
 });
 
@@ -1262,8 +1383,9 @@ await check('smoke-sync-settings-from-grid', async () => {
   await p.getByRole('menuitem', { name: /Sync settings to 3 selected/ }).click();
   await p.getByTestId('apply-edit').waitFor();
   await p.keyboard.press('Escape');
-  await p.waitForTimeout(200);
-  if (!(await p.getByText('4 selected').count())) throw new Error('Esc on the popover also cleared the selection');
+  await settled(p, 200, async () => {
+    if (!(await p.getByText('4 selected').count())) throw new Error('Esc on the popover also cleared the selection');
+  });
   await p.keyboard.press('Control+Shift+s');
   await p.getByTestId('apply-edit').waitFor();
   const title = await p.getByTestId('apply-edit').locator('.apply-look-title').textContent();
@@ -1282,8 +1404,9 @@ await check('smoke-presets-apply-and-undo', async () => {
   if ((await p.getByTestId('presets-suggested').locator('.preset').count()) < 4) throw new Error('no Suggested row');
   await p.getByTestId('section-presets-Black and white').locator('.dev-section-toggle').click();
   await p.getByTestId('preset-bw-contrast').click();
-  await p.waitForTimeout(200);
-  if ((await p.locator('.preset.on').count()) !== 1) throw new Error('the preset did not apply');
+  await settled(p, 200, async () => {
+    if ((await p.locator('.preset.on').count()) !== 1) throw new Error('the preset did not apply');
+  });
   const amount = p.getByTestId('preset-amount');
   if (!/B&W contrast/.test(await amount.textContent())) throw new Error('the Amount slider does not name the preset');
   await amount.getByRole('slider').focus();
@@ -1292,8 +1415,9 @@ await check('smoke-presets-apply-and-undo', async () => {
   if ((await p.locator('.preset.on').count()) !== 1) throw new Error('changing the Amount took the preset off');
   await p.keyboard.press('Meta+z');
   await p.keyboard.press('Control+z');
-  await p.waitForTimeout(200);
-  if ((await p.locator('.preset.on').count()) !== 0) throw new Error('Undo left the preset on');
+  await settled(p, 200, async () => {
+    if ((await p.locator('.preset.on').count()) !== 0) throw new Error('Undo left the preset on');
+  });
   await ctx.close();
 });
 
@@ -1307,8 +1431,9 @@ await check('smoke-suggestions-preview-accept-undo', async () => {
   if (!/Punchy/.test(flag ?? '')) throw new Error(`Tab twice should preview the second take, got ${flag}`);
   if (!(await p.locator('[data-testid="take-diff"]').isVisible())) throw new Error('no diff for the take');
   await p.keyboard.press('Enter');
-  await p.waitForTimeout(200);
-  if (await p.locator('[data-testid="previewing"]').count()) throw new Error('still previewing after accept');
+  await settled(p, 200, async () => {
+    if (await p.locator('[data-testid="previewing"]').count()) throw new Error('still previewing after accept');
+  });
   const exposure = await p.getByRole('slider', { name: 'Exposure' }).first().getAttribute('aria-valuenow');
   // Punchy's own exposure (dummy takes in data/suggestions.ts): accepting at 100% sets it.
   if (Number(exposure) !== 0.35) throw new Error(`accepting should set exposure 0.35, got ${exposure}`);
@@ -1399,8 +1524,10 @@ await check('smoke-status-bar-every-mode', async () => {
   const { p, ctx } = await page('#/cull');
   for (const [mode, hash, foot] of [['Library', '#/cull', /Pick/], ['Cull', '#/moments', /Keep/], ['Edit', '#/edit/p3', null], ['Export', '#/export', /Leave out/], ['Work', '#/work', /Walk away/], ['Loupe', '#/loupe/p3', null]]) {
     await p.evaluate((h) => (location.hash = h), hash);
-    await p.waitForTimeout(600);
     const bar = p.getByTestId('status-bar');
+    // Wait for the mode's bar, not a fixed 600 ms (a busy box drew Library late, 2026-11-02).
+    await bar.first().waitFor({ timeout: 10000 }).catch(() => {});
+    await bar.getByTestId('status-prepare').first().waitFor({ timeout: 10000 }).catch(() => {});
     if ((await bar.count()) !== 1) throw new Error(`${mode}: ${await bar.count()} Status bars`);
     if (!(await bar.getByTestId('meter').isVisible())) throw new Error(`${mode}: no AI meter in the Status bar`);
     // The demo Shoot is preparing, so Prepare's line stands for the Queue's.
@@ -1421,14 +1548,49 @@ await check('smoke-work-mode', async () => {
   if ((await p.getByTestId('work-stage').count()) < 5) throw new Error('Work mode: no Prepare stages');
   if (!/Ready at/.test(await p.getByTestId('work-ready').innerText())) throw new Error('Work mode: no "Ready at" time');
   if (!(await p.getByTestId('work-run-all-button').isVisible())) throw new Error('Work mode: no Run it all');
+  if (!/Paused while asleep/.test(await p.getByTestId('work-interrupted').first().innerText())) throw new Error('Work mode: a job the lid interrupted does not say "Paused while asleep"');
   await p.screenshot({ path: `${out}17-work-mode.png` });
   await p.keyboard.press('Escape');
-  await p.waitForTimeout(400);
-  if (!(await p.evaluate(() => location.hash)).startsWith('#/cull')) throw new Error('Work mode: Esc did not go back to the Library');
+  await settled(p, 400, async () => {
+    if (!(await p.evaluate(() => location.hash)).startsWith('#/cull')) throw new Error('Work mode: Esc did not go back to the Library');
+  });
   await p.evaluate(() => (location.hash = '#/export'));
   await p.getByTestId('finish-open').click();
   await p.getByTestId('finish-popover').waitFor();
   await p.screenshot({ path: `${out}17-finish.png` });
+  await ctx.close();
+});
+
+// One place for all background work (Greg, 2026-11-02): an Export runs as a line in the Status
+// bar, in the Background work panel and in Work mode's Running list, with Stop, never as a
+// toast of its own; its result arrives as a short toast when it ends.
+await check('smoke-export-in-background-work', async () => {
+  const { p, ctx } = await page('#/cull');
+  await p.evaluate(() => (window.__argusExportDelay = 1500));
+  await p.keyboard.press('Control+e');
+  await p.getByTestId('export-start').click();
+  const bar = p.getByTestId('status-bar');
+  await bar.getByTestId('status-export').waitFor();
+  if (await p.locator('[data-sonner-toast]').filter({ hasText: /Exporting/ }).count()) throw new Error('Export still shows its own progress toast');
+  await p.keyboard.press('Escape');
+  await bar.getByTestId('status-export').click();
+  const panel = p.getByTestId('queue-popover');
+  await panel.waitFor();
+  if (!/Exporting \d+/.test(await panel.innerText())) throw new Error('Background work panel: no Export under Running');
+  await p.screenshot({ path: `${out}17c-panel-export.png`, clip: { x: 0, y: 380, width: 720, height: 520 } });
+  await p.keyboard.press('Escape');
+  await panel.waitFor({ state: 'detached' });
+  await p.keyboard.press('ControlOrMeta+5');
+  await p.getByTestId('work-screen').waitFor();
+  const row = p.locator('[data-testid="work-running"][data-kind="export"]');
+  await row.waitFor();
+  if (!/Exporting \d+/.test(await row.innerText())) throw new Error(`Work mode's Running row reads "${await row.innerText()}"`);
+  await p.getByTestId('work-jobs').screenshot({ path: `${out}17b-work-running-export.png` });
+  await row.getByTestId('work-running-stop').click();
+  await row.waitFor({ state: 'detached', timeout: 5000 });
+  const done = p.getByTestId('export-status');
+  await done.waitFor();
+  if (!/^Stopped\./.test(await done.innerText())) throw new Error(`Stop: the result reads "${await done.innerText()}"`);
   await ctx.close();
 });
 
@@ -1542,14 +1704,16 @@ await check('smoke-settings-nav-only-selected-active', async () => {
   const transparent = (bg) => bg === 'transparent' || /rgba\(0, 0, 0, 0\)/.test(bg);
   const verify = async (want) => {
     await p.mouse.move(1, 1); // the pointer leaves the nav, so hover can't colour anything
-    await p.waitForTimeout(200);
-    const items = await state();
-    if (items.length < 3) throw new Error(`found ${items.length} Settings sections`);
-    for (const b of items) {
-      const on = b.id === `settings-${want}`;
-      if (on !== (b.current === 'page')) throw new Error(`${b.id} aria-current=${b.current} with ${want} open`);
-      if (on === transparent(b.bg)) throw new Error(`${b.id} background ${b.bg} with ${want} open`);
-    }
+    // The old section's background fades out, which can outlast a fixed pause under load.
+    await settled(p, 200, async () => {
+      const items = await state();
+      if (items.length < 3) throw new Error(`found ${items.length} Settings sections`);
+      for (const b of items) {
+        const on = b.id === `settings-${want}`;
+        if (on !== (b.current === 'page')) throw new Error(`${b.id} aria-current=${b.current} with ${want} open`);
+        if (on === transparent(b.bg)) throw new Error(`${b.id} background ${b.bg} with ${want} open`);
+      }
+    });
   };
   await verify('ai');
   await p.getByTestId('settings-library').click();

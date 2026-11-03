@@ -31,11 +31,12 @@ import {
 } from "../data/prepare";
 import { COMPUTE_LABEL, dur, useQueueOrDemo } from "../ui/Queue";
 import { ai, gb, pct, Spark, useMeter } from "../ui/Meter";
-import { Hints, ModeSwitch } from "../ui/ViewBar";
+import { HeadLead, Hints, ModeSwitch } from "../ui/ViewBar";
 import { Kbd, Seg, ESC_OUTSIDE_DIALOGS } from "../ui/kit";
 import { eta } from "../ui/Progress";
 import { Button } from "@/components/ui/button";
 import { StatusFoot } from "../ui/StatusBar";
+import { RunningRow, useRunning } from "../ui/Running";
 import { toastFailure } from "@/lib/utils";
 
 /** What a job kind is, for the grouped list. */
@@ -54,6 +55,14 @@ const KIND: Record<string, string> = {
   rank_presets: "Presets for you",
   learn_edits: "Learning your edits",
   download_model: "Model download",
+  resume_run: "Finishing interrupted work",
+};
+
+/** Why a job or run stopped part way and waits to carry on (engine `interrupted`, run `note`). */
+const INTERRUPTED: Record<string, string> = {
+  asleep: "Paused while asleep",
+  quit: "Paused when Argus quit",
+  card: "Paused: card not connected",
 };
 
 interface Job {
@@ -63,6 +72,30 @@ interface Job {
   priority: number;
   done: number;
   total: number;
+  /** Queued again part way: `asleep` or `quit`. It carries on from where it got to. */
+  interrupted?: string | null;
+}
+
+/** An Export or Import not finished (engine `list_runs`): paused ones wait to carry on. */
+interface Run {
+  id: number;
+  kind: string;
+  label: string;
+  status: string;
+  note: string | null;
+  done: number;
+  total: number;
+}
+
+function useRuns(): Run[] {
+  const [runs, setRuns] = useState<Run[]>([]);
+  useEffect(() => {
+    if (!LIVE) return;
+    const load = () => void call<Run[]>("list_runs").then(setRuns, () => {});
+    load();
+    return whileShown(load, 5000);
+  }, []);
+  return runs;
 }
 
 function useQueuedJobs(): Job[] {
@@ -70,6 +103,7 @@ function useQueuedJobs(): Job[] {
   useEffect(() => {
     if (!LIVE) {
       setJobs([
+        { id: 99, kind: "suggest", label: "Suggestions for DSC08005", priority: 10, done: 0, total: 0, interrupted: "asleep" },
         ...Array.from({ length: 63 }, (_, i) => ({
           id: 100 + i,
           kind: "suggest",
@@ -214,6 +248,9 @@ export function WorkScreen() {
   const s = usePrepare();
   const q = useQueueOrDemo();
   const jobs = useQueuedJobs();
+  const runs = useRuns();
+  // Import, Export and AI work run next to the Queue's job: all of it shows here (Greg, 2026-11-02).
+  const running = useRunning(q);
   const p = s?.prepare ?? null;
   const held = heldCount(s);
   const [, tick] = useState(0);
@@ -242,8 +279,12 @@ export function WorkScreen() {
   useHotkeys(["escape"], () => go({ name: "cull" }), ESC_OUTSIDE_DIALOGS);
 
   const groups = new Map<string, number>();
-  for (const j of jobs) groups.set(j.kind, (groups.get(j.kind) ?? 0) + 1);
-  const r = q?.running ?? null;
+  for (const j of jobs) if (!j.interrupted) groups.set(j.kind, (groups.get(j.kind) ?? 0) + 1);
+  // Work a closed lid, a quit or an ejected card stopped part way, each on its own row.
+  const paused = [
+    ...jobs.filter((j) => j.interrupted).map((j) => ({ key: `job-${j.id}`, label: j.label, why: INTERRUPTED[j.interrupted!] ?? "Paused" })),
+    ...runs.filter((r) => r.status === "paused" && r.note === "card").map((r) => ({ key: `run-${r.id}`, label: r.label, why: INTERRUPTED.card })),
+  ];
   const done = p && p.state === "done";
   const last = !p ? (s?.last_done ?? null) : null;
   const battery = p?.state === "battery" || (!!q?.battery_paused && held > 0);
@@ -260,18 +301,19 @@ export function WorkScreen() {
       data-testid="work-screen"
     >
       <header className="panel-head view-head">
+        <HeadLead>
+          <span className="view-file">
+            {p ? "Preparing" : "Background work"}
+          </span>
+          <span className="mono faint view-meta trunc">
+            {p
+              ? p.shoot_names.join(" · ")
+              : running.length
+                ? running.map((w) => w.label).join(" · ")
+                : `${q?.queued ?? 0} waiting`}
+          </span>
+        </HeadLead>
         <ModeSwitch mode="work" />
-        <span className="vsep" />
-        <span className="view-file trunc">
-          {p ? "Preparing" : "Background work"}
-        </span>
-        <span className="mono faint view-meta trunc">
-          {p
-            ? p.shoot_names.join(" · ")
-            : r
-              ? r.label
-              : `${q?.queued ?? 0} waiting`}
-        </span>
         <span className="grow" />
         {q && (
           <Seg
@@ -486,26 +528,10 @@ export function WorkScreen() {
             <div className="wm-card-head">
               <span className="wm-h">Running</span>
             </div>
-            {r ? (
-              <div className="wm-job">
-                <span className="wm-dot on" />
-                <span className="trunc">{r.label}</span>
-                <span
-                  className={`job-bar ${r.total > 0 ? "" : "indeterminate"}`}
-                >
-                  <span
-                    style={
-                      r.total > 0
-                        ? { width: `${Math.round((100 * r.done) / r.total)}%` }
-                        : undefined
-                    }
-                  />
-                </span>
-                <span className="mono faint wm-num">
-                  {r.total > 0 ? `${r.done}/${r.total}` : ""}
-                </span>
-              </div>
-            ) : (
+            {running.map((w) => (
+              <RunningRow key={w.key} w={w} />
+            ))}
+            {!running.length && (
               <span className="faint">
                 {q?.paused ? "Paused" : "Nothing running"}
               </span>
@@ -515,6 +541,13 @@ export function WorkScreen() {
               <span className="grow" />
               <span className="mono faint">{jobs.length}</span>
             </div>
+            {paused.map((j) => (
+              <div key={j.key} className="wm-job wm-paused" data-testid="work-interrupted" title={`${j.why}: carries on from where it got to`}>
+                <span className="wm-dot" />
+                <span className="trunc">{j.label}</span>
+                <span className="faint wm-num">{j.why}</span>
+              </div>
+            ))}
             {[...groups.entries()]
               .sort((a, b) => b[1] - a[1])
               .map(([kind, n]) => (
@@ -525,7 +558,7 @@ export function WorkScreen() {
                   </span>
                 </div>
               ))}
-            {!groups.size && <span className="faint">Nothing waiting</span>}
+            {!groups.size && !paused.length && <span className="faint">Nothing waiting</span>}
           </section>
         </div>
       </div>

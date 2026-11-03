@@ -139,7 +139,7 @@ pub fn run(
         if samples.is_empty() {
             return Ok(report);
         }
-        let base = sync_base(&crate::tools::current_recipe(lib, hero.id)?);
+        let base = sync_base(&lib.current_recipe(hero.id)?);
         let total = todo.len();
         for (i, p) in todo.iter().enumerate() {
             progress(i, total);

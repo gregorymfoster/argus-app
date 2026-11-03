@@ -120,14 +120,14 @@ impl Tools {
         match name {
             "analyze_photo" => {
                 let a: PhotoArg = parse(args)?;
-                analyze_photo(&lib, &find_photo(&lib, a.photo_id)?)
+                analyze_photo(&lib, &lib.find_photo(a.photo_id)?)
             }
             "add_mask" => add_mask(&mut lib, parse(args)?, batch),
             "edit_mask" => edit_mask(&mut lib, parse(args)?, batch),
             "remove_mask" => {
                 let a: LocalArg = parse(args)?;
-                find_photo(&lib, a.photo_id)?;
-                let mut r = current_recipe(&lib, a.photo_id)?;
+                lib.find_photo(a.photo_id)?;
+                let mut r = lib.current_recipe(a.photo_id)?;
                 r.local_mut(&a.local_id)?;
                 r.local.retain(|l| l.id != a.local_id);
                 let batch = batch_or(&mut lib, batch, "remove_mask")?;
@@ -142,10 +142,10 @@ impl Tools {
             "remove_spot" => remove_spot(&mut lib, parse(args)?, batch),
             "pick_spot_source" => {
                 let a: PickSpotSource = parse(args)?;
-                let photo = find_photo(&lib, a.photo_id)?;
+                let photo = lib.find_photo(a.photo_id)?;
                 let recipe = match &a.recipe {
                     Some(v) => Recipe::from_value(v)?,
-                    None => current_recipe(&lib, a.photo_id)?,
+                    None => lib.current_recipe(a.photo_id)?,
                 };
                 let from = spot_source(&lib, &photo, &recipe, (a.x, a.y, a.r), &a.avoid)?;
                 one(json!({ "from": from }))
@@ -389,9 +389,9 @@ fn add_mask(lib: &mut Library, a: AddMask, batch: Option<BatchId>) -> Result<Vec
     let adjust = local_adjust(&Default::default(), &a.adjust, false)?;
     let mut next = Vec::new();
     for &id in &a.photo_ids {
-        let photo = find_photo(lib, id)?;
+        let photo = lib.find_photo(id)?;
         check_mask(lib, &photo, &mask)?;
-        let mut r = current_recipe(lib, id)?;
+        let mut r = lib.current_recipe(id)?;
         let local_id = new_local_id(&r, mask.kind());
         r.local.push(Local {
             id: local_id.clone(),
@@ -414,8 +414,8 @@ fn add_mask(lib: &mut Library, a: AddMask, batch: Option<BatchId>) -> Result<Vec
 }
 
 fn edit_mask(lib: &mut Library, a: EditMask, batch: Option<BatchId>) -> Result<Vec<Part>> {
-    let photo = find_photo(lib, a.photo_id)?;
-    let mut r = current_recipe(lib, a.photo_id)?;
+    let photo = lib.find_photo(a.photo_id)?;
+    let mut r = lib.current_recipe(a.photo_id)?;
     let l = r.local_mut(&a.local_id)?;
     if let Some(m) = &a.mask {
         let m = parse_mask(m)?;
@@ -502,8 +502,8 @@ fn add_spot(lib: &mut Library, a: AddSpot, batch: Option<BatchId>) -> Result<Vec
     }
     let mut next = Vec::new();
     for &id in &a.photo_ids {
-        let photo = find_photo(lib, id)?;
-        let mut r = current_recipe(lib, id)?;
+        let photo = lib.find_photo(id)?;
+        let mut r = lib.current_recipe(id)?;
         let from = match a.from {
             Some(f) => f,
             None => spot_source(lib, &photo, &r, (a.x, a.y, a.r), &[])?,
@@ -533,8 +533,8 @@ fn add_spot(lib: &mut Library, a: AddSpot, batch: Option<BatchId>) -> Result<Vec
 }
 
 fn edit_spot(lib: &mut Library, a: EditSpot, batch: Option<BatchId>) -> Result<Vec<Part>> {
-    let photo = find_photo(lib, a.photo_id)?;
-    let mut r = current_recipe(lib, a.photo_id)?;
+    let photo = lib.find_photo(a.photo_id)?;
+    let mut r = lib.current_recipe(a.photo_id)?;
     let s = spot_mut(&mut r, &a.spot_id)?;
     s.x = a.x.unwrap_or(s.x);
     s.y = a.y.unwrap_or(s.y);
@@ -565,8 +565,8 @@ fn edit_spot(lib: &mut Library, a: EditSpot, batch: Option<BatchId>) -> Result<V
 }
 
 fn remove_spot(lib: &mut Library, a: RemoveSpot, batch: Option<BatchId>) -> Result<Vec<Part>> {
-    find_photo(lib, a.photo_id)?;
-    let mut r = current_recipe(lib, a.photo_id)?;
+    lib.find_photo(a.photo_id)?;
+    let mut r = lib.current_recipe(a.photo_id)?;
     match (&a.spot_id, a.all) {
         (Some(id), false) => {
             spot_mut(&mut r, id)?;
@@ -628,8 +628,8 @@ fn analyze_photo(lib: &Library, photo: &Photo) -> Result<Vec<Part>> {
 
 fn view_depth(lib: &Library, a: ViewDepth) -> Result<Vec<Part>> {
     use crate::lens_blur;
-    let photo = find_photo(lib, a.photo_id)?;
-    let recipe = current_recipe(lib, a.photo_id)?;
+    let photo = lib.find_photo(a.photo_id)?;
+    let recipe = lib.current_recipe(a.photo_id)?;
     let analysis = render::analysis_with(lib, &photo, true)?;
     let depth = analysis
         .depth
@@ -681,8 +681,8 @@ fn view_depth(lib: &Library, a: ViewDepth) -> Result<Vec<Part>> {
 }
 
 fn view_mask(lib: &Library, a: ViewMask) -> Result<Vec<Part>> {
-    let photo = find_photo(lib, a.photo_id)?;
-    let recipe = current_recipe(lib, a.photo_id)?;
+    let photo = lib.find_photo(a.photo_id)?;
+    let recipe = lib.current_recipe(a.photo_id)?;
     let mask = match (&a.local_id, &a.mask) {
         (Some(id), None) => recipe
             .local

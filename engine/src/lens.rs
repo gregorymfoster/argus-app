@@ -250,23 +250,45 @@ impl Warp {
         let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
         let rn = (cx * cx + cy * cy).sqrt();
         let dy = (y as f32 + 0.5 - cy) / rn;
-        for x in 0..w {
+        let (wmax, hmax) = ((w - 1) as f32, (h - 1) as f32);
+        let [sr, sgt, sb] = &self.scale;
+        for (x, px) in out[..w * 3].as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let dx = (x as f32 + 0.5 - cx) / rn;
             let r = (dx * dx + dy * dy).sqrt();
-            let sg = self.zoom * look(&self.scale[1], r);
+            // The three scale tables share one position.
+            let (i, f) = at_index(r);
+            let lerp = |t: &[f32]| t[i] + (t[i + 1] - t[i]) * f;
+            let sg = self.zoom * lerp(sgt);
             // CA shifts are a fraction of a pixel, so one gain serves all three channels.
             let g = look(&self.gain, r * sg);
-            for c in 0..3 {
-                let s = if c == 1 {
-                    sg
-                } else {
-                    self.zoom * look(&self.scale[c], r)
-                };
+            let scales = [self.zoom * lerp(sr), sg, self.zoom * lerp(sb)];
+            for (c, (o, s)) in px.iter_mut().zip(scales).enumerate() {
                 let (sx, sy) = (cx + dx * s * rn - 0.5, cy + dy * s * rn - 0.5);
-                out[x * 3 + c] = sample(img, w, h, sx, sy, c) * g;
+                // Almost every pixel samples well inside the frame: skip the edge clamps.
+                let v = if sx >= 0.0 && sy >= 0.0 && sx < wmax && sy < hmax {
+                    let (x0, y0) = (sx as usize, sy as usize);
+                    let (tx, ty) = (sx - x0 as f32, sy - y0 as f32);
+                    let i = (y0 * w + x0) * 3 + c;
+                    let (a0, a1) = (img[i], img[i + 3]);
+                    let (b0, b1) = (img[i + w * 3], img[i + w * 3 + 3]);
+                    let a = a0 + (a1 - a0) * tx;
+                    let b = b0 + (b1 - b0) * tx;
+                    a + (b - a) * ty
+                } else {
+                    sample(img, w, h, sx, sy, c)
+                };
+                *o = v * g;
             }
         }
     }
+}
+
+/// A table position for radius `r`, as [`look`] finds it: index and fraction.
+#[inline]
+fn at_index(r: f32) -> (usize, f32) {
+    let x = (r * (STEPS as f32 / 1.5)).clamp(0.0, STEPS as f32);
+    let i = (x as usize).min(STEPS - 1);
+    (i, x - i as f32)
 }
 
 fn look(t: &[f32], r: f32) -> f32 {

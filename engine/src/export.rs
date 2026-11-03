@@ -126,6 +126,9 @@ pub struct Exported {
     pub width: u32,
     pub height: u32,
     pub bytes: u64,
+    /// Written before, by the run this export resumes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub resumed: bool,
 }
 
 /// `~/x` -> `$HOME/x`, so callers can pass the folder as the UI shows it.
@@ -166,6 +169,62 @@ fn io(path: &Path, e: std::io::Error) -> Error {
     Error(format!("{}: {e}", path.display()))
 }
 
+/// Where a resumable Export writes a Photo ([`export_to`]).
+#[derive(Clone, Copy)]
+pub struct Slot<'a> {
+    /// The file name this Photo claimed before, reused while it is empty (a resumed run).
+    pub reuse: Option<&'a Path>,
+    /// Told the name the Photo claims, before anything is written to it.
+    pub claimed: &'a dyn Fn(&Path) -> Result<()>,
+}
+
+/// The temporary file a Photo is written to before it is renamed to `path`.
+pub fn tmp_of(path: &Path) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.argus-tmp"))
+}
+
+/// Whether the file at `path` is whole: written and renamed into place. A claimed name
+/// holds an empty file until then, so anything longer is a finished file.
+pub fn finished(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() > 0)
+}
+
+/// What an Export stopped part way leaves: an empty claimed name and its temporary file.
+pub fn clear_unfinished(path: &Path) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = std::fs::remove_file(tmp_of(path));
+}
+
+/// [`claim`], or the names `reuse` claimed before (the main file first), while they are
+/// still empty or missing.
+fn claim_again(
+    folder: &Path,
+    stem: &str,
+    exts: &[&str],
+    reuse: Option<&Path>,
+) -> Result<Vec<PathBuf>> {
+    if let Some(p) = reuse {
+        let paths: Vec<PathBuf> = exts.iter().map(|e| p.with_extension(e)).collect();
+        let fits =
+            p.parent() == Some(folder) && paths[0] == p && paths.iter().all(|q| !finished(q));
+        if fits {
+            for q in &paths {
+                OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(q)
+                    .map_err(|e| io(q, e))?;
+            }
+            return Ok(paths);
+        }
+    }
+    claim(folder, stem, exts)
+}
+
 /// Claim free names `<stem>.<ext>` (or `<stem>-N.<ext>`, as `naming::unique_name` counts)
 /// for every extension at once, by creating them empty, which is atomic: two exports
 /// running side by side never get the same name. Returns the paths in `exts` order.
@@ -197,8 +256,7 @@ fn claim(folder: &Path, stem: &str, exts: &[&str]) -> Result<Vec<PathBuf>> {
 
 /// Write `bytes` to the claimed `path` through a temporary file and a rename.
 fn put(path: &Path, write: impl FnOnce(&mut File) -> std::io::Result<()>) -> Result<u64> {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let tmp = path.with_file_name(format!(".{name}.argus-tmp"));
+    let tmp = tmp_of(path);
     let res = (|| {
         let mut f = File::create(&tmp)?;
         write(&mut f)?;
@@ -222,6 +280,26 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// Export one Photo. `index` and `total` place it in the export, for sequence names.
 pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result<Exported> {
+    export_to(
+        item,
+        opts,
+        index,
+        total,
+        Slot {
+            reuse: None,
+            claimed: &|_| Ok(()),
+        },
+    )
+}
+
+/// [`export`], into `slot`: a resumable run's claimed name.
+pub fn export_to(
+    item: &Item,
+    opts: &Options,
+    index: usize,
+    total: usize,
+    slot: Slot,
+) -> Result<Exported> {
     let folder = &if opts.shoot_folder {
         opts.folder.join(naming::export_folder_name(&shoot_part(
             item.shoot_name,
@@ -250,7 +328,8 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
                 .extension()
                 .map(|e| e.to_string_lossy().to_string())
                 .unwrap_or_else(|| "raw".into());
-            let paths = claim(folder, &stem_of(&ext), &[&ext, "xmp"])?;
+            let paths = claim_again(folder, &stem_of(&ext), &[&ext, "xmp"], slot.reuse)?;
+            (slot.claimed)(&paths[0])?;
             let (copy, xmp) = (&paths[0], &paths[1]);
             if same_file(copy, original) {
                 return Err(Error("refusing to write over an original".into()));
@@ -266,6 +345,7 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
                 width: item.photo.width,
                 height: item.photo.height,
                 bytes,
+                resumed: false,
             })
         }
         Format::Jpeg | Format::Heic | Format::Tiff => {
@@ -307,7 +387,8 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
                 Format::Heic => "heic",
                 _ => "tif",
             };
-            let path = claim(folder, &stem_of(ext), &[ext])?.remove(0);
+            let path = claim_again(folder, &stem_of(ext), &[ext], slot.reuse)?.remove(0);
+            (slot.claimed)(&path)?;
             if same_file(&path, original) {
                 return Err(Error("refusing to write over an original".into()));
             }
@@ -337,6 +418,7 @@ pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result
                 width: img.width as u32,
                 height: img.height as u32,
                 bytes,
+                resumed: false,
             })
         }
     }

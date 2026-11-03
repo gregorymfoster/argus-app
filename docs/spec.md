@@ -159,7 +159,7 @@ Out of scope for v1:
 
 - iPhone, iPad and Windows
 - the Mac App Store and notarization
-- Apple Photos import and export
+- importing from Apple Photos (exports can go to Apple Photos and Google Photos: docs/export.md)
 - importing Lightroom catalogs or edits
 - generative fill and object removal (Heal and Clone Spots are in: they only copy pixels from elsewhere in the same Photo, for blemishes, stray hairs and dust; Greg, 2026-10-21)
 - face or body reshaping

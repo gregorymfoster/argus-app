@@ -51,6 +51,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "description": "Copy the originals into the Library's originals folder (verified) instead of reading them in place. Default: true from a memory card, false from a folder" },
                 "cull": { "type": "boolean",
                     "description": "Then queue an AI cull, edit Suggestions, and suggested captions and Keywords for the new Shoot" },
+                "resume_run": { "type": "integer", "description": "Internal (the Queue's resume_run): finish an Import a quit or crash interrupted, into its Shoot" },
                 "auto": { "type": "boolean",
                     "description": "Then run Auto (as auto_edit) on every new Photo, as one undoable batch" },
                 "prepare": { "type": "boolean",
@@ -204,9 +205,53 @@ impl Tools {
                     .collect::<Vec<_>>())
             }
             "import_folder" => {
+                let mut tool = args.clone();
+                if let Some(o) = tool.as_object_mut() {
+                    o.remove("resume_run");
+                }
                 let a: ImportFolder = parse(args)?;
                 let folder = Path::new(&a.folder);
                 let since = crate::library::time::now();
+                // A resumable run, so a quit, crash or closed lid mid-Import finishes into
+                // the same Shoot on the next start ([`crate::jobs::queue_orphaned_runs`]).
+                let (run, resume) = match a.resume_run {
+                    Some(id) => {
+                        let r = lib.run(id)?;
+                        let shoot = r.args.get("shoot_id").and_then(Value::as_i64);
+                        let resume = shoot
+                            .filter(|s| {
+                                lib.shoots().is_ok_and(|all| all.iter().any(|x| x.id == *s))
+                            })
+                            .map(|shoot_id| crate::library::ImportResume {
+                                shoot_id,
+                                copy_dir: r
+                                    .args
+                                    .get("copy_dir")
+                                    .and_then(Value::as_str)
+                                    .map(|d| lib.resolve(d)),
+                            });
+                        (id, resume)
+                    }
+                    None => {
+                        let name = folder
+                            .file_name()
+                            .map_or_else(|| a.folder.clone(), |n| n.to_string_lossy().into_owned());
+                        let label =
+                            format!("Importing {}", a.shoot_name.as_deref().unwrap_or(&name));
+                        (
+                            lib.start_run("import", &label, &json!({ "tool": tool }), 0)?,
+                            None,
+                        )
+                    }
+                };
+                if !folder.is_dir() && a.resume_run.is_some() {
+                    // The card isn't connected: it resumes once it is.
+                    lib.set_run_status(run, "paused", Some("card"))?;
+                    return one(json!({ "run_id": run, "waiting": "card" }));
+                }
+                lib.set_run_status(run, "running", None)?;
+                let awake = format!("run:{run}");
+                crate::power::hold_awake(&awake, true);
                 let report = lib.import(
                     folder,
                     &ImportOptions {
@@ -214,9 +259,26 @@ impl Tools {
                         files: a.files.map(|f| f.into_iter().map(PathBuf::from).collect()),
                         raw_only: a.raw_only,
                         copy: a.copy.unwrap_or_else(|| is_on_card(folder)),
+                        run: Some(run),
+                        resume,
                         ..Default::default()
                     },
-                )?;
+                );
+                crate::power::hold_awake(&awake, false);
+                let report = match report {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = lib.set_run_status(run, "stopped", Some(&e.0));
+                        return Err(e);
+                    }
+                };
+                if report.card_gone {
+                    // The card went away part way (ejected, or the lid closed on a reader
+                    // that unmounts): the rest comes in when it is back.
+                    lib.set_run_status(run, "paused", Some("card"))?;
+                    return one(report);
+                }
+                lib.set_run_status(run, "done", None)?;
                 // RAWs come in showing the camera's preview; Argus's own render follows on
                 // the background Queue at the Compute level.
                 if let (Some(shoot), 1..) = (report.shoot_id, report.camera_previews) {
@@ -349,7 +411,7 @@ impl Tools {
             }
             "get_preview" => {
                 let a: GetPreview = parse(args)?;
-                let photo = find_photo(&lib, a.photo_id)?;
+                let photo = lib.find_photo(a.photo_id)?;
                 let edge = a.long_edge.unwrap_or(1024).clamp(64, MAX_PREVIEW_EDGE);
                 let img = open_preview(&photo)?.thumbnail(edge, edge).to_rgb8();
                 Ok(vec![
@@ -430,6 +492,8 @@ struct ImportFolder {
     /// Then Prepare the new Shoot ([`crate::prepare`]): its heavy work now, at Full, keeping
     /// the Mac awake (default: as `suggest`).
     prepare: Option<bool>,
+    /// The Queue's `resume_run`: carry on the run a quit or crash interrupted.
+    resume_run: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -481,32 +545,43 @@ struct SetVerdict {
 
 fn set_verdict(lib: &mut Library, a: SetVerdict, batch: Option<BatchId>) -> Result<Vec<Part>> {
     let author = a.author.unwrap_or(Author::Ai);
-    let all = lib.list_photos(&PhotoFilter::default())?;
-    let mut changed = Vec::new();
-    let mut kept = Vec::new();
-    for &id in &a.photo_ids {
-        let p = all
-            .iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| Error(format!("no Photo with id {id}")))?;
-        if author == Author::Ai && p.verdict_by == Some(Author::Person) {
-            kept.push(id);
-        } else {
-            changed.push(id);
-        }
-    }
-    let batch = match batch {
-        Some(b) => b,
-        None => lib.begin_batch(author, "set_verdict")?,
-    };
-    lib.set_verdict(
-        &changed,
+    let batch = batch_or_begin(lib, &a.photo_ids, batch, author, "set_verdict")?;
+    let kept = lib.set_verdict(
+        &a.photo_ids,
         a.verdict,
         author,
         a.reason.as_deref(),
         Some(batch),
     )?;
+    let changed = without(&a.photo_ids, &kept);
     one(json!({ "verdict": a.verdict, "changed": changed, "kept_person_verdicts": kept }))
+}
+
+/// `ids` less `kept`, in order.
+fn without(ids: &[PhotoId], kept: &[PhotoId]) -> Vec<PhotoId> {
+    ids.iter()
+        .copied()
+        .filter(|id| !kept.contains(id))
+        .collect()
+}
+
+/// The batch to write into, beginning one only once every id is known, so a bad id
+/// leaves no empty step in the undo history.
+fn batch_or_begin(
+    lib: &mut Library,
+    ids: &[PhotoId],
+    batch: Option<BatchId>,
+    author: Author,
+    label: &str,
+) -> Result<BatchId> {
+    let all = lib.list_photos(&PhotoFilter::default())?;
+    if let Some(id) = ids.iter().find(|id| !all.iter().any(|p| p.id == **id)) {
+        return Err(Error(format!("no Photo with id {id}")));
+    }
+    match batch {
+        Some(b) => Ok(b),
+        None => lib.begin_batch(author, label),
+    }
 }
 
 fn set_rating(lib: &mut Library, a: SetRating, batch: Option<BatchId>) -> Result<Vec<Part>> {
@@ -514,25 +589,9 @@ fn set_rating(lib: &mut Library, a: SetRating, batch: Option<BatchId>) -> Result
         return Err(Error(format!("stars must be 0 to 5, not {}", a.stars)));
     }
     let author = a.author.unwrap_or(Author::Ai);
-    let all = lib.list_photos(&PhotoFilter::default())?;
-    let mut changed = Vec::new();
-    let mut kept = Vec::new();
-    for &id in &a.photo_ids {
-        let p = all
-            .iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| Error(format!("no Photo with id {id}")))?;
-        if author == Author::Ai && p.stars_by == Some(Author::Person) {
-            kept.push(id);
-        } else {
-            changed.push(id);
-        }
-    }
-    let batch = match batch {
-        Some(b) => b,
-        None => lib.begin_batch(author, "set_rating")?,
-    };
-    lib.set_rating(&changed, a.stars, author, Some(batch))?;
+    let batch = batch_or_begin(lib, &a.photo_ids, batch, author, "set_rating")?;
+    let kept = lib.set_rating(&a.photo_ids, a.stars, author, Some(batch))?;
+    let changed = without(&a.photo_ids, &kept);
     one(json!({ "stars": a.stars, "changed": changed, "kept_person_ratings": kept }))
 }
 

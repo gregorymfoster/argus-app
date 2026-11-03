@@ -13,7 +13,7 @@ import { PhotoView } from '../ui/PhotoView';
 import { TakesPanel } from '../ui/Suggestions';
 import { Filmstrip } from '../ui/Filmstrip';
 import { PicksRail } from '../ui/PicksRail';
-import { ModeSwitch } from '../ui/ViewBar';
+import { HeadLead, ModeSwitch } from '../ui/ViewBar';
 import { picksOf } from '../data/modes';
 import { ApplyLook, ApplyLookOffer, useOfferCount } from '../ui/ApplyLook';
 import { openApply } from '../ui/ApplyEdit';
@@ -558,6 +558,10 @@ export function EditScreen({ id }: { id: string }) {
       {onPick && <PicksRail open={p.id} />}
       <main className="panel main" style={{ flexDirection: 'column' }}>
         <header className="panel-head toolbar" data-testid="edit-head">
+          {/* Stands in for the Picks rail when it's hidden (a narrow window, or a Photo that isn't a Pick). */}
+          <HeadLead className={onPick ? 'edit-lead' : ''}>
+            <span className="view-file">{picks.length} Picks</span>
+          </HeadLead>
           <ModeSwitch mode="edit" current={p.id} />
           <span className="vsep" />
           <span className="mono" style={{ fontSize: 12 }}>{p.file}</span>
@@ -571,20 +575,20 @@ export function EditScreen({ id }: { id: string }) {
           </Tip>
           <ApplyLook hero={p} recipe={live} open={applyOpen} onOpenChange={setApplyOpen} before={before} onApplied={() => setOfferGone(offerKey)}>
             <Button variant="ghost" size="sm" className={applyOpen ? 'bg-chip text-text' : undefined} aria-label="Apply look to Shoot (⇧⌘A)" title="Apply this Photo's look to the rest of the Shoot, each matched to its own light (⇧⌘A)" data-testid="apply-look-open">
-              <Copy size={12} /> Apply look
+              <Copy size={12} /> <span className="btn-label">Apply look</span>
               {offer && <span className="apply-dot" aria-hidden />}
             </Button>
           </ApplyLook>
           <Framing open={framingOpen} onOpenChange={setFramingOpen} before={before}>
             <Button variant="ghost" size="sm" className={framingOpen ? 'bg-chip text-text' : undefined} aria-label="Crop and straighten the Shoot (⌥⌘R)" title="Straighten crooked horizons and walls, and tighten loose framing, across the Shoot (⌥⌘R)" data-testid="framing-open">
-              <CropIcon size={12} /> Crop &amp; straighten
+              <CropIcon size={12} /> <span className="btn-label">Crop &amp; straighten</span>
             </Button>
           </Framing>
-          <Button variant="ghost" size="sm" className={masks ? 'bg-chip text-text' : undefined} onClick={() => setMasks(!masks)} aria-pressed={masks}>
-            <Layers size={12} /> Masks
+          <Button variant="ghost" size="sm" className={masks ? 'bg-chip text-text' : undefined} onClick={() => setMasks(!masks)} aria-pressed={masks} title="Masks">
+            <Layers size={12} /> <span className="btn-label">Masks</span>
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setTab('history')}>
-            <History size={12} /> {versions.length ? `v${versions.length}` : 'History'}
+          <Button variant="ghost" size="sm" onClick={() => setTab('history')} title="History">
+            <History size={12} /> <span className="btn-label">{versions.length ? `v${versions.length}` : 'History'}</span>
           </Button>
         </header>
         <div className="stage" data-testid="edit-stage" {...zp.stageProps}>

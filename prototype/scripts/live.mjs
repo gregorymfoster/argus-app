@@ -164,6 +164,13 @@ try {
   const aborted = /due to access control checks|^TypeError: Load failed$/;
   p.on('pageerror', (e) => aborted.test(e.message) || failures.push(`page error: ${e.message}`));
   const state = async (id) => (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === id);
+  // After a key or click: the pause a person would take, then keep asking until `ok` holds or
+  // 10 s pass, instead of reading once after a fixed pause (those lost races under ui-gate's
+  // load, 2026-11-02). The check that follows reads again and reports what it found.
+  const settle = async (ms, ok) => {
+    await p.waitForTimeout(ms);
+    for (const t0 = Date.now(); !(await ok().catch(() => false)) && Date.now() - t0 < 10000; ) await p.waitForTimeout(150);
+  };
   const recipeOf = async (id) => (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: id }) }))?.recipe?.global ?? {};
   const target = photos[photos.length - 1].id;
   const gotoGrid = async () => {
@@ -196,28 +203,28 @@ try {
     const want = first.verdict === 'pick' ? 'reject' : 'pick';
     await p.locator(`[data-testid="tile-${first.id}"]`).click();
     await p.keyboard.press(want === 'pick' ? 'p' : 'x');
-    await p.waitForTimeout(500);
+    await settle(500, async () => { const after = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === first.id); return after.verdict === want && after.verdict_by === 'person'; });
     const after = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === first.id);
     check(after.verdict === want && after.verdict_by === 'person', `pressing ${want === 'pick' ? 'P' : 'X'} wrote ${want} to the Library (got ${after.verdict} by ${after.verdict_by})`);
     await p.screenshot({ path: `${out}live-flagged.png` });
 
     // The Library is the only source of truth: ⌘Z is the engine's undo_batch, ⇧⌘Z undoes the Undo.
     await p.keyboard.press('ControlOrMeta+z');
-    await p.waitForTimeout(500);
+    await settle(500, async () => { const unflagged = await state(first.id); return unflagged.verdict === first.verdict && unflagged.verdict_by === first.verdict_by; });
     const unflagged = await state(first.id);
     check(unflagged.verdict === first.verdict && unflagged.verdict_by === first.verdict_by, `⌘Z undid the flag in the Library (got ${unflagged.verdict} by ${unflagged.verdict_by})`);
     await p.keyboard.press('ControlOrMeta+Shift+z');
-    await p.waitForTimeout(500);
+    await settle(500, async () => { const redone = await state(first.id); return redone.verdict === want && redone.verdict_by === 'person'; });
     const redone = await state(first.id);
     check(redone.verdict === want && redone.verdict_by === 'person', `⇧⌘Z redid it (got ${redone.verdict} by ${redone.verdict_by})`);
     await p.locator(`[data-testid="tile-${first.id}"]`).click(); // P moved on to the next Photo
     await p.keyboard.press('3');
-    await p.waitForTimeout(500);
+    await settle(500, async () => { const starred = await state(first.id); return starred.stars === 3 && starred.stars_by === 'person'; });
     const starred = await state(first.id);
     check(starred.stars === 3 && starred.stars_by === 'person', `pressing 3 wrote three stars to the Library (got ${starred.stars} by ${starred.stars_by})`);
     // Edit › Undo in the app's menu bar takes the same path as ⌘Z (src/ui/editMenu.ts).
     await p.evaluate(() => window.dispatchEvent(new CustomEvent('argus:edit-menu', { detail: 'undo' })));
-    await p.waitForTimeout(500);
+    await settle(500, async () => (await state(first.id)).stars === first.stars);
     check((await state(first.id)).stars === first.stars, 'Edit › Undo put the stars back');
     const shown = await p.locator(`[data-testid="tile-${first.id}"]`).getAttribute('data-verdict');
     check(shown === want, `the tile shows what the Library has (${shown})`);
@@ -240,17 +247,17 @@ try {
     await p.waitForTimeout(400);
     const photoZoom = () => p.evaluate(() => Number([...document.querySelectorAll('[data-testid="loupe"] *')].find((n) => n.style?.getPropertyValue('--zoom'))?.style.getPropertyValue('--zoom') ?? 1));
     await zoomMenu('in');
-    await p.waitForTimeout(300);
+    await settle(300, async () => (await photoZoom()) > 1 && (await pageZoom()) === '1');
     check((await photoZoom()) > 1 && (await pageZoom()) === '1', `View › Zoom In in Loupe zooms the photo, not the app (photo ${await photoZoom()}, app ${await pageZoom()})`);
     await zoomMenu('reset');
-    await p.waitForTimeout(300);
+    await settle(300, async () => (await photoZoom()) === 1);
     check((await photoZoom()) === 1, `View › Actual Size fits the photo again (${await photoZoom()})`);
     await p.evaluate(() => {
       const st = document.querySelector('[data-testid="loupe"]');
       const r = st.getBoundingClientRect();
       st.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -60, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, bubbles: true, cancelable: true }));
     });
-    await p.waitForTimeout(300);
+    await settle(300, async () => { const pinched = await photoZoom(); return pinched > 1; });
     const pinched = await photoZoom();
     check(pinched > 1, `a trackpad pinch (ctrl+wheel) zooms the photo (${pinched})`);
     await zoomMenu('reset');
@@ -262,7 +269,7 @@ try {
       st.dispatchEvent(g('gesturechange', 2));
       st.dispatchEvent(g('gestureend', 2));
     });
-    await p.waitForTimeout(300);
+    await settle(300, async () => (await photoZoom()) >= 1.9);
     check((await photoZoom()) >= 1.9, `a WebKit pinch gesture zooms the photo (${await photoZoom()})`);
     await p.screenshot({ path: `${out}live-loupe-zoomed.png` });
     await zoomMenu('reset');
@@ -325,12 +332,12 @@ try {
       await p.screenshot({ path: `${out}live-bursts.png` });
       const stack = culled.filter((x) => x.stack === culled[0].stack).sort((a, b) => a.stack_rank - b.stack_rank);
       await p.keyboard.press('Enter');
-      await p.waitForTimeout(600);
+      await settle(600, async () => { const kept = (await api(`/api/photos?shoot_id=${shoot.id}`)).filter((x) => stack.some((y) => y.id === x.id)); const best = kept.find((x) => x.id === stack[0].id); return best.verdict === 'pick' && best.verdict_by === 'person' && kept.filter((x) => x.verdict === 'pick').length === 1; });
       const kept = (await api(`/api/photos?shoot_id=${shoot.id}`)).filter((x) => stack.some((y) => y.id === x.id));
       const best = kept.find((x) => x.id === stack[0].id);
       check(best.verdict === 'pick' && best.verdict_by === 'person' && kept.filter((x) => x.verdict === 'pick').length === 1, `Enter in the Stacks view kept the best frame of the burst (got ${kept.map((x) => `${x.verdict}/${x.verdict_by}`)})`);
       await p.keyboard.press('ControlOrMeta+z');
-      await p.waitForTimeout(500);
+      await settle(500, async () => (await state(stack[0].id)).verdict_by === 'ai');
       check((await state(stack[0].id)).verdict_by === 'ai', '⌘Z undid keeping it');
       await p.keyboard.press('Escape');
       await p.waitForSelector('.tile');
@@ -350,8 +357,12 @@ try {
     const ticked = (await p.getByTestId('apply-edit-tile').evaluateAll((els) => els.filter((e) => e.getAttribute('aria-pressed') !== 'false').map((e) => e.getAttribute('aria-label') ?? ''))).map((l) => l.split(',')[0]);
     await p.getByTestId('apply-edit-go').click();
     const row = p.getByTestId('auto-progress');
-    await row.waitFor({ timeout: 10000 });
-    check(/Auto on \d+ Photos?/.test(await row.innerText()), 'Auto all shows a progress row in the chat');
+    // The row can come and go between the wait and the read on a slow box (Mac thread,
+    // 2026-11-02: innerText timed out): read it once, short, and accept a run that already ended.
+    await row.waitFor({ timeout: 10000 }).catch(() => {});
+    const rowText = await row.innerText({ timeout: 2000 }).catch(() => '');
+    const endedFirst = !rowText && (await p.getByText(/Auto applied to \d+ Photos?/).first().isVisible());
+    check(/Auto on \d+ Photos?/.test(rowText) || endedFirst, `Auto all shows a progress row in the chat (${rowText ? 'row read' : endedFirst ? 'finished before it could be read' : 'none'})`);
     await row.getByText(/\d+ of \d+/).waitFor({ timeout: 10000 }).catch(() => {});
     await p.locator('.panel.agent').screenshot({ path: `${out}live-auto-progress.png` }).catch(() => {});
     // A fast machine can finish 3 Photos before the sidebar is read: poll, and only let
@@ -374,7 +385,7 @@ try {
     const wrong = photos.filter((x, i) => (JSON.stringify(after[i]) !== JSON.stringify(before[i])) !== isIn(i)).map((x) => x.file_name);
     check(ticked.length > 0 && !wrong.length, `Auto all changed every ticked Photo and nothing else (ticked: ${ticked.join(', ')}; wrong: ${wrong.join(', ') || 'none'})`);
     await p.locator('.panel.agent').getByRole('button', { name: 'Undo' }).last().click();
-    await p.waitForTimeout(1500);
+    await settle(1500, async () => { const undone = await Promise.all(photos.map((x) => recipeOf(x.id))); return undone.every((g, i) => JSON.stringify(g) === JSON.stringify(before[i])); });
     const undone = await Promise.all(photos.map((x) => recipeOf(x.id)));
     check(undone.every((g, i) => JSON.stringify(g) === JSON.stringify(before[i])), 'Undo in the chat put every Recipe back');
   }
@@ -420,7 +431,7 @@ try {
     check(own.length === 1 && own[0].author === 'ai', `History shows the Agent's Version and nothing else (${versions.map((v) => v.label).join(', ')})`);
     await p.screenshot({ path: `${out}live-agent-edit.png` });
     await p.locator('.agent').getByRole('button', { name: 'Undo', exact: true }).click();
-    await p.waitForTimeout(1000);
+    await settle(1000, async () => { const undone = await recipeOf(target); return !undone.temp && !undone.contrast; });
     const undone = await recipeOf(target);
     check(!undone.temp && !undone.contrast, `Undo in the chat put the Recipe back (${JSON.stringify(undone)})`);
     await p.screenshot({ path: `${out}live-agent-undo.png` });
@@ -526,7 +537,7 @@ try {
     await p.locator('.stage').click();
     const suggestBefore = suggestCalls;
     await p.keyboard.press('r');
-    await p.locator('.take-name', { hasText: 'Punchy' }).waitFor({ timeout: 30000 });
+    await p.locator('.take-name', { hasText: 'Punchy' }).waitFor({ timeout: 90000 }); // the Queue runs the takes behind other work; 30 s ran out under heavy load (2026-11-02)
     // The takes may already show from the start-up Suggestions; wait for R's own requests.
     for (let i = 0; i < 60 && suggestCalls - suggestBefore < 2; i++) await p.waitForTimeout(500);
     await p.waitForTimeout(1000);
@@ -544,7 +555,7 @@ try {
     await p.waitForTimeout(800); // the take's render
     await p.screenshot({ path: `${out}live-suggestions.png` });
     await p.keyboard.press('Enter');
-    await p.waitForTimeout(1200);
+    await settle(1200, async () => { const accepted = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) }); return accepted?.recipe?.global?.exposure === 0.7 && accepted?.recipe?.crop?.w === 0.8; });
     const accepted = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
     check(accepted?.recipe?.global?.exposure === 0.7 && accepted?.recipe?.crop?.w === 0.8, `accepting a take saved it with its crop (${JSON.stringify(accepted?.recipe)})`);
     const history = await api('/api/list_versions', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
@@ -572,7 +583,7 @@ try {
     const film = p.getByTestId('section-presets-Film');
     if ((await film.locator('.dev-section-toggle').getAttribute('aria-expanded')) !== 'true') await film.locator('.dev-section-toggle').click();
     await film.getByTestId('preset-warm-film').click();
-    await p.waitForTimeout(1500);
+    await settle(1500, async () => { const preset = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) }); const warmed = (preset?.recipe?.global?.temp ?? 0) - (autoed?.recipe?.global?.temp ?? 0); return warmed === 12 && preset?.recipe?.presets?.[0]?.id === 'warm-film' && preset?.recipe?.crop?.w === cropW; });
     const preset = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
     const warmed = (preset?.recipe?.global?.temp ?? 0) - (autoed?.recipe?.global?.temp ?? 0);
     check(warmed === 12 && preset?.recipe?.presets?.[0]?.id === 'warm-film' && preset?.recipe?.crop?.w === cropW, `the Warm film preset was saved on top of Auto (temp +${warmed}, remembered as ${preset?.recipe?.presets?.[0]?.id})`);
@@ -605,7 +616,7 @@ try {
     await p.getByTestId('presets-suggested').getByTestId(`preset-${recId}`).click();
     await p.getByRole('tab', { name: 'Edit', exact: true }).click();
     await p.getByTestId('fix-shadows').click();
-    await p.waitForTimeout(1500);
+    await settle(1500, async () => { const rec = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) }); const on = (rec?.recipe?.presets ?? []).map((x) => x.id); return on.includes(recId) && on.includes('fix-shadows') && !on.includes('warm-film'); });
     const rec = await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) });
     const on = (rec?.recipe?.presets ?? []).map((x) => x.id);
     check(on.includes(recId) && on.includes('fix-shadows') && !on.includes('warm-film'), `a suggested Look replaced Warm film and Lift shadows stacked on it (${on.join(', ')})`);
@@ -627,17 +638,17 @@ try {
     await p.getByRole('button', { name: 'Adjust' }).click();
     await p.getByRole('slider', { name: 'Contrast', exact: true }).focus();
     for (let i = 0; i < 5; i++) await p.keyboard.press('ArrowRight');
-    await p.waitForTimeout(1700);
+    await settle(1700, async () => (await lookContrast()) === 5);
     check((await lookContrast()) === 5, `a Look slider drag reached the Library (contrast ${await lookContrast()})`);
     await p.locator(`[data-testid="batch-${pick.id}"]`).click();
     await p.keyboard.press('ControlOrMeta+z');
-    await p.waitForTimeout(800);
+    await settle(800, async () => (await lookContrast()) === 0);
     check((await lookContrast()) === 0, `⌘Z undid the Look drag in the Library (contrast ${await lookContrast()})`);
     await p.keyboard.press('ControlOrMeta+Shift+z');
-    await p.waitForTimeout(800);
+    await settle(800, async () => (await lookContrast()) === 5);
     check((await lookContrast()) === 5, `⇧⌘Z redid it (contrast ${await lookContrast()})`);
     await p.getByRole('button', { name: 'Remove Look' }).click();
-    await p.waitForTimeout(800);
+    await settle(800, async () => (await lookOf()) === null);
     check((await lookOf()) === null, `Remove Look took the Pick out from under it (${await lookOf()})`);
     await p.locator(`[data-testid="batch-${pick.id}"]`).click();
     await p.keyboard.press('ControlOrMeta+z');
@@ -657,7 +668,7 @@ try {
     await p.keyboard.press('ControlOrMeta+a');
     await p.keyboard.type('2026-10-10 Boat tour');
     await p.keyboard.press('Enter');
-    await p.waitForTimeout(500);
+    await settle(500, async () => { const renamed = (await api('/api/list_shoots')).find((s) => s.id === shoot.id); return renamed.name === '2026-10-10_Boat-tour'; });
     const renamed = (await api('/api/list_shoots')).find((s) => s.id === shoot.id);
     check(renamed.name === '2026-10-10_Boat-tour', `renaming in the sidebar stored the Shoot as ${renamed.name}`);
     check((await row.textContent()).includes('2026-10-10_Boat-tour'), 'the sidebar shows the new name');
@@ -676,14 +687,14 @@ try {
     await p.getByTestId('remove-dialog').waitFor();
     await p.screenshot({ path: `${out}live-remove-ask.png` });
     await p.getByTestId('remove-confirm').click();
-    await p.waitForTimeout(600);
+    await settle(600, async () => { const without = await api(`/api/photos?shoot_id=${shoot.id}`); return without.length === inShoot.length - 1 && !without.some((x) => x.id === victim.id); });
     const without = await api(`/api/photos?shoot_id=${shoot.id}`);
     check(without.length === inShoot.length - 1 && !without.some((x) => x.id === victim.id), `Remove took ${victim.file_name} out of the Library (${without.length} left)`);
     check(existsSync(victim.path), 'its original is still on disk');
     check((await p.locator(`[data-testid="tile-${victim.id}"]`).count()) === 0, 'the grid dropped it');
     await p.screenshot({ path: `${out}live-removed.png` });
     await p.keyboard.press('ControlOrMeta+z');
-    await p.waitForTimeout(800);
+    await settle(800, async () => { const back = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === victim.id); return back && back.verdict === victim.verdict; });
     const back = (await api(`/api/photos?shoot_id=${shoot.id}`)).find((x) => x.id === victim.id);
     check(back && back.verdict === victim.verdict, `⌘Z put it back with its Verdict (${back?.verdict})`);
     check((await p.locator(`[data-testid="tile-${victim.id}"]`).count()) === 1, 'the grid shows it again');
@@ -703,7 +714,7 @@ try {
     await p.keyboard.press('Escape');
     await p.getByLabel('Caption').fill('Lunch in Alfama.');
     await p.getByLabel('Caption').blur();
-    await p.waitForTimeout(500);
+    await settle(500, async () => { const tags = (await api('/api/read_tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids: [Number(id)] }) }))[0]; return tags?.keywords?.some((k) => k.keyword === 'Places|Portugal|Lisbon' && !k.suggested); });
     const tags = (await api('/api/read_tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids: [Number(id)] }) }))[0];
     check(tags?.keywords?.some((k) => k.keyword === 'Places|Portugal|Lisbon' && !k.suggested), `K adds a kept Keyword in the engine (${JSON.stringify(tags?.keywords)})`);
     check(tags?.caption?.text === 'Lunch in Alfama.' && !tags.caption.suggested, `the caption is saved as the person's (${JSON.stringify(tags?.caption)})`);
@@ -720,7 +731,7 @@ try {
     const before = await p.locator('.stage .photo img').first().getAttribute('src');
     await sec.getByRole('slider', { name: 'Lens Blur amount' }).focus();
     for (let i = 0; i < 10; i++) await p.keyboard.press('ArrowRight');
-    await p.waitForTimeout(1700);
+    await settle(1700, async () => { const lb = (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) }))?.recipe?.lensBlur; return lb?.amount > 0; });
     const lb = (await api('/api/read_recipe', { method: 'POST', body: JSON.stringify({ photo_id: target }) }))?.recipe?.lensBlur;
     check(lb?.amount > 0, `the Lens Blur Amount saved to the Recipe (${JSON.stringify(lb)})`);
     const depth = await p.getByTestId('depth-bar').waitFor({ timeout: 60000 }).then(() => true, () => false);
@@ -761,7 +772,7 @@ try {
     await p.keyboard.press('ControlOrMeta+Enter');
     await p.waitForURL(/#\/cull/).catch(() => {});
     await p.waitForSelector('[data-testid^="tile-"]', { timeout: 15000 }).catch(() => {});
-    await p.waitForTimeout(500);
+    await settle(500, async () => { const tiles = await p.locator('[data-testid^="tile-"]').count(); return tiles >= 2 && tiles < photos.length + 1; });
     const tiles = await p.locator('[data-testid^="tile-"]').count();
     check(tiles >= 2 && tiles < photos.length + 1, `⌘↵ opens the matches in the grid (${tiles} tiles)`);
     check(/in 1 Shoot/.test(await p.locator('.found-line').innerText().catch(() => '')), 'the header says how many it found');
@@ -776,12 +787,12 @@ try {
     const everything = await api('/api/photos');
     await p.getByTestId('nav-all').click();
     await p.waitForSelector('.tile');
-    await p.waitForTimeout(600);
+    await settle(600, async () => (await p.locator('h1').first().textContent()) === 'All photos');
     check((await p.locator('h1').first().textContent()) === 'All photos', 'All photos opens a Library-wide grid');
     check((await p.locator('[data-testid="ai-cull"]').count()) === 0, 'the Library-wide grid hides the Shoot-only AI cull');
     await p.getByTestId('nav-picks').click();
     await p.waitForSelector('[data-testid="nav-picks"].active');
-    await p.waitForTimeout(600);
+    await settle(600, async () => { const picksShown = Number(await p.getByTestId('nav-picks').locator('.count').textContent()); return picksShown === everything.filter((x) => x.verdict === 'pick').length; });
     const picksShown = Number(await p.getByTestId('nav-picks').locator('.count').textContent());
     check(picksShown === everything.filter((x) => x.verdict === 'pick').length, `Picks shows every Pick in the Library (${picksShown})`);
     await p.screenshot({ path: `${out}live-picks.png` });

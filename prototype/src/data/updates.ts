@@ -4,7 +4,8 @@
 // screenshots.
 
 import { useEffect, useState } from 'react';
-import { IN_APP, onAppEvent } from './backend';
+import { IN_APP } from './backend';
+import { listenApp, onAppEvent, shellInvoke } from './shell';
 
 export interface UpdateStatus {
   state: 'off' | 'idle' | 'checking' | 'downloading' | 'ready' | 'current' | 'error';
@@ -29,20 +30,12 @@ const publish = (s: UpdateStatus) => {
   subs.forEach((f) => f(s));
 };
 
-async function tauri() {
-  const [{ invoke }, { listen }] = await Promise.all([import('@tauri-apps/api/core'), import('@tauri-apps/api/event')]);
-  return { invoke, listen };
-}
-
 let started = false;
 function start() {
   if (started || !IN_APP || FAKE) return;
   started = true;
-  void tauri()
-    .then(async ({ invoke, listen }) => {
-      await listen<UpdateStatus>('update', (e) => publish(e.payload));
-      publish(await invoke<UpdateStatus>('update_status'));
-    })
+  void listenApp<UpdateStatus>('update', publish)
+    .then(async () => publish(await shellInvoke<UpdateStatus>('update_status')))
     .catch((e) => console.warn('update status:', e));
 }
 
@@ -62,18 +55,16 @@ export function useUpdate(): UpdateStatus | null {
 export async function checkForUpdates(): Promise<void> {
   if (FAKE) return publish({ ...FAKE, state: FAKE.state === 'ready' ? 'ready' : 'current', checked_at: Date.now() / 1000 });
   if (!IN_APP) return publish({ state: 'off', current: '', version: null, notes: null, done: 0, total: null, checked_at: null, error: null });
-  const { invoke } = await tauri();
   // What the check finds arrives as `update` events; the reply is the state before it,
   // which only matters when this build can't update at all.
-  const before = await invoke<UpdateStatus>('check_for_updates');
+  const before = await shellInvoke<UpdateStatus>('check_for_updates');
   if (before.state === 'off' || before.state === 'ready') publish({ ...before });
 }
 
 /** "Restart to update": the new version is already installed. */
 export async function restartToUpdate(): Promise<void> {
   if (!IN_APP) return;
-  const { invoke } = await tauri();
-  await invoke('restart_to_update');
+  await shellInvoke('restart_to_update');
 }
 
 /** Run `f` when the app menu's Check for Updates… is chosen. */

@@ -68,6 +68,8 @@
   --chip: rgb(255 255 255 / 0.075);
   /* Sidebar and list row height, and the icon size in rows and headers. */
   --row-h: 28px;
+  /* Every mode's left column (sidebar, rails, Export's presets, HeadLead): the mode switch starts after it. */
+  --rail-w: 232px;
   /* Ends of a tone ramp (the Luminance range band): pure black and white in any theme. */
   --tone-0: #000;
   --tone-1: #fff;
@@ -198,6 +200,8 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .panel-head.toolbar .head-meta { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .panel-head.toolbar .queue-chip { flex: 0 1 auto; min-width: 0; max-width: 260px; }
 @container (max-width: 900px) { .panel-head.toolbar .head-hint, .panel-head.toolbar .head-meta { display: none; } }
+/* Edit in a narrow window (its header carries the HeadLead): the tool buttons keep their icons; the title names them. */
+@container (max-width: 700px) { .panel-head.toolbar .btn-label { display: none; } }
 .panel-head.toolbar h1 { flex: 0 1 auto; min-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @container (max-width: 940px) { .wide-only { display: none; } }
 @container (max-width: 780px) { .panel-head.toolbar [role='group'] .n { display: none; } }
@@ -213,7 +217,7 @@ kbd.quiet.quiet { background: none; border: 0; color: var(--text-3); min-width: 
 .scroll { overflow: auto; flex: 1 1 auto; min-height: 0; }
 
 /* Sidebar */
-.sidebar { width: 212px; flex: none; border-right: 1px solid var(--border); padding: 10px 8px 52px; display: flex; flex-direction: column; gap: 2px; }
+.sidebar { width: var(--rail-w); flex: none; border-right: 1px solid var(--border); padding: 10px 8px 52px; display: flex; flex-direction: column; gap: 2px; }
 .brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 10px; font-weight: 600; letter-spacing: -0.01em; }
 .search { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 5px 0 9px; border-radius: 6px; border: 1px solid transparent; background: var(--fill); color: var(--text-3); margin-bottom: 6px; text-align: left; transition: border-color var(--fast), color var(--fast), background var(--fast); }
 .search:hover { color: var(--text-2); background: var(--fill-hover); }
@@ -519,7 +523,7 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .store-big .faint { font-size: 11.5px; font-weight: 400; }
 .store-big.ok, .store .ok { color: var(--done); }
 .store-table { display: grid; grid-template-columns: minmax(150px, 1.3fr) minmax(90px, 1fr) 72px 56px minmax(120px, 1.4fr); font-size: 12px; }
-.store-history { grid-template-columns: 110px minmax(120px, 1fr) 120px 90px minmax(80px, 110px); }
+.store-history { grid-template-columns: 136px minmax(120px, 1fr) 120px 90px minmax(80px, 110px); }
 .store-table > div { display: contents; }
 .store-table > div > span { display: block; line-height: 26px; min-width: 0; padding-right: 10px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .store-table > .store-head > span { line-height: 22px; font-size: 11px; color: var(--text-3); }
@@ -993,6 +997,16 @@ pre.recipe { margin: 0; padding: 16px; font: 11.5px/1.5 var(--mono); color: var(
 .set-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .set-title { font-size: 12.5px; color: var(--text); }
 .set-note { font-size: 11.5px; color: var(--text-3); margin: 0; }
+/* Settings › Export › Google Photos (settings/GooglePhotos.tsx) */
+.gp-account { gap: 8px; padding: 2px 0 10px; font-size: 12px; color: var(--text-2); }
+.gp-steps { margin: 0 0 8px; padding-left: 18px; list-style: decimal; display: grid; gap: 2px; }
+.gp-steps b { font-weight: 500; color: var(--text-2); }
+.gp-form { display: grid; gap: 6px; }
+.gp-actions { gap: 6px; }
+.gp-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
+.gp-dot.on { background: var(--done); }
+.gp-dot.wait { background: var(--shoot); animation: gp-pulse 1.2s ease-in-out infinite; }
+@keyframes gp-pulse { 50% { opacity: 0.35; } }
 .set-control { display: flex; align-items: center; gap: 8px; flex: none; }
 .set-status { font-size: 11.5px; color: #7cc287; display: inline-flex; align-items: center; gap: 6px; min-width: 110px; }
 .set-status.bad { color: var(--reject); }

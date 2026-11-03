@@ -8,15 +8,9 @@
 //
 //   node scripts/apply-edit-check.mjs
 
-import { createServer } from 'vite';
-import { chromium } from 'playwright';
-import { execFileSync, spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { benchLibrary, launchBrowser, startBridge, startVite } from './harness.mjs';
 
-const root = new URL('../../', import.meta.url).pathname;
-const bin = process.env.ARGUS_BIN ?? join(root, 'target/fast/argus');
 const out = new URL('../out/shots/', import.meta.url).pathname;
 mkdirSync(out, { recursive: true });
 
@@ -27,33 +21,16 @@ const FRAMES = [
   ['2025-12-28_DSC04634.jpg', 'B4_hand.jpg'],
   ['2024-06-04_DSC04427.jpg', 'B5_alone.jpg'],
 ];
-const tmp = mkdtempSync(join(tmpdir(), 'argus-apply-edit-'));
-const src = join(tmp, '2026-11-02_Apply-Edit');
-mkdirSync(src);
-const t0 = 1_792_000_000;
-FRAMES.forEach(([from, to], i) => {
-  copyFileSync(join(root, 'fixtures/bench/edit/greg', from), join(src, to));
-  utimesSync(join(src, to), t0 + i * 20, t0 + i * 20);
-});
-const library = join(tmp, 'lib');
-execFileSync(bin, ['tool', 'import_folder', JSON.stringify({ folder: src }), '--library', library], { stdio: 'ignore' });
+const library = benchLibrary('apply-edit', '2026-11-02_Apply-Edit', FRAMES);
 
 const failures = [];
 const check = (ok, msg) => (ok ? console.log(`ok   ${msg}`) : (failures.push(msg), console.log(`FAIL ${msg}`)));
 const PORT = 7883;
 const api = (cmd, body = {}) => fetch(`http://127.0.0.1:${PORT}/api/${cmd}`, { method: 'POST', body: JSON.stringify(body) }).then((r) => r.json());
-const serve = spawn(bin, ['serve', '--library', library, '--port', String(PORT)], {
-  env: { ...process.env, ARGUS_COMPUTE: 'full', ARGUS_MODEL_LOCK_DIR: mkdtempSync(join(tmpdir(), 'argus-model-')), ARGUS_FOREGROUND_DIR: mkdtempSync(join(tmpdir(), 'argus-foreground-')) },
-  stdio: ['ignore', 'inherit', 'inherit'],
-});
-const vite = await createServer({ configFile: new URL('../vite.config.ts', import.meta.url).pathname, server: { port: 5203, strictPort: true, proxy: { '/api': `http://127.0.0.1:${PORT}`, '/previews': `http://127.0.0.1:${PORT}` } }, logLevel: 'error' });
-await vite.listen();
-const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
+const { proc: serve } = await startBridge({ library, port: PORT, env: { ARGUS_COMPUTE: 'full' } });
+const vite = await startVite(5203, PORT);
+const browser = await launchBrowser();
 try {
-  for (let i = 0; i < 100; i++) {
-    if (await fetch(`http://127.0.0.1:${PORT}/api/list_shoots`).then((r) => r.ok, () => false)) break;
-    await new Promise((r) => setTimeout(r, 200));
-  }
   for (const j of await api('list_jobs', { status: 'queued' })) await api('cancel_job', { job_id: j.id });
   const photos = await api('list_photos', {});
   const id = (n) => photos.find((ph) => ph.file_name === n).id;

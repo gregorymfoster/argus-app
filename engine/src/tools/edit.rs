@@ -54,7 +54,7 @@ impl Tools {
         match name {
             "read_recipe" => {
                 let a: PhotoArg = parse(args)?;
-                find_photo(&lib, a.photo_id)?;
+                lib.find_photo(a.photo_id)?;
                 one(lib.read_recipe(a.photo_id)?)
             }
             "write_recipe" => {
@@ -70,7 +70,7 @@ impl Tools {
                 }
                 recipe.global = recipe.global.clamped();
                 for &id in &a.photo_ids {
-                    find_photo(&lib, id)?;
+                    lib.find_photo(id)?;
                 }
                 let batch = batch_or(&mut lib, batch, "write_recipe")?;
                 let mut versions = BTreeMap::new();
@@ -89,8 +89,8 @@ impl Tools {
                 }
                 let mut next = Vec::new();
                 for &id in &a.photo_ids {
-                    find_photo(&lib, id)?;
-                    let mut r = current_recipe(&lib, id)?;
+                    lib.find_photo(id)?;
+                    let mut r = lib.current_recipe(id)?;
                     for (path, v) in &a.set {
                         r.set_value(path, v, a.relative)?;
                     }

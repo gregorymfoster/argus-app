@@ -34,6 +34,12 @@ pub struct ImportOptions {
     /// card-read speed) and leave Argus's own render to [`Library::render_previews`]. Off
     /// renders every preview during the Import.
     pub camera_previews: bool,
+    /// The resumable run recording this Import ([`super::Run`]): it learns the Shoot and the
+    /// copy folder as soon as they exist, so a resumed Import finishes into them.
+    pub run: Option<super::RunId>,
+    /// Carry on an interrupted Import: into this Shoot (and copy folder), whose Photos are
+    /// skipped as already there.
+    pub resume: Option<ImportResume>,
     /// Photos decoded at once. Each full-resolution RAW holds roughly 0.5 GB while it
     /// develops, so this caps peak memory; develop itself still uses every core.
     pub max_in_flight: usize,
@@ -48,9 +54,18 @@ impl Default for ImportOptions {
             copy: false,
             preview_long_edge: None,
             camera_previews: true,
+            run: None,
+            resume: None,
             max_in_flight: 4,
         }
     }
+}
+
+/// Where an interrupted Import carries on ([`ImportOptions::resume`]).
+#[derive(Debug, Clone)]
+pub struct ImportResume {
+    pub shoot_id: ShootId,
+    pub copy_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +85,13 @@ pub struct ImportReport {
     /// Where the originals were copied to (relative to the Library), when they were.
     pub copied_to: Option<String>,
     pub failed: Vec<ImportFailure>,
+    /// The folder went away part way (a card ejected, or a reader that unmounts while the
+    /// Mac sleeps): the Import stopped there and resumes when it is back.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub card_gone: bool,
+    /// Photos an interrupted Import had already brought in, when this one resumed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumed_with: Option<usize>,
     /// Photos showing the camera's preview until [`Library::render_previews`] runs.
     pub camera_previews: usize,
     pub scan_ms: f64,
@@ -149,8 +171,19 @@ pub(super) fn run(lib: &mut Library, folder: &Path, opts: &ImportOptions) -> Res
             .map_err(db_err)?
     };
     let settings = lib.settings()?;
-    let copy_dir = match (opts.copy, files.first()) {
-        (true, Some(_)) => Some(originals_dir(&lib.root, &files, &shoot_name)?),
+    let copy_dir = match (opts.copy, files.first(), &opts.resume) {
+        (
+            true,
+            Some(_),
+            Some(ImportResume {
+                copy_dir: Some(d), ..
+            }),
+        ) => {
+            std::fs::create_dir_all(d).map_err(|e| Error(format!("{}: {e}", d.display())))?;
+            clear_tmp(d);
+            Some(d.clone())
+        }
+        (true, Some(_), _) => Some(originals_dir(&lib.root, &files, &shoot_name)?),
         _ => None,
     };
     let ctx = Ctx {
@@ -170,24 +203,47 @@ pub(super) fn run(lib: &mut Library, folder: &Path, opts: &ImportOptions) -> Res
     // and fill its grid while the Import runs. A killed Import keeps what it finished;
     // importing again skips those as duplicates.
     let db = &lib.db;
-    db.execute(
-        "INSERT INTO shoots (name, source, imported_at) VALUES (?1, ?2, ?3)",
-        params![
-            crate::naming::shoot_slug(&shoot_name, None),
-            folder.to_string_lossy(),
-            now
-        ],
-    )
-    .map_err(db_err)?;
-    let shoot_id = db.last_insert_rowid();
+    let (shoot_id, already, earliest) = match &opts.resume {
+        Some(r) => {
+            let (n, first): (i64, Option<String>) = db
+                .query_row(
+                    "SELECT COUNT(*), MIN(captured_at) FROM photos WHERE shoot_id = ?1",
+                    [r.shoot_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(db_err)?;
+            (r.shoot_id, n as usize, first)
+        }
+        None => {
+            db.execute(
+                "INSERT INTO shoots (name, source, imported_at) VALUES (?1, ?2, ?3)",
+                params![
+                    crate::naming::shoot_slug(&shoot_name, None),
+                    folder.to_string_lossy(),
+                    now
+                ],
+            )
+            .map_err(db_err)?;
+            (db.last_insert_rowid(), 0, None)
+        }
+    };
+    if let Some(run) = opts.run {
+        let mut args = lib.run(run)?.args;
+        args["shoot_id"] = serde_json::json!(shoot_id);
+        if let Some(d) = &copy_dir {
+            args["copy_dir"] = serde_json::json!(store_path(&lib.root, d));
+        }
+        lib.set_run_args(run, &args)?;
+    }
     let mut tx = Some(db.unchecked_transaction().map_err(db_err)?);
     let mut flushed = Instant::now();
 
     let (send, recv) = mpsc::channel();
     let next = AtomicUsize::new(0);
-    let (mut imported, mut duplicates, mut failed) = (0, 0, Vec::new());
+    let (mut imported, mut duplicates, mut failed) = (0, 0usize, Vec::new());
     let mut camera_previews = 0;
-    let mut first_capture: Option<String> = None;
+    let mut first_capture: Option<String> = earliest;
+    let mut card_gone = false;
     // Cancel (`cancel_import`) stops handing out files; what landed stays imported.
     let stop = task.stop_flag();
     std::thread::scope(|s| -> Result<()> {
@@ -262,6 +318,13 @@ pub(super) fn run(lib: &mut Library, folder: &Path, opts: &ImportOptions) -> Res
                     }
                 }
                 Outcome::Duplicate => duplicates += 1,
+                // A read that failed because the folder is gone (the card ejected, or a
+                // reader unmounted by sleep) stops here: the rest waits for the card,
+                // rather than every remaining file failing.
+                Outcome::Failed(_) if !folder.is_dir() => {
+                    card_gone = true;
+                    stop.store(true, Ordering::Relaxed);
+                }
                 Outcome::Failed(f) => failed.push(f),
             }
         }
@@ -270,7 +333,7 @@ pub(super) fn run(lib: &mut Library, folder: &Path, opts: &ImportOptions) -> Res
     // Greg's naming rule: the Shoot's date first, no spaces (`2026-10-18_Boat-Trip`).
     let shoot_name = crate::naming::shoot_slug(&shoot_name, first_capture.as_deref());
     let tx = tx.unwrap();
-    if imported == 0 {
+    if imported + already == 0 {
         tx.execute("DELETE FROM shoots WHERE id = ?1", [shoot_id])
             .map_err(db_err)?;
     } else {
@@ -292,19 +355,21 @@ pub(super) fn run(lib: &mut Library, folder: &Path, opts: &ImportOptions) -> Res
     // The copy folder was named before Import knew which files were new, from every file's
     // date. Run again after a cancelled Import, the earlier frames are duplicates and the
     // Shoot is dated by the rest, so its folder follows the Shoot's name (a no-op otherwise).
-    if imported > 0 && copied_to.is_some() {
+    if imported + already > 0 && copied_to.is_some() {
         copied_to = lib.rename_shoot(shoot_id, &shoot_name)?.originals;
     }
 
     Ok(ImportReport {
-        shoot_id: (imported > 0).then_some(shoot_id),
+        shoot_id: (imported + already > 0).then_some(shoot_id),
         shoot_name,
         found: files.len(),
         imported,
         camera_previews,
-        duplicates,
+        duplicates: duplicates.saturating_sub(already),
         copied_to,
         failed,
+        card_gone,
+        resumed_with: opts.resume.is_some().then_some(already),
         scan_ms,
         process_ms: ms(t1),
         total_ms: ms(t0),
@@ -569,37 +634,49 @@ fn write_camera_preview(
 
 /// Write `data` into `dir` under its own name (`-2`, `-3`... on a clash), read it back and
 /// check its hash, so a bad copy fails the Photo instead of standing in for its original.
+/// It is written and checked under a hidden temporary name, then renamed, so a kill mid-copy
+/// (a quit, a crash) never leaves half an original under its real name.
 fn copy_verified(data: &[u8], hash: &str, dir: &Path, file_name: &str) -> Result<PathBuf> {
     let safe = naming::safe_file_name(file_name);
-    let dest = loop {
-        let candidate = dir.join(naming::unique_name(&safe, |n| dir.join(n).exists()));
-        // create_new claims the name, so parallel workers never write the same file.
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(_) => break candidate,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(Error(format!("copy to {}: {e}", candidate.display()))),
-        }
-    };
+    let tmp = dir.join(format!(
+        ".{safe}.{}{TMP_SUFFIX}",
+        &hash[..hash.len().min(12)]
+    ));
     let fail = |e: String| {
-        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&tmp);
         Error(e)
     };
     {
         use std::io::Write;
-        let mut f = std::fs::File::create(&dest).map_err(|e| fail(format!("copy: {e}")))?;
+        let mut f = std::fs::File::create(&tmp).map_err(|e| fail(format!("copy: {e}")))?;
         f.write_all(data)
             .and_then(|_| f.sync_all())
-            .map_err(|e| fail(format!("copy to {}: {e}", dest.display())))?;
+            .map_err(|e| fail(format!("copy to {}: {e}", tmp.display())))?;
     }
-    let back = std::fs::read(&dest).map_err(|e| fail(format!("verify copy: {e}")))?;
+    let back = std::fs::read(&tmp).map_err(|e| fail(format!("verify copy: {e}")))?;
     if blake3::hash(&back).to_hex().as_str() != hash {
         return Err(fail(format!("copy of {file_name} did not verify")));
     }
+    // One name picked and taken at a time, so parallel workers never take the same one.
+    static NAMING: Mutex<()> = Mutex::new(());
+    // lock-lint: ok, held only to pick a free name and rename into it.
+    let _one = NAMING.lock().unwrap_or_else(|e| e.into_inner());
+    let dest = dir.join(naming::unique_name(&safe, |n| dir.join(n).exists()));
+    std::fs::rename(&tmp, &dest).map_err(|e| fail(format!("copy to {}: {e}", dest.display())))?;
     Ok(dest)
+}
+
+/// What a copy interrupted part way leaves in a copy folder.
+const TMP_SUFFIX: &str = ".argus-tmp";
+
+/// Remove the temporary files an interrupted copy left in `dir`.
+fn clear_tmp(dir: &Path) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') && name.ends_with(TMP_SUFFIX) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Develop (RAW) or scale (JPEG) a Photo to a preview JPEG at `out`; returns the

@@ -118,7 +118,7 @@ impl Tools {
             "white_balance" => white_balance(&mut lib, parse(args)?, batch),
             "list_versions" => {
                 let a: PhotoArg = parse(args)?;
-                find_photo(&lib, a.photo_id)?;
+                lib.find_photo(a.photo_id)?;
                 one(lib.versions(a.photo_id)?)
             }
             "undo_batch" => {
@@ -150,7 +150,7 @@ impl Tools {
                 let under = photos_under(&lib, a.shoot_id, &a.look_id)?;
                 let batch = batch_or(&mut lib, batch, "Remove Look")?;
                 for &id in &under {
-                    let mut r = current_recipe(&lib, id)?;
+                    let mut r = lib.current_recipe(id)?;
                     r.look = None;
                     lib.write_recipe(id, &r.to_value(), Author::Ai, Some(batch))?;
                 }
@@ -162,7 +162,7 @@ impl Tools {
             }
             "apply_shoot_look" => {
                 let a: ApplyShootLook = parse(args)?;
-                let hero = find_photo(&lib, a.photo_id)?;
+                let hero = lib.find_photo(a.photo_id)?;
                 let batch = batch_or(&mut lib, batch, "Apply look to Shoot")?;
                 one(crate::shoot_look::apply(
                     &mut lib,
@@ -235,8 +235,8 @@ fn white_balance(lib: &mut Library, a: WhiteBalance, batch: Option<BatchId>) -> 
     }
     let mut next = Vec::new();
     for &id in &a.photo_ids {
-        let photo = find_photo(lib, id)?;
-        let own = current_recipe(lib, id)?;
+        let photo = lib.find_photo(id)?;
+        let own = lib.current_recipe(id)?;
         // The Correction's own white balance shift, in Temp steps.
         let corr = own.correction.wb_k / 25.0;
         let with = |temp: f64, tint: f64| {
@@ -246,7 +246,7 @@ fn white_balance(lib: &mut Library, a: WhiteBalance, batch: Option<BatchId>) -> 
             r
         };
         let render = |temp: f64, tint: f64| -> Result<crate::RgbImage> {
-            let r = with_look(lib, &photo, &with(temp, tint))?;
+            let r = lib.with_look(&photo, &with(temp, tint))?;
             render::render_in(lib, &photo, &r, Some(crate::auto::MEASURE_EDGE))
         };
         let (temp, tint) = match (&a.at, a.preset.as_deref()) {
@@ -298,7 +298,7 @@ fn white_balance(lib: &mut Library, a: WhiteBalance, batch: Option<BatchId>) -> 
 /// Put Photos under a Look by saving a Recipe Version that names it.
 fn assign_look(lib: &mut Library, ids: &[PhotoId], look: &str, batch: BatchId) -> Result<()> {
     for &id in ids {
-        let mut r = current_recipe(lib, id)?;
+        let mut r = lib.current_recipe(id)?;
         if r.look.as_deref() != Some(look) {
             r.look = Some(look.to_string());
             lib.write_recipe(id, &r.to_value(), Author::Ai, Some(batch))?;
@@ -387,7 +387,7 @@ fn set_look(lib: &mut Library, a: SetLook, batch: Option<BatchId>) -> Result<Vec
 fn photos_under(lib: &Library, shoot: ShootId, look: &str) -> Result<Vec<PhotoId>> {
     let mut out = Vec::new();
     for p in shoot_photos(lib, shoot)? {
-        if current_recipe(lib, p.id)?.look.as_deref() == Some(look) {
+        if lib.current_recipe(p.id)?.look.as_deref() == Some(look) {
             out.push(p.id);
         }
     }
@@ -404,8 +404,8 @@ pub(crate) struct Synced {
 }
 
 pub(crate) fn synced(lib: &Library, photo_id: PhotoId) -> Result<Synced> {
-    let photo = find_photo(lib, photo_id)?;
-    let r = current_recipe(lib, photo.id)?;
+    let photo = lib.find_photo(photo_id)?;
+    let r = lib.current_recipe(photo.id)?;
     let looks = lib.looks(photo.shoot_id)?;
     let current = r
         .look
@@ -442,13 +442,13 @@ fn sync_to_look(lib: &mut Library, a: SyncToLook, batch: Option<BatchId>) -> Res
         return one(json!({ "look": s.look, "created": s.created, "photos_under_look": s.under }));
     }
     let (photo, look) = (s.photo, s.look);
-    let mut r = current_recipe(lib, photo.id)?;
+    let mut r = lib.current_recipe(photo.id)?;
     let batch = batch_or(lib, batch, &format!("Sync to {}", look.name))?;
     // Left out: they keep how they look now, their old Look folded into their own sliders.
     for &id in a.keep_out.iter().filter(|&&id| id != photo.id) {
-        let own = current_recipe(lib, id)?;
+        let own = lib.current_recipe(id)?;
         if own.look.as_deref() == Some(look.id.as_str()) {
-            let mut flat = with_look(lib, &find_photo(lib, id)?, &own)?;
+            let mut flat = lib.with_look(&lib.find_photo(id)?, &own)?;
             flat.look = None;
             flat.global = flat.global.clamped();
             lib.write_recipe(id, &flat.to_value(), Author::Person, Some(batch))?;
@@ -482,7 +482,7 @@ fn paste_settings(
 ) -> Result<Vec<Part>> {
     let groups = crate::paste::groups(a.groups.as_deref())?;
     let next = pasted(lib, a.from, &a.photo_ids, &groups)?;
-    let src = find_photo(lib, a.from)?;
+    let src = lib.find_photo(a.from)?;
     let batch = batch_or(
         lib,
         batch,
@@ -510,19 +510,19 @@ pub(crate) fn pasted(
     if groups.is_empty() {
         return Err(Error("choose at least one settings group".into()));
     }
-    let src_photo = find_photo(lib, from)?;
-    let src = current_recipe(lib, src_photo.id)?;
+    let src_photo = lib.find_photo(from)?;
+    let src = lib.current_recipe(src_photo.id)?;
     let mut next = Vec::new();
     for &id in ids.iter().filter(|&&id| id != from) {
-        let photo = find_photo(lib, id)?;
-        let own = current_recipe(lib, id)?;
+        let photo = lib.find_photo(id)?;
+        let own = lib.current_recipe(id)?;
         let same_look = src.look == own.look && src_photo.shoot_id == photo.shoot_id;
         let mut r = if same_look || (src.look.is_none() && own.look.is_none()) {
             crate::paste::paste(&src, &own, groups)?
         } else {
-            let mut flat = with_look(lib, &photo, &own)?;
+            let mut flat = lib.with_look(&photo, &own)?;
             flat.look = None;
-            crate::paste::paste(&with_look(lib, &src_photo, &src)?, &flat, groups)?
+            crate::paste::paste(&lib.with_look(&src_photo, &src)?, &flat, groups)?
         };
         r.global = r.global.clamped();
         next.push((id, r));

@@ -25,7 +25,7 @@ interface EngineSuggestion {
 export interface QueueStatus {
   /** `stage` and `waiting` come from the process running the job: what it does right now,
    *  and what it waits on instead of working ("`argus cull` is using the model"). */
-  running: { id: number; kind: string; label: string; done: number; total: number; stage?: string; waiting?: string | null } | null;
+  running: { id: number; kind: string; label: string; done: number; total: number; stage?: string; waiting?: string | null; started_at?: string | null } | null;
   queued: number;
   failed: number;
   done_today: number;

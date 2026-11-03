@@ -460,6 +460,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     raw_only,
                     copy: copy || (!in_place && argus_engine::library::is_on_card(&folder)),
                     camera_previews: true,
+                    run: None,
+                    resume: None,
                 },
             )?;
             let mut out = serde_json::to_value(&report)?;
@@ -686,42 +688,22 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             drain,
             compute,
         } => {
-            use argus_engine::jobs::{self, Gate};
+            use argus_engine::jobs::{Rounds, Tick, TickOptions};
             let tools = Tools::new(&library);
-            let lib = Library::open(&library)?;
-            lib.requeue_stale_jobs()?;
+            Library::open(&library)?.requeue_stale_jobs()?;
             let pause = || std::thread::sleep(std::time::Duration::from_secs(2));
+            let mut rounds = Rounds::default();
+            let opts = TickOptions { drain, compute };
             loop {
-                let cfg = jobs::config(&lib).unwrap_or_default();
-                let (c, min, held, first) = if drain {
-                    (jobs::effective_compute(&cfg), i64::MIN, &[][..], Vec::new())
-                } else {
-                    match jobs::gate(&lib, &cfg) {
-                        Gate::Run {
-                            compute,
-                            min_priority,
-                            held,
-                            first,
-                        } => (compute, min_priority, held, first),
-                        Gate::Wait(why) if once => {
-                            eprintln!("argus work: {why}; nothing started (--drain runs anyway)");
-                            break;
-                        }
-                        Gate::Wait(_) => {
-                            pause();
-                            continue;
-                        }
+                match rounds.tick(&tools, opts)? {
+                    Tick::Ran { job, .. } => println!("{}", serde_json::to_string(&job)?),
+                    Tick::Wait(why) if once => {
+                        eprintln!("argus work: {why}; nothing started (--drain runs anyway)");
+                        break;
                     }
-                };
-                let ran = jobs::run_next_claim(&tools, compute.unwrap_or(c), min, held, &first)?;
-                if !first.is_empty() {
-                    argus_engine::prepare::settle(&lib)?;
-                }
-                match ran {
-                    Some(job) => println!("{}", serde_json::to_string(&job)?),
                     // --drain runs everything now, so an empty pick means the queue is done.
-                    None if once || drain => {
-                        let left = lib.queue_summary()?.queued;
+                    Tick::Held | Tick::Empty if once || drain => {
+                        let left = Library::open(&library)?.queue_summary()?.queued;
                         if left > 0 {
                             eprintln!(
                                 "argus work: {left} queued jobs wait for overnight, the charger \
@@ -730,7 +712,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         break;
                     }
-                    None => pause(),
+                    Tick::Wait(_) | Tick::Held | Tick::Empty => pause(),
                 }
             }
         }

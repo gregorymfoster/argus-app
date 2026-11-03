@@ -190,7 +190,7 @@ fn shoot_match_take(
         return Ok(None);
     };
     let lib = Library::open(tools.library())?;
-    let photo = crate::tools::find_photo(&lib, a.photo_id)?;
+    let photo = lib.find_photo(a.photo_id)?;
     let anchors = crate::shoot_match::anchors_of(&lib, photo.shoot_id, hero, photo.id)?;
     let Some((want, n)) = crate::shoot_match::sliders(&lib, &photo, &anchors)? else {
         return Ok(None);
@@ -210,15 +210,15 @@ pub fn shoot_match_recipe(
     base: &Recipe,
     want: &Adjust,
 ) -> Result<Recipe> {
-    let look = crate::tools::with_look(
-        lib,
-        photo,
-        &Recipe {
-            global: Adjust::default(),
-            ..base.clone()
-        },
-    )?
-    .global;
+    let look = lib
+        .with_look(
+            photo,
+            &Recipe {
+                global: Adjust::default(),
+                ..base.clone()
+            },
+        )?
+        .global;
     let mut r = base.clone();
     let g = &mut r.global;
     g.exposure = want.exposure - look.exposure;

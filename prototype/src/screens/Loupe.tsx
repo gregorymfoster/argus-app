@@ -21,6 +21,7 @@ import { keeperRank, keepersAt, keepersReset, movedUp, useKeepers } from '../dat
 import { Button } from '@/components/ui/button';
 import { Tip } from '../ui/kit';
 import { sortPhotos } from '../domain/sort';
+import { passesFilter, useGridFilter } from '../data/gridFilter';
 import { Agent } from '../agent/AgentPanel';
 import { eyeFlagsOf, useEyeFlags, usePhotoFacts, type FaceFacts } from '../data/facts';
 import { EyeBadges } from '../ui/EyeBadges';
@@ -58,7 +59,14 @@ export function LoupeScreen({ id }: { id: string }) {
   // Learn as you cull here too, so Keepers first re-orders the frames ahead while reviewing.
   useLearnAsYouCull(state, dispatch, true);
   const keepers = useKeepers();
-  const order = sortPhotos(PHOTOS.slice(0, state.imported), sort, { stars: (x) => starsOf(state, x).stars, verdict: (x) => verdictOf(state, x), keeper: keeperRank }).map((x) => x.id);
+  // The filmstrip and ← → walk only what the grid's filter shows, as Lightroom's filmstrip follows the
+  // Library filter. The open Photo stays in even once it no longer passes (just flagged out), until you move on.
+  const gf = useGridFilter();
+  const shown = PHOTOS.slice(0, state.imported).filter((x) => x.id === p.id || (passesFilter(state, x, gf) && gf.aiOk(x)));
+  const sorted = sortPhotos(shown, sort, { stars: (x) => starsOf(state, x).stars, verdict: (x) => verdictOf(state, x), keeper: keeperRank });
+  // Best Photos keep their rank order under Capture time, as in the grid.
+  if (gf.filter === 'best' && sort.key === 'capture') sorted.sort((a, b) => (a.best ?? 1e9) - (b.best ?? 1e9));
+  const order = sorted.map((x) => x.id);
   useEffect(() => keepersAt(p.id, order));
   void keepers.version;
   const keepersOn = sort.key === 'keepers';

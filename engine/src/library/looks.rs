@@ -2,7 +2,7 @@
 //! is undoable and every Photo whose Recipe names it follows the newest version.
 
 use super::{db_err, time, BatchId, Library, ShootId};
-use crate::recipe::Adjust;
+use crate::recipe::{Adjust, Recipe};
 use crate::{Error, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,18 @@ impl Library {
     /// The current version of one Look, or None.
     pub fn look(&self, shoot: ShootId, id: &str) -> Result<Option<Look>> {
         Ok(self.looks(shoot)?.into_iter().find(|l| l.id == id))
+    }
+
+    /// What the renderer sees: the Recipe with its Look's sliders underneath its own. A Look
+    /// this Shoot doesn't have (one from the prototype's demo set) is ignored.
+    pub fn with_look(&self, photo: &super::Photo, recipe: &Recipe) -> Result<Recipe> {
+        let mut r = recipe.clone();
+        if let Some(id) = &recipe.look {
+            if let Some(look) = self.look(photo.shoot_id, id)? {
+                r.global = look.adjust.plus(&recipe.global);
+            }
+        }
+        Ok(r)
     }
 
     /// Save a new version of a Look (creating it if its id is new).
