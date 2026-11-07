@@ -158,7 +158,8 @@ CREATE TABLE jobs (
   created_at  TEXT NOT NULL,
   started_at  TEXT,
   finished_at TEXT,
-  interrupted TEXT                    -- queued again part way: 'asleep' | 'quit'
+  interrupted TEXT,                   -- queued again part way: 'asleep' | 'quit'
+  pid         INTEGER                 -- the process running it; only a gone one's is requeued
 );
 CREATE INDEX jobs_by_status ON jobs(status, priority DESC, id);
 

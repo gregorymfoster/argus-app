@@ -72,6 +72,11 @@ impl Rounds {
             if let Err(e) = queue_due_backups(&mut lib) {
                 crate::logs::note(&format!("argus backups: {e}"));
             }
+            // A job another Argus process left running when it died (`argus work` killed
+            // while the app goes on): queued again, not stuck as running.
+            if let Err(e) = lib.requeue_stale_jobs() {
+                crate::logs::note(&format!("argus requeue: {e}"));
+            }
             // A run another Argus process left part way (`argus serve` killed mid-export),
             // or an Import paused for its card that is back.
             if let Err(e) = queue_orphaned_runs(&mut lib) {

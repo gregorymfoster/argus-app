@@ -172,11 +172,31 @@ fn io(path: &Path, e: std::io::Error) -> Error {
 /// Where a resumable Export writes a Photo ([`export_to`]).
 #[derive(Clone, Copy)]
 pub struct Slot<'a> {
-    /// The file name this Photo claimed before, reused while it is empty (a resumed run).
-    pub reuse: Option<&'a Path>,
+    /// The name a run recorded for this Photo before it was killed (a resumed run).
+    pub reuse: Option<Reuse<'a>>,
+    /// Told each name before `create_new` tries it, so a kill in between leaves nothing the
+    /// run doesn't know about.
+    pub intent: &'a dyn Fn(&Path) -> Result<()>,
     /// Told the name the Photo claims, before anything is written to it.
     pub claimed: &'a dyn Fn(&Path) -> Result<()>,
 }
+
+/// A name a run recorded before it was killed.
+#[derive(Clone, Copy)]
+pub enum Reuse<'a> {
+    /// Claimed: the name is the run's, whatever its files hold (a copy renamed into place
+    /// before its .xmp, say), so it is written again under the same name.
+    Claimed(&'a Path),
+    /// About to be claimed: the run's only while its files are missing or empty; a file
+    /// with bytes in it was already there, so the Photo claims another name.
+    Intent(&'a Path),
+}
+
+const NO_SLOT: Slot<'static> = Slot {
+    reuse: None,
+    intent: &|_| Ok(()),
+    claimed: &|_| Ok(()),
+};
 
 /// The temporary file a Photo is written to before it is renamed to `path`.
 pub fn tmp_of(path: &Path) -> PathBuf {
@@ -198,43 +218,61 @@ pub fn clear_unfinished(path: &Path) {
     let _ = std::fs::remove_file(tmp_of(path));
 }
 
-/// [`claim`], or the names `reuse` claimed before (the main file first), while they are
-/// still empty or missing.
-fn claim_again(
-    folder: &Path,
-    stem: &str,
-    exts: &[&str],
-    reuse: Option<&Path>,
-) -> Result<Vec<PathBuf>> {
-    if let Some(p) = reuse {
-        let paths: Vec<PathBuf> = exts.iter().map(|e| p.with_extension(e)).collect();
-        let fits =
-            p.parent() == Some(folder) && paths[0] == p && paths.iter().all(|q| !finished(q));
-        if fits {
-            for q in &paths {
-                OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(q)
-                    .map_err(|e| io(q, e))?;
+/// [`claim`], or the names a killed run recorded (the main file first): always when it had
+/// claimed them, and while they are missing or empty when it was only about to. Formal model:
+/// `formal/ExportRun.tla` (Top, Reopen).
+fn claim_again(folder: &Path, stem: &str, exts: &[&str], slot: Slot) -> Result<Vec<PathBuf>> {
+    let (p, claimed) = match slot.reuse {
+        Some(Reuse::Claimed(p)) => (p, true),
+        Some(Reuse::Intent(p)) => (p, false),
+        None => return claim(folder, stem, exts, slot.intent),
+    };
+    let paths: Vec<PathBuf> = exts.iter().map(|e| p.with_extension(e)).collect();
+    let fits = p.parent() == Some(folder)
+        && paths[0] == p
+        && (claimed || paths.iter().all(|q| !finished(q)));
+    if !fits {
+        return claim(folder, stem, exts, slot.intent);
+    }
+    for q in &paths {
+        // A missing file is opened the way `claim` would: create_new for a name only
+        // intended, so a file that appeared meanwhile is never shared.
+        let mut o = OpenOptions::new();
+        o.write(true);
+        if claimed {
+            o.create(true).truncate(false);
+        } else {
+            o.create_new(true);
+        }
+        match o.open(q) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && !finished(q) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return claim(folder, stem, exts, slot.intent)
             }
-            return Ok(paths);
+            Err(e) => return Err(io(q, e)),
         }
     }
-    claim(folder, stem, exts)
+    Ok(paths)
 }
 
 /// Claim free names `<stem>.<ext>` (or `<stem>-N.<ext>`, as `naming::unique_name` counts)
 /// for every extension at once, by creating them empty, which is atomic: two exports
 /// running side by side never get the same name. Returns the paths in `exts` order.
-fn claim(folder: &Path, stem: &str, exts: &[&str]) -> Result<Vec<PathBuf>> {
+/// `intent` hears each name (the main file's) before it is tried.
+fn claim(
+    folder: &Path,
+    stem: &str,
+    exts: &[&str],
+    intent: &dyn Fn(&Path) -> Result<()>,
+) -> Result<Vec<PathBuf>> {
     'next: for n in 1.. {
         let base = if n == 1 {
             stem.to_string()
         } else {
             format!("{stem}-{n}")
         };
+        intent(&folder.join(format!("{base}.{}", exts[0])))?;
         let mut claimed: Vec<PathBuf> = Vec::new();
         for ext in exts {
             let path = folder.join(format!("{base}.{ext}"));
@@ -280,16 +318,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// Export one Photo. `index` and `total` place it in the export, for sequence names.
 pub fn export(item: &Item, opts: &Options, index: usize, total: usize) -> Result<Exported> {
-    export_to(
-        item,
-        opts,
-        index,
-        total,
-        Slot {
-            reuse: None,
-            claimed: &|_| Ok(()),
-        },
-    )
+    export_to(item, opts, index, total, NO_SLOT)
 }
 
 /// [`export`], into `slot`: a resumable run's claimed name.
@@ -328,7 +357,7 @@ pub fn export_to(
                 .extension()
                 .map(|e| e.to_string_lossy().to_string())
                 .unwrap_or_else(|| "raw".into());
-            let paths = claim_again(folder, &stem_of(&ext), &[&ext, "xmp"], slot.reuse)?;
+            let paths = claim_again(folder, &stem_of(&ext), &[&ext, "xmp"], slot)?;
             (slot.claimed)(&paths[0])?;
             let (copy, xmp) = (&paths[0], &paths[1]);
             if same_file(copy, original) {
@@ -387,7 +416,7 @@ pub fn export_to(
                 Format::Heic => "heic",
                 _ => "tif",
             };
-            let path = claim_again(folder, &stem_of(ext), &[ext], slot.reuse)?.remove(0);
+            let path = claim_again(folder, &stem_of(ext), &[ext], slot)?.remove(0);
             (slot.claimed)(&path)?;
             if same_file(&path, original) {
                 return Err(Error("refusing to write over an original".into()));

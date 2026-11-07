@@ -58,7 +58,7 @@ pub use places::{
 pub use previews::PreviewReport;
 pub use ratings::{BestPhoto, CullState};
 pub use remove::{Removal, RemoveReport, RestoreReport, TRASH_FILE};
-pub use runs::{alive as process_alive, Run, RunId};
+pub use runs::{alive as process_alive, ItemState, Run, RunId};
 pub use scan::{find_cards, is_on_card, Card, Scan, ScanShoot, ScannedPhoto};
 pub use search::{Album, Hit as SearchHit};
 pub use shoots::{MoveTo, PhotoMoveReport, RenameReport};

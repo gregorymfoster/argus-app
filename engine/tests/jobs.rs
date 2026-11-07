@@ -797,6 +797,14 @@ fn queued_jobs_survive_a_quit_and_cancel_and_settings_stick() {
         json1(&tools, "queue_status", json!({}))["running"]["id"],
         b["job_id"]
     );
+    // The process that claimed it is gone.
+    rusqlite::Connection::open(tools.library().join("library.db"))
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET pid = ?2 WHERE id = ?1",
+            rusqlite::params![claimed.id, i32::MAX as i64 + 1],
+        )
+        .unwrap();
     assert_eq!(lib.requeue_stale_jobs().unwrap(), 1);
 
     assert_eq!(

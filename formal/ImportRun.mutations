@@ -1,0 +1,31 @@
+# Each mutation swaps a piece of ImportRun.tla for a plausible bug in the code it models and
+# names the rule that must break on it. `scripts/formal --mutations` must print DETECTED for each.
+
+# Before 2026-11-06: a copy renamed into place whose Photo row was still in the open
+# transaction (up to 500 ms of them) was copied again on resume, as -2, and the first stayed.
+mutation resume copies again a file whose copy is already in the folder
+detects OneCopyEach on copy NoStrayCopyWhenDone on copy
+-        ELSE IF Copied(i) # {}
++        ELSE IF FALSE
+
+mutation resume skips a file whose Photo row was not yet committed
+detects AllImportedWhenDone on copy
+-        ELSE IF row[i] # "none" THEN i' = i + 1 /\ UNCHANGED <<copy, tmp, row, slotOf, pc>>
++        ELSE IF row[i] # "none" \/ Copied(i) # {} THEN i' = i + 1 /\ UNCHANGED <<copy, tmp, row, slotOf, pc>>
+
+mutation the row is saved before the copy is renamed into place
+detects RowHasCopy on copy
+-     /\ tmp' = [tmp EXCEPT ![i] = "full"]
+-     /\ pc' = "rename"
++     /\ tmp' = [tmp EXCEPT ![i] = "full"]
++     /\ row' = [row EXCEPT ![i] = "saved"]
++     /\ slotOf' = [slotOf EXCEPT ![i] = Free(i)]
++     /\ pc' = "rename"
+-     /\ UNCHANGED <<copy, row, slotOf, up, i, crashes, finished>>
++     /\ UNCHANGED <<copy, up, i, crashes, finished>>
+
+mutation the copy is copied into place, not renamed, and its temporary file stays
+detects NoTmpWhenDone on copy
+-     /\ tmp' = [tmp EXCEPT ![i] = "none"]
+-     /\ UNCHANGED <<row, up, i, crashes, finished>>
++     /\ UNCHANGED <<tmp, row, up, i, crashes, finished>>

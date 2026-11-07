@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Keep the pstack plugin pin in .claude/settings.json current.
+
+    scripts/pstack-update          print the pinned and latest tags
+    scripts/pstack-update --warn   one line when a newer pstack is out (for `just check`; never fails)
+    scripts/pstack-update --bump   move the pin to the latest tag
+
+The latest tag comes from `git ls-remote` on the marketplace repo, at most once a day
+(cached in out/cache/pstack-latest), with a 10 s limit; offline it says so and exits 0.
+After a bump, read the new tag's changes for anything that fights CLAUDE.md (pstack is
+opt-in here, scripts/pstack-quiet.sh must still silence its session-start hook), then land.
+Python 3.9+ stdlib only.
+"""
+import json, os, re, subprocess, sys, time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SETTINGS = os.path.join(ROOT, ".claude", "settings.json")
+CACHE = os.path.join(ROOT, "out", "cache", "pstack-latest")
+DAY = 24 * 3600
+
+
+def pinned():
+    with open(SETTINGS) as f:
+        src = json.load(f)["extraKnownMarketplaces"]["pstack-claude"]["source"]
+    return src["repo"], src["ref"]
+
+
+def version(tag):
+    return tuple(int(n) for n in re.findall(r"\d+", tag))
+
+
+def latest(repo, fresh=False):
+    if not fresh and os.path.exists(CACHE) and time.time() - os.path.getmtime(CACHE) < DAY:
+        with open(CACHE) as f:
+            tag = f.read().strip()
+        if tag:
+            return tag
+    try:
+        out = subprocess.run(
+            ["git", "ls-remote", "--tags", f"https://github.com/{repo}"],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout
+    except (subprocess.SubprocessError, OSError):
+        return None
+    tags = {line.split("refs/tags/")[1].removesuffix("^{}") for line in out.splitlines() if "refs/tags/v" in line}
+    if not tags:
+        return None
+    tag = max(tags, key=version)
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    with open(CACHE, "w") as f:
+        f.write(tag + "\n")
+    return tag
+
+
+def main(argv):
+    mode = argv[0] if argv else ""
+    if mode not in ("", "--warn", "--bump"):
+        sys.exit(__doc__.strip().splitlines()[2].strip())
+    repo, ref = pinned()
+    new = latest(repo, fresh=mode == "--bump")
+    if new is None:
+        print(f"pstack: pinned {ref}; couldn't reach github.com/{repo} to check for a newer tag")
+        return 0 if mode != "--bump" else 1
+    behind = version(new) > version(ref)
+    if mode == "--warn":
+        if behind:
+            print(f"warning: pstack {new} is out (pinned {ref}); `just pstack-update` moves the pin")
+        return 0
+    if mode == "--bump":
+        if not behind:
+            print(f"pstack: already on the latest, {ref}")
+            return 0
+        with open(SETTINGS) as f:
+            text = f.read()
+        old = f'"ref": "{ref}"'
+        if text.count(old) != 1:
+            sys.exit(f"pstack: expected one {old} in .claude/settings.json")
+        with open(SETTINGS, "w") as f:
+            f.write(text.replace(old, f'"ref": "{new}"'))
+        print(f"pstack: {ref} -> {new}. Changes: https://github.com/{repo}/compare/{ref}...{new}")
+        print("Commit .claude/settings.json and land; new sessions pick up the new pin.")
+        return 0
+    print(f"pstack: pinned {ref}, latest {new}" + (" (behind)" if behind else " (current)"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

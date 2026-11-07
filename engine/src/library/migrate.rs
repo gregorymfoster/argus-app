@@ -31,6 +31,7 @@ const STEPS: &[Step] = &[
     v12_people,
     v13_cull_rounds,
     v14_resumable_runs,
+    v15_job_pid,
 ];
 
 /// The schema version this Argus writes.
@@ -235,6 +236,23 @@ fn v14_resumable_runs(tx: &Transaction, _root: &Path) -> Result<()> {
         &schema[schema.find("-- Resumable runs").expect("runs in schema")..]
             .replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "),
     )
+}
+
+/// Which process runs each job, so a second Argus on the Library never requeues a live
+/// one's job (formal/Queue.tla). An older Library's `jobs` may have it from `schema.sql`.
+fn v15_job_pid(tx: &Transaction, _root: &Path) -> Result<()> {
+    let has: bool = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'pid'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(db_err)?
+        > 0;
+    if has {
+        return Ok(());
+    }
+    sql(tx, "ALTER TABLE jobs ADD COLUMN pid INTEGER")
 }
 
 fn sql(tx: &Transaction, sql: &str) -> Result<()> {

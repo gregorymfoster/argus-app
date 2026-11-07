@@ -1,0 +1,37 @@
+# Each mutation swaps a piece of Queue.tla for a plausible bug in the code it models and names
+# the rule that must break on it. `scripts/formal --mutations` must print DETECTED for each.
+
+# Before 2026-11-06: a process starting on a Library requeued every running job, even one
+# another live process (the app, `argus work`) was running.
+mutation requeue_stale_jobs requeues every running job, whoever runs it
+detects NoDoubleRun on p2 RunnerSeesRunning on p2
+- Stale(p, j) == status[j] = "running" /\ (owner[j] = p \/ ~up[owner[j]])
++ Stale(p, j) == status[j] = "running"
+
+# Before 2026-11-06: enqueue_job read for a job with the same dedupe key, then inserted.
+mutation enqueue checks the dedupe key and inserts in two statements
+detects OneActivePerKey on p1
+-        ELSE status' = [status EXCEPT ![j] = "queued"] /\ UNCHANGED ins
++        ELSE ins' = [ins EXCEPT ![c] = j] /\ UNCHANGED status
+
+mutation the periodic requeue takes jobs a live process is running
+detects RunnerSeesRunning on p1
+-     /\ up[p] /\ \E j \in Jobs : status[j] = "running" /\ ~up[owner[j]]
+-     /\ status' = [j \in Jobs |-> IF status[j] = "running" /\ ~up[owner[j]] THEN "queued" ELSE status[j]]
++     /\ up[p] /\ \E j \in Jobs : status[j] = "running"
++     /\ status' = [j \in Jobs |-> IF status[j] = "running" THEN "queued" ELSE status[j]]
+
+mutation claim takes a job without checking it is still queued
+detects NoDoubleRun on p2
+-     /\ up[p] /\ work[p] = 0 /\ status[j] = "queued"
++     /\ up[p] /\ work[p] = 0 /\ status[j] \in Active
+
+mutation settle writes its outcome over a cancel
+detects CancelSticks on p1
+-     /\ status' = [status EXCEPT ![work[p]] = IF @ = "running" THEN to ELSE @]
++     /\ status' = [status EXCEPT ![work[p]] = to]
+
+mutation retry queues a failed job whose key already has one queued
+detects OneActivePerKey on p1
+-                        /\ ~\E k \in Jobs : Key[k] = Key[j] /\ status[k] \in Active
++                        /\ TRUE

@@ -3,9 +3,11 @@
 //! process left behind ([`Library::orphaned_runs`]) and the Queue finishes it from the Photo
 //! it reached (`resume_run`, [`crate::jobs`]).
 //!
-//! An Export claims each file's name before it writes ([`Library::claim_run_item`]), and
-//! writes through a temporary file renamed into place, so a resumed Export finds each file
-//! either whole under its name or not there yet, and writes it once.
+//! An Export records each name before it tries it ([`Library::intend_run_item`]), records
+//! it again once claimed ([`Library::claim_run_item`]), and writes through a temporary file
+//! renamed into place, so a resumed Export finds each file either whole under its name or
+//! not there yet, and writes it once under the name an uninterrupted run gives it. The TLA+
+//! model `formal/ExportRun.tla` checks this at every kill point (`export-resume` skill).
 
 use super::{db_err, time, Library, PhotoId};
 use crate::Result;
@@ -54,6 +56,28 @@ fn run(r: &Row) -> rusqlite::Result<Run> {
         updated_at: r.get(9)?,
         done: r.get(10)?,
     })
+}
+
+/// How far a run's Photo got (`run_items.done`: 2, 0, 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemState {
+    /// The name was about to be claimed: it may be missing, empty and this run's, or
+    /// another file that was already there.
+    Intent,
+    /// The name is this run's; its file may be empty, half written or whole.
+    Claimed,
+    /// The file is whole.
+    Done,
+}
+
+impl ItemState {
+    fn of(done: i64) -> Self {
+        match done {
+            1 => Self::Done,
+            2 => Self::Intent,
+            _ => Self::Claimed,
+        }
+    }
 }
 
 /// Whether process `pid` is still alive on this Mac.
@@ -142,8 +166,12 @@ impl Library {
             .map_err(db_err)
     }
 
-    /// A Photo of a run: the file it claimed, and whether that file is finished.
-    pub fn run_item(&self, id: RunId, photo: PhotoId) -> Result<Option<(Option<PathBuf>, bool)>> {
+    /// A Photo of a run: the file it claimed (or is about to), and how far it got.
+    pub fn run_item(
+        &self,
+        id: RunId,
+        photo: PhotoId,
+    ) -> Result<Option<(Option<PathBuf>, ItemState)>> {
         self.db
             .query_row(
                 "SELECT path, done FROM run_items WHERE run_id = ?1 AND photo_id = ?2",
@@ -151,7 +179,7 @@ impl Library {
                 |r| {
                     Ok((
                         r.get::<_, Option<String>>(0)?.map(PathBuf::from),
-                        r.get::<_, i64>(1)? == 1,
+                        ItemState::of(r.get(1)?),
                     ))
                 },
             )
@@ -175,6 +203,19 @@ impl Library {
             })
             .map_err(db_err)?;
         rows.collect::<std::result::Result<_, _>>().map_err(db_err)
+    }
+
+    /// Record the name a run's Photo is about to try, before `create_new` claims it, so a
+    /// kill in between leaves no empty file the run doesn't know about.
+    pub fn intend_run_item(&self, id: RunId, photo: PhotoId, path: &std::path::Path) -> Result<()> {
+        self.db
+            .execute(
+                "INSERT INTO run_items (run_id, photo_id, path, done) VALUES (?1, ?2, ?3, 2)
+                 ON CONFLICT (run_id, photo_id) DO UPDATE SET path = excluded.path, done = 2",
+                params![id, photo, path.to_string_lossy()],
+            )
+            .map(|_| ())
+            .map_err(db_err)
     }
 
     /// Record the file a run's Photo is about to be written to, before writing it.

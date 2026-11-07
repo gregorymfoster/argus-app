@@ -19,6 +19,9 @@ check:
     scripts/cached clippy {{rust_inputs}} -- scripts/progress clippy -- cargo clippy --workspace --all-targets --profile fast -- -D warnings
     scripts/cached test {{rust_inputs}} --in scripts/test-parallel -- scripts/progress test -- scripts/test-parallel --workspace --profile fast
     scripts/cached install-sh --in scripts/release/install.sh --in scripts/release/install.test.sh --in scripts/release/stamp-install.sh -- scripts/release/install.test.sh
+    # TLA+ models (docs/formal.md): every rule holds and each catches its mutation; reruns only when formal/ changes, then flags covered code past its sync commit.
+    scripts/cached formal --in formal --in scripts/formal -- sh -c 'scripts/formal && scripts/formal --mutations'
+    @scripts/formal --stale
     scripts/cached lock-lint --in engine/src --in cli/src --in app/src --in scripts/lock-lint.py -- python3 scripts/lock-lint.py
     # The UI's TypeScript, so a broken type in prototype/ fails the push and not the release build (~9 s, skipped when prototype/ is unchanged).
     scripts/cached prototype-npm --in prototype/package.json --in prototype/package-lock.json --out prototype/node_modules -- sh -c 'cd prototype && npm install --no-audit --no-fund --silent'
@@ -26,7 +29,12 @@ check:
     @sh -c 'bad=$(grep -rl "@tauri-apps" prototype/src | grep -vE "prototype/src/data/(backend|shell)[.]ts$"); [ -z "$bad" ] || { echo "seam-lint: only data/backend.ts (engine) and data/shell.ts (app shell) may import @tauri-apps: $bad"; exit 1; }'
     scripts/cached design-lint --in prototype/src --in prototype/scripts/design-lint.mjs --in prototype/scripts/design-lint-baseline.json -- node prototype/scripts/design-lint.mjs
     @scripts/progress slower
+    @scripts/pstack-update --warn
     @ls fixtures/raw/*.ARW >/dev/null 2>&1 || echo "warning: fixtures/raw is empty, so golden and RAW tests were SKIPPED (see CLAUDE.md for getting the RAWs)"
+
+# Move the pstack plugin pin in .claude/settings.json to its latest tag (`just check` warns when one is out).
+pstack-update:
+    scripts/pstack-update --bump
 
 # Render a RAW to out/<stem>.jpg (JPEG q90 by default) and print timings. e.g. `just render fixtures/raw/DSC03945.ARW --long-edge 2048`
 render file *args:

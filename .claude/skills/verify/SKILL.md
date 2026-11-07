@@ -12,6 +12,7 @@ ADR 0005: every change is checkable by Claude without a human. Pick the narrowes
 | Changed | Narrowest proof | Time (warm) | Runs |
 | --- | --- | --- | --- |
 | Engine logic, a tool, a command | `cargo test --profile fast --test engine <module>::<name>` (modules in `engine/tests/`) | 5-20 s | both |
+| Export or Import resume, the Queue (jobs claim, requeue, dedupe), anything a TLA+ model covers | `scripts/formal` and `--mutations` (every kill point and interleaving; the model's skill, `docs/formal.md`), then `--test engine resume::` | 11 s + 10 s | both (needs Java) |
 | Pipeline, colour, a slider's look | `just render <raw> --set k=v`, then open `out/<stem>.jpg`; goldens via `--test engine golden::` | 2-10 s | both |
 | Deliberate pipeline change | `bless-goldens` skill | 1 min | both |
 | A Mask | `argus tool view_mask '{...}' --library L --out m.jpg`, `--test engine masks::` | 10 s | both |

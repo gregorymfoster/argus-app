@@ -1,6 +1,7 @@
 //! Export tool.
 
 use super::*;
+use crate::library::ItemState;
 
 pub(super) fn specs() -> Vec<ToolSpec> {
     let ids = json!({ "type": "array", "items": { "type": "integer" }, "minItems": 1 });
@@ -180,11 +181,14 @@ fn export_photos(lib: &Library, a: ExportPhotos) -> Result<Vec<Part>> {
                 .and_then(|(p, done)| p.map(|p| (p, done))),
             None => None,
         };
-        if let (Some(run), Some((path, done))) = (a.run_id, &before) {
-            let whole = export::finished(path)
+        // A name only intended may hold a file that was there before: never taken as done.
+        if let (Some(run), Some((path, state))) = (a.run_id, &before) {
+            let done = *state == ItemState::Done;
+            let whole = *state == ItemState::Claimed
+                && export::finished(path)
                 && (opts.format != export::Format::Original
                     || export::finished(&path.with_extension("xmp")));
-            if *done || whole {
+            if done || whole {
                 if !done {
                     lib.finish_run_item(run, photo.id, path)?;
                 }
@@ -205,8 +209,16 @@ fn export_photos(lib: &Library, a: ExportPhotos) -> Result<Vec<Part>> {
             Some(run) => lib.claim_run_item(run, photo.id, p),
             None => Ok(()),
         };
+        let intent = |p: &Path| match a.run_id {
+            Some(run) => lib.intend_run_item(run, photo.id, p),
+            None => Ok(()),
+        };
         let slot = export::Slot {
-            reuse: before.as_ref().map(|(p, _)| p.as_path()),
+            reuse: before.as_ref().map(|(p, state)| match state {
+                ItemState::Intent => export::Reuse::Intent(p),
+                _ => export::Reuse::Claimed(p),
+            }),
+            intent: &intent,
             claimed: &claimed,
         };
         // One Photo failing (its drive offline, say) doesn't stop the rest, as in Lightroom.

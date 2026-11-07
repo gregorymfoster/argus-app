@@ -158,6 +158,8 @@ impl Library {
     }
 
     /// Queue a job. With a `dedupe_key` already queued or running, returns that job instead.
+    /// The check and the insert are one statement, so two threads or processes queueing the
+    /// same work at once make one job (formal/Queue.tla).
     pub fn enqueue_job(
         &mut self,
         kind: &str,
@@ -166,35 +168,41 @@ impl Library {
         label: &str,
         dedupe_key: Option<&str>,
     ) -> Result<(JobId, bool)> {
-        if let Some(key) = dedupe_key {
+        loop {
+            let n = self
+                .db
+                .execute(
+                    "INSERT INTO jobs (kind, args, priority, dedupe_key, label, status, created_at)
+                     SELECT ?1, ?2, ?3, ?4, ?5, 'queued', ?6
+                     WHERE ?4 IS NULL OR NOT EXISTS (SELECT 1 FROM jobs
+                       WHERE dedupe_key = ?4 AND status IN ('queued', 'running'))",
+                    params![
+                        kind,
+                        args.to_string(),
+                        priority,
+                        dedupe_key,
+                        label,
+                        time::now()
+                    ],
+                )
+                .map_err(db_err)?;
+            if n == 1 {
+                return Ok((self.db.last_insert_rowid(), true));
+            }
             let existing: Option<JobId> = self
                 .db
                 .query_row(
                     "SELECT id FROM jobs WHERE dedupe_key = ?1 AND status IN ('queued', 'running')",
-                    [key],
+                    [dedupe_key],
                     |r| r.get(0),
                 )
                 .optional()
                 .map_err(db_err)?;
+            // None: that job finished in between, so queue this one after all.
             if let Some(id) = existing {
                 return Ok((id, false));
             }
         }
-        self.db
-            .execute(
-                "INSERT INTO jobs (kind, args, priority, dedupe_key, label, status, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6)",
-                params![
-                    kind,
-                    args.to_string(),
-                    priority,
-                    dedupe_key,
-                    label,
-                    time::now()
-                ],
-            )
-            .map_err(db_err)?;
-        Ok((self.db.last_insert_rowid(), true))
     }
 
     /// Raise a queued job's priority to at least `priority`. Returns whether one was raised.
@@ -275,8 +283,8 @@ impl Library {
         // Another process may have taken it between the read and the write.
         let took = tx
             .execute(
-                "UPDATE jobs SET status = 'running', started_at = ?2, interrupted = NULL WHERE id = ?1 AND status = 'queued'",
-                params![j.id, now],
+                "UPDATE jobs SET status = 'running', started_at = ?2, interrupted = NULL, pid = ?3 WHERE id = ?1 AND status = 'queued'",
+                params![j.id, now, std::process::id() as i64],
             )
             .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
@@ -462,14 +470,35 @@ impl Library {
         rows.collect::<std::result::Result<_, _>>().map_err(db_err)
     }
 
-    /// Put jobs a quit or crash left running back in the queue. Returns how many.
+    /// Put jobs a quit or crash left running back in the queue: those whose process is
+    /// gone. A job another live Argus process runs (the app beside `argus work`) stays its,
+    /// or both would run it (formal/Queue.tla). Safe to call any time. Returns how many.
     pub fn requeue_stale_jobs(&self) -> Result<usize> {
-        self.db
-            .execute(
-                "UPDATE jobs SET status = 'queued', started_at = NULL, interrupted = 'quit' WHERE status = 'running'",
-                [],
-            )
-            .map_err(db_err)
+        let mut q = self
+            .db
+            .prepare("SELECT id, pid FROM jobs WHERE status = 'running'")
+            .map_err(db_err)?;
+        let running: Vec<(JobId, Option<i64>)> = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db_err)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(db_err)?;
+        let mut n = 0;
+        for (id, pid) in running {
+            if pid.is_some_and(super::process_alive) {
+                continue;
+            }
+            // Still the same claim: not taken again since the read.
+            n += self
+                .db
+                .execute(
+                    "UPDATE jobs SET status = 'queued', started_at = NULL, interrupted = 'quit'
+                     WHERE id = ?1 AND status = 'running' AND pid IS ?2",
+                    params![id, pid],
+                )
+                .map_err(db_err)?;
+        }
+        Ok(n)
     }
 
     /// Put a running job back in the queue, keeping how far it got, with why it stopped

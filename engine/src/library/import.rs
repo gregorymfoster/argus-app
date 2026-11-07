@@ -636,8 +636,28 @@ fn write_camera_preview(
 /// check its hash, so a bad copy fails the Photo instead of standing in for its original.
 /// It is written and checked under a hidden temporary name, then renamed, so a kill mid-copy
 /// (a quit, a crash) never leaves half an original under its real name.
+///
+/// A copy of the same content already under one of those names is the one an interrupted
+/// Import renamed in before its Photo row was committed (rows land every [`FLUSH_EVERY`]):
+/// it is reused, never copied again as `-2` (formal/ImportRun.tla, Adopt).
 fn copy_verified(data: &[u8], hash: &str, dir: &Path, file_name: &str) -> Result<PathBuf> {
     let safe = naming::safe_file_name(file_name);
+    let taken = std::cell::RefCell::new(Vec::new());
+    naming::unique_name(&safe, |n| {
+        let p = dir.join(n);
+        let there = p.exists();
+        if there {
+            taken.borrow_mut().push(p);
+        }
+        there
+    });
+    for p in taken.into_inner() {
+        let same = std::fs::metadata(&p).is_ok_and(|m| m.len() == data.len() as u64)
+            && std::fs::read(&p).is_ok_and(|d| blake3::hash(&d).to_hex().as_str() == hash);
+        if same {
+            return Ok(p);
+        }
+    }
     let tmp = dir.join(format!(
         ".{safe}.{}{TMP_SUFFIX}",
         &hash[..hash.len().min(12)]

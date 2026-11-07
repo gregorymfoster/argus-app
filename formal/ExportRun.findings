@@ -1,0 +1,5 @@
+# Rules the current code breaks, found by the ExportRun model. Each line is
+# CONFIG RULE FINDING. `scripts/formal` checks these still break (and says when one is fixed:
+# then delete its line) and that every other rule holds. Read one: scripts/formal --trace CFG RULE.
+#
+# F1 and F2 (2026-11-06) are fixed; see .claude/skills/export-resume.

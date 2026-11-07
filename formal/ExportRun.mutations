@@ -1,0 +1,48 @@
+# Each mutation swaps a piece of ExportRun.tla for a plausible bug in the code it models and
+# names the rule that must break on it, on a config where that rule holds today.
+# `scripts/formal --mutations` must print DETECTED for every one.
+
+mutation claim opens a name that is already there instead of create_new
+detects ForeignKept on jpeg
+-     /\ IF file[i][slot][e] = "absent"
++     /\ IF file[i][slot][e] \in {"absent", "foreign"}
+
+mutation resume trusts a non-empty file at a name it only intended to claim
+detects DoneIsWhole on jpeg
+-                 whole == it.st = "claimed" /\ \A x \in Exts : Finished(file[i][it.slot][x])
++                 whole == it.st # "none" /\ \A x \in Exts : Finished(file[i][it.slot][x])
+
+mutation resume skips any Photo that has a row, finished or not
+detects DoneIsWhole on jpeg
+-             IN IF it.st = "done" \/ whole
++             IN IF it.st # "none"
+
+mutation put writes the claimed name in place, with no temporary file
+detects NeverHalfWritten on jpeg
+-     /\ UNCHANGED file
+-     /\ UNCHANGED <<item, run, up, i, slot, e, claimed, crashes>>
++     /\ file' = [file EXCEPT ![i][slot][e] = "partial"]
++     /\ UNCHANGED <<item, run, up, i, slot, e, claimed, crashes>>
+
+mutation Stop leaves the temporary file of the Photo it was writing
+detects NoTmpWhenStopped on jpeg
+-     /\ tmp' = [p \in Photos |-> [s \in Slots |-> [x \in Exts |->
+-                  IF Unfinished(p) /\ s = item[p].slot THEN "absent" ELSE tmp[p][s][x]]]]
++     /\ tmp' = tmp
+
+mutation the run is marked done before its last Photo
+detects AllExportedWhenDone on jpeg
+-     /\ IF i > N
++     /\ IF i > N - 1
+
+# Bug F1 as it was before 2026-11-06: a claimed name was reused only while all its files were empty.
+mutation resume reuses a claimed name only while every file there is empty
+detects OneCopy on original NoTmpWhenDone on original
+-                 fits  == \/ it.st = "claimed"
++                 fits  == \/ it.st = "claimed" /\ \A x \in Exts : ~Finished(file[i][it.slot][x])
+
+# Bug F2 as it was before 2026-11-06: the name was recorded only after create_new.
+mutation claim records nothing before create_new
+detects KeepsItsName on jpeg NoEmptyNameWhenStopped on jpeg NoEmptyNameWhenDone on jpeg
+-     /\ item' = [item EXCEPT ![i] = [slot |-> slot, st |-> "intent"]]
++     /\ UNCHANGED item

@@ -206,6 +206,118 @@ fn a_file_renamed_into_place_just_before_the_kill_is_not_written_twice() {
     assert_eq!(names(&out), ["2026-10-18_Tahoe_DSC00.jpg"]);
 }
 
+/// A run over one Photo, `settings` as its Export; returns the run id.
+fn start_export(l: &Lib, settings: &Value) -> i64 {
+    json1(
+        &l.tools,
+        "start_run",
+        json!({ "kind": "export", "args": { "photo_ids": l.ids, "export": settings } }),
+    )["run_id"]
+        .as_i64()
+        .unwrap()
+}
+
+/// Every file in `dir` with its size.
+fn sizes(dir: &Path) -> Vec<(String, u64)> {
+    names(dir)
+        .into_iter()
+        .map(|n| {
+            let len = std::fs::metadata(dir.join(&n)).unwrap().len();
+            (n, len)
+        })
+        .collect()
+}
+
+// Found by the TLA+ model (formal/ExportRun.tla, finding F1, 2026-11-06).
+#[test]
+fn an_original_killed_between_its_copy_and_its_xmp_is_not_exported_twice() {
+    let l = library(1);
+    let out = l.tmp.path().join("out");
+    let settings = json!({ "folder": out, "format": "original", "shoot_folder": false });
+    let run = start_export(&l, &settings);
+    let mut a = settings.clone();
+    a["photo_ids"] = json!(l.ids);
+    let copy = PathBuf::from(
+        json1(&l.tools, "export_photos", a)["exported"][0]["path"]
+            .as_str()
+            .unwrap(),
+    );
+    // The copy was renamed into place; its .xmp was still the empty claimed name.
+    std::fs::write(copy.with_extension("xmp"), b"").unwrap();
+    Library::open(&l.root)
+        .unwrap()
+        .claim_run_item(run, l.ids[0], &copy)
+        .unwrap();
+    orphan(&l.root, run);
+    assert_eq!(start_again(&l.root), 1);
+    jobs::run_next(&l.tools, Compute::Gentle).unwrap().unwrap();
+    let got = sizes(&out);
+    assert_eq!(
+        got.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["2026-10-18_Tahoe_DSC00.JPG", "2026-10-18_Tahoe_DSC00.xmp"]
+    );
+    assert!(got.iter().all(|(_, len)| *len > 0), "{got:?}");
+}
+
+// Found by the TLA+ model (formal/ExportRun.tla, finding F2, 2026-11-06).
+#[test]
+fn a_name_claimed_just_before_the_kill_is_kept_not_left_empty_beside_a_dash_2() {
+    for created in [true, false] {
+        let l = library(1);
+        let out = l.tmp.path().join("out");
+        let settings = json!({ "folder": out, "long_edge": 64, "shoot_folder": false });
+        let run = start_export(&l, &settings);
+        // The name was recorded as about to be claimed; the kill came just after create_new
+        // made it (created) or just before.
+        let name = out.join("2026-10-18_Tahoe_DSC00.jpg");
+        std::fs::create_dir_all(&out).unwrap();
+        if created {
+            std::fs::write(&name, b"").unwrap();
+        }
+        Library::open(&l.root)
+            .unwrap()
+            .intend_run_item(run, l.ids[0], &name)
+            .unwrap();
+        orphan(&l.root, run);
+        assert_eq!(start_again(&l.root), 1);
+        jobs::run_next(&l.tools, Compute::Gentle).unwrap().unwrap();
+        let got = sizes(&out);
+        assert_eq!(got.len(), 1, "created {created}: {got:?}");
+        assert_eq!(got[0].0, "2026-10-18_Tahoe_DSC00.jpg");
+        assert!(got[0].1 > 0);
+    }
+}
+
+#[test]
+fn a_file_of_the_persons_at_a_name_only_intended_is_never_taken_as_the_export() {
+    let l = library(1);
+    let out = l.tmp.path().join("out");
+    let settings = json!({ "folder": out, "long_edge": 64, "shoot_folder": false });
+    let run = start_export(&l, &settings);
+    let theirs = out.join("2026-10-18_Tahoe_DSC00.jpg");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(&theirs, b"the person's own file").unwrap();
+    // Killed after recording the name and before create_new found it taken.
+    Library::open(&l.root)
+        .unwrap()
+        .intend_run_item(run, l.ids[0], &theirs)
+        .unwrap();
+    orphan(&l.root, run);
+    assert_eq!(start_again(&l.root), 1);
+    let job = jobs::run_next(&l.tools, Compute::Gentle).unwrap().unwrap();
+    assert_eq!(
+        job.result.as_ref().unwrap()["exported"],
+        1,
+        "{:?}",
+        job.result
+    );
+    assert_eq!(std::fs::read(&theirs).unwrap(), b"the person's own file");
+    assert_eq!(
+        names(&out),
+        ["2026-10-18_Tahoe_DSC00-2.jpg", "2026-10-18_Tahoe_DSC00.jpg"]
+    );
+}
+
 #[test]
 fn a_stopped_export_clears_the_file_it_was_writing_and_keeps_the_whole_ones() {
     let l = library(2);
@@ -310,6 +422,48 @@ fn an_import_killed_part_way_finishes_into_the_same_shoot_and_copy_folder() {
     assert_eq!(json1(&tools, "list_runs", json!({})), json!([]));
 }
 
+// Found by the TLA+ model (formal/ImportRun.tla, 2026-11-06): Photo rows are committed every
+// 500 ms, so a kill could leave a copy renamed into place with no row, and the resumed Import
+// copied it again as -2.
+#[test]
+fn an_import_killed_after_a_copy_but_before_its_row_was_saved_does_not_copy_it_twice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    for i in 0..3u8 {
+        write_jpeg(&card.join(format!("DSC0{i}.JPG")), i * 2 + 3);
+    }
+    let root = tmp.path().join("library");
+    let tools = Tools::new(root.clone());
+    let mut lib = Library::open(&root).unwrap();
+    let tool = json!({ "folder": card, "shoot_name": "Tahoe", "copy": true });
+    let run = lib
+        .start_run("import", "Importing Tahoe", &json!({ "tool": tool }), 0)
+        .unwrap();
+    let report = lib
+        .import(
+            &card,
+            &ImportOptions {
+                shoot_name: Some("Tahoe".into()),
+                files: Some(vec![card.join("DSC00.JPG")]),
+                copy: true,
+                run: Some(run),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let copy_dir = root.join(report.copied_to.unwrap());
+    // DSC01 was copied and renamed into place; the kill came before its row was committed.
+    std::fs::copy(card.join("DSC01.JPG"), copy_dir.join("DSC01.JPG")).unwrap();
+    drop(lib);
+    orphan(&root, run);
+    assert_eq!(start_again(&root), 1);
+    let job = jobs::run_next(&tools, Compute::Gentle).unwrap().unwrap();
+    assert_eq!(job.status, JobStatus::Done, "{:?}", job.error);
+    assert_eq!(names(&copy_dir), ["DSC00.JPG", "DSC01.JPG", "DSC02.JPG"]);
+    let photos = json1(&tools, "list_photos", json!({}));
+    assert_eq!(photos.as_array().unwrap().len(), 3, "{photos}");
+}
+
 #[test]
 fn an_import_whose_card_is_gone_waits_for_it_and_carries_on_when_it_is_back() {
     let tmp = tempfile::tempdir().unwrap();
@@ -373,6 +527,64 @@ fn a_job_that_fails_across_a_sleep_waits_to_run_again_instead_of_failing() {
     assert_eq!(lib.job(id).unwrap().status, JobStatus::Failed);
 }
 
+/// The process that claimed job `id` is gone (the app quit or crashed).
+fn dead_claimer(root: &Path, id: i64) {
+    let db = rusqlite::Connection::open(root.join("library.db")).unwrap();
+    db.execute(
+        "UPDATE jobs SET pid = ?2 WHERE id = ?1",
+        rusqlite::params![id, i32::MAX as i64 + 1],
+    )
+    .unwrap();
+}
+
+// Found by the TLA+ model (formal/Queue.tla, 2026-11-06): `argus work` starting on the
+// Library the app was working requeued the app's running job, and then ran it a second time.
+#[test]
+fn a_second_argus_starting_on_the_library_leaves_a_live_processs_job_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut lib = Library::open(tmp.path()).unwrap();
+    let (id, _) = jobs::enqueue(&mut lib, "learn_edits", &json!({}), None, None).unwrap();
+    lib.claim_job().unwrap().unwrap();
+    // Another process opens the Library and starts its Worker.
+    let mut other = Library::open(tmp.path()).unwrap();
+    assert_eq!(other.requeue_stale_jobs().unwrap(), 0);
+    assert_eq!(other.job(id).unwrap().status, JobStatus::Running);
+    assert!(other.claim_job().unwrap().is_none(), "nothing to run twice");
+}
+
+// Found by the TLA+ model (formal/Queue.tla, 2026-11-06): two threads queueing the same
+// work at once both saw no job with its dedupe key, and both inserted one.
+#[test]
+fn the_same_work_queued_from_many_threads_at_once_is_one_job() {
+    let tmp = tempfile::tempdir().unwrap();
+    Library::open(tmp.path()).unwrap();
+    let root = tmp.path().to_path_buf();
+    let ids: Vec<i64> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..8)
+            .map(|_| {
+                let root = root.clone();
+                s.spawn(move || {
+                    let mut lib = Library::open(&root).unwrap();
+                    (0..20)
+                        .map(|_| {
+                            lib.enqueue_job("learn_edits", &json!({}), 0, "Learn", Some("k"))
+                                .unwrap()
+                                .0
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    assert!(ids.iter().all(|&i| i == ids[0]), "{ids:?}");
+    let lib = Library::open(&root).unwrap();
+    assert_eq!(
+        lib.jobs(Some(JobStatus::Queued), None, 100).unwrap().len(),
+        1
+    );
+}
+
 #[test]
 fn a_job_a_quit_left_running_is_queued_again_and_says_so() {
     let tmp = tempfile::tempdir().unwrap();
@@ -380,6 +592,9 @@ fn a_job_a_quit_left_running_is_queued_again_and_says_so() {
     let (id, _) = jobs::enqueue(&mut lib, "learn_edits", &json!({}), None, None).unwrap();
     lib.claim_job().unwrap().unwrap();
     lib.job_progress(id, 3, 10).unwrap();
+    // While the process that claimed it lives, it stays its.
+    assert_eq!(lib.requeue_stale_jobs().unwrap(), 0);
+    dead_claimer(tmp.path(), id);
     assert_eq!(lib.requeue_stale_jobs().unwrap(), 1);
     let j = lib.job(id).unwrap();
     assert_eq!(

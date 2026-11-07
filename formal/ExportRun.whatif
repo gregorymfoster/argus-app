@@ -1,0 +1,3 @@
+# Proposed fixes, checked in the model before anyone changes the code. Each block names the
+# findings it should clear (format as in ExportRun.mutations, with `fix` and `clears`).
+# `scripts/formal --whatif` prints CLEARS or STILL BROKEN. None open.

@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Model-check Argus's formal models (formal/*.tla) with TLC, the TLA+ model checker.
+`docs/formal.md` lists the models and the skill that keeps each in step with its code.
+
+    scripts/formal                     every rule of every model holds, or is a known finding
+    scripts/formal --trace CFG RULE    the shortest path to a broken RULE, step by step
+    scripts/formal --mutations         each rule fails on the bug it guards (formal/*.mutations)
+    scripts/formal --whatif            each proposed fix (formal/*.whatif) clears its findings
+    scripts/formal --stale             code a model covers that changed since its sync commit
+
+A model is formal/SPEC.tla with one or more configs formal/SPEC-CFG.cfg; CFG above means
+SPEC-CFG (e.g. ExportRun-jpeg). Each config lists its rules under INVARIANTS. Rules the
+code breaks today are listed in formal/SPEC.findings (CFG RULE FINDING per line).
+Mutations and what-ifs are blocks of `mutation|fix TITLE`, `detects|clears RULE on CFG ...`,
+then `- ` lines of SPEC.tla swapped for `+ ` lines. The skill naming the model in its
+`model:` line holds its coverage record (`sync:` commit, `- covers:` paths). Sanity rules
+(TypeOK, *Suffice: the model's bounds are big enough) need no mutation.
+
+TLC is tla2tools 1.7.4 (the version pstack's /statechart pins), downloaded once into
+~/.cache/argus and checked by sha256. Needs Java 11+; without it this prints a note and exits
+0 unless ARGUS_FORMAL_STRICT=1. Python 3.9+ stdlib only.
+"""
+import concurrent.futures as cf, glob, hashlib, os, re, shutil, subprocess, sys, tempfile, urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FORMAL = os.path.join(ROOT, "formal")
+TLC_VERSION = "1.7.4"
+TLC_URL = f"https://github.com/tlaplus/tlaplus/releases/download/v{TLC_VERSION}/tla2tools.jar"
+TLC_SHA = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+WORKERS = max(1, min(4, os.cpu_count() or 1))
+
+
+def tlc_jar():
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "argus")
+    jar = os.path.join(cache, f"tla2tools-{TLC_VERSION}.jar")
+    if os.path.exists(jar):
+        return jar
+    os.makedirs(cache, exist_ok=True)
+    print(f"formal: downloading TLC {TLC_VERSION} (once)", flush=True)
+    data = urllib.request.urlopen(TLC_URL, timeout=120).read()
+    if hashlib.sha256(data).hexdigest() != TLC_SHA:
+        sys.exit("formal: tla2tools.jar checksum mismatch")
+    with open(jar + ".part", "wb") as f:
+        f.write(data)
+    os.replace(jar + ".part", jar)
+    return jar
+
+
+def java():
+    j = os.environ.get("JAVA") or shutil.which("java")
+    if j and subprocess.run([j, "-version"], capture_output=True).returncode == 0:
+        return j
+    return None
+
+
+def specs():
+    return sorted(os.path.basename(p)[:-4] for p in glob.glob(os.path.join(FORMAL, "*.tla")))
+
+
+def configs(spec=None):
+    """Every config name, SPEC-CFG."""
+    out = []
+    for s in [spec] if spec else specs():
+        out += sorted(os.path.basename(p)[:-4] for p in glob.glob(os.path.join(FORMAL, f"{s}-*.cfg")))
+    return out
+
+
+def spec_of(cfg):
+    return cfg.split("-", 1)[0]
+
+
+def cfg_text(cfg):
+    path = os.path.join(FORMAL, cfg + ".cfg")
+    if not os.path.exists(path):
+        sys.exit(f"formal: no config {cfg} (have {', '.join(configs())})")
+    return open(path).read()
+
+
+def rules(cfg):
+    text = re.sub(r"\\\*.*", "", cfg_text(cfg))
+    return text.split("INVARIANTS", 1)[1].split() if "INVARIANTS" in text else []
+
+
+def sanity(rule):
+    return rule == "TypeOK" or rule.endswith("Suffice")
+
+
+def findings():
+    """{(cfg, rule): finding} from every formal/SPEC.findings."""
+    out = {}
+    for spec in specs():
+        path = os.path.join(FORMAL, spec + ".findings")
+        if not os.path.exists(path):
+            continue
+        for line in open(path):
+            line = line.split("#", 1)[0].split()
+            if line:
+                out[(f"{spec}-{line[0]}", line[1])] = line[2]
+    return out
+
+
+def tlc(cfg, only, spec_text=None):
+    """Run TLC on CFG checking only the rules in ONLY. Returns (broken rules, output)."""
+    spec = spec_of(cfg)
+    head = cfg_text(cfg).split("INVARIANTS", 1)[0]
+    with tempfile.TemporaryDirectory(prefix="argus-formal-") as d:
+        with open(os.path.join(d, spec + ".tla"), "w") as f:
+            f.write(spec_text if spec_text is not None else open(os.path.join(FORMAL, spec + ".tla")).read())
+        with open(os.path.join(d, "run.cfg"), "w") as f:
+            f.write(head + "INVARIANTS\n" + "".join(f"    {r}\n" for r in only))
+        # Each run gets its own java.io.tmpdir: TLC unpacks its standard modules there, and
+        # side-by-side runs sharing /tmp raced on Naturals.tla (a parse error, 1 run in ~20).
+        cmd = [JAVA, "-XX:+UseParallelGC", f"-Djava.io.tmpdir={d}", "-cp", JAR, "tlc2.TLC", "-workers", "1",
+               "-deadlock", "-metadir", os.path.join(d, "states"), "-config", "run.cfg", spec + ".tla"]
+        p = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=600)
+    out = p.stdout + p.stderr
+    broken = re.findall(r"Invariant (\w+) is violated", out)
+    if not broken and "Model checking completed. No error has been found." not in out:
+        sys.exit(f"formal: TLC failed on {cfg} (a modeling error, not a finding):\n{out[-3000:]}")
+    return set(broken), out
+
+
+def check():
+    known = findings()
+    jobs = []
+    for cfg in configs():
+        all_rules = rules(cfg)
+        passing = [r for r in all_rules if (cfg, r) not in known]
+        jobs.append((cfg, passing, "pass"))
+        jobs += [(cfg, [r], "finding") for r in all_rules if (cfg, r) in known]
+    bad = []
+    with cf.ThreadPoolExecutor(WORKERS) as pool:
+        for (cfg, only, want), (broken, _) in zip(jobs, pool.map(lambda j: tlc(j[0], j[1]), jobs)):
+            f = known.get((cfg, only[0])) if want == "finding" else None
+            if want == "pass" and broken:
+                bad += [f"{cfg}: {r} broke (new). Read it: scripts/formal --trace {cfg} {r}" for r in sorted(broken)]
+            elif want == "finding" and not broken:
+                bad.append(f"{cfg}: {only[0]} now holds; finding {f} is fixed, delete its line in formal/{spec_of(cfg)}.findings")
+            elif want == "finding":
+                print(f"formal: {cfg}: {only[0]} still broken (known finding {f})")
+    for b in bad:
+        print("formal: " + b)
+    if not bad:
+        print(f"formal: ok, {len(specs())} models, {len(configs())} configs ({len(jobs)} TLC runs)")
+    return 1 if bad else 0
+
+
+def show_trace(cfg, rule):
+    broken, out = tlc(cfg, [rule])
+    if rule not in broken:
+        print(f"formal: {rule} holds on {cfg}")
+        return 0
+    steps = re.findall(r"^State (\d+): <(\w+)[^>]*>\n(.*?)(?=^State \d+:|\Z|^\d+ states generated)", out, re.M | re.S)
+    print(f"Shortest path to a broken {rule} on {cfg} (the actions are mapped to code in formal/{spec_of(cfg)}.tla's header):")
+    prev = {}
+    for n, action, body in steps:
+        state = dict(re.findall(r"^/\\ (\w+) = (.*?)(?=^/\\ |\Z)", body, re.M | re.S))
+        state = {k: " ".join(v.split()) for k, v in state.items()}
+        print(f"{n:>3}. {action}")
+        for k, v in state.items():
+            if prev.get(k) != v:
+                print(f"       {k}: {describe(cfg, k, v)}")
+        prev = state
+    return 0
+
+
+def describe(cfg, k, v):
+    """ExportRun's file and tmp in the folder's words: DSC1-2.jpg empty. Other values as TLC prints them."""
+    if spec_of(cfg) != "ExportRun" or k not in ("file", "tmp"):
+        return v
+    exts = ["ARW", "xmp"] if cfg.endswith("original") else ["jpg"]
+    out = []
+    for p, photo in enumerate(re.split(r">> >>, << <<", v.strip()[6:-6]), 1):
+        for s, slot in enumerate(photo.split(">>, <<"), 1):
+            for x, st in enumerate(re.findall(r'"(\w+)"', slot)):
+                if st != "absent":
+                    name = f"DSC{p}{'' if s == 1 else f'-{s}'}.{exts[x]}"
+                    out.append(f"{name if k == 'file' else '.' + name + '.argus-tmp'} {st}")
+    return ", ".join(out) or "none"
+
+
+def blocks(path):
+    """Mutation or what-if blocks: {title, rules: [(rule, cfg)], minus, plus}."""
+    out, cur = [], None
+    for raw in open(path):
+        line = raw.rstrip("\n")
+        if line.startswith("#") or not line.strip():
+            continue
+        m = re.match(r"(mutation|fix) (.*)", line)
+        if m:
+            cur = {"title": m.group(2), "rules": [], "minus": [], "plus": []}
+            out.append(cur)
+        elif re.match(r"(detects|clears) ", line):
+            words = line.split()
+            cur["rules"] += [(words[i], words[i + 2]) for i in range(1, len(words), 3) if words[i + 1] == "on"]
+        elif line.startswith("- "):
+            cur["minus"].append(line[2:])
+        elif line.startswith("+ "):
+            cur["plus"].append(line[2:])
+    return out
+
+
+def apply(spec, text, b):
+    old, new = "\n".join(b["minus"]) + "\n", "\n".join(b["plus"]) + "\n"
+    if text.count(old) != 1:
+        sys.exit(f"formal: '{b['title']}': its - lines match {text.count(old)} times in {spec}.tla (need 1)")
+    return text.replace(old, new)
+
+
+def mutations(kind):
+    ext = "mutations" if kind == "mutation" else "whatif"
+    jobs = []
+    for spec in specs():
+        path = os.path.join(FORMAL, f"{spec}.{ext}")
+        if not os.path.exists(path):
+            if kind == "mutation":
+                sys.exit(f"formal: {spec} has no formal/{spec}.mutations: every rule needs a bug it catches")
+            continue
+        text = open(os.path.join(FORMAL, spec + ".tla")).read()
+        for b in blocks(path):
+            mutated = apply(spec, text, b)
+            for rule, cfg in b["rules"]:
+                jobs.append((b, rule, f"{spec}-{cfg}", mutated))
+    bad = 0
+    with cf.ThreadPoolExecutor(WORKERS) as pool:
+        res = pool.map(lambda j: tlc(j[2], [j[1]], j[3])[0], jobs)
+        for (b, rule, cfg, _), broken in zip(jobs, res):
+            ok = (rule in broken) if kind == "mutation" else (rule not in broken)
+            verb = ("DETECTED" if ok else "MISSED") if kind == "mutation" else ("CLEARS" if ok else "STILL BROKEN")
+            print(f"formal: {verb:<12} {rule} on {cfg}: {b['title']}")
+            bad += not ok
+    if kind == "mutation":
+        caught = {(spec_of(cfg), rule) for (_, rule, cfg, _) in jobs}
+        for spec in specs():
+            for rule in sorted({r for c in configs(spec) for r in rules(c)}):
+                if not sanity(rule) and (spec, rule) not in caught:
+                    print(f"formal: UNTESTED     {rule} in {spec}: no mutation shows it can fail")
+                    bad += 1
+    return 1 if bad else 0
+
+
+def stale():
+    for skill in sorted(glob.glob(os.path.join(ROOT, ".claude/skills/*/SKILL.md"))):
+        text = open(skill).read()
+        model = re.search(r"^model: (\w+)", text, re.M)
+        if not model:
+            continue
+        sync = re.search(r"^sync: (\w+)", text, re.M).group(1)
+        covers = re.findall(r"^- covers: (\S+)", text, re.M)
+        changed = subprocess.run(["git", "diff", "--name-only", sync, "--", *covers],
+                                 cwd=ROOT, capture_output=True, text=True).stdout.split()
+        if changed:
+            name = os.path.basename(os.path.dirname(skill))
+            print(f"formal: code the {model.group(1)} model covers changed since its sync commit {sync[:9]}: "
+                  f"{' '.join(changed)}. Check the model still describes it (skill {name}), then move its sync commit.")
+    return 0
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if args[:1] == ["--stale"]:
+        sys.exit(stale())
+    JAVA = java()
+    if not JAVA:
+        print("formal: no Java, so the TLA+ models were SKIPPED (brew install openjdk, or set JAVA)")
+        sys.exit(1 if os.environ.get("ARGUS_FORMAL_STRICT") == "1" else 0)
+    JAR = tlc_jar()
+    if args[:1] == ["--trace"] and len(args) == 3:
+        sys.exit(show_trace(args[1], args[2]))
+    if args == ["--mutations"]:
+        sys.exit(mutations("mutation"))
+    if args == ["--whatif"]:
+        sys.exit(mutations("fix"))
+    if args:
+        sys.exit(__doc__.strip())
+    sys.exit(check())

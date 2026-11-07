@@ -771,7 +771,10 @@ try {
     await p.screenshot({ path: `${out}live-search-palette.png` });
     await p.keyboard.press('ControlOrMeta+Enter');
     await p.waitForURL(/#\/cull/).catch(() => {});
-    await p.waitForSelector('[data-testid^="tile-"]', { timeout: 15000 }).catch(() => {});
+    // The search grid asks the engine for the matches; under the release gate's load (five
+    // checks side by side on four cores) that took over 15 s once, so wait for its header.
+    await p.waitForSelector('.found-line', { timeout: 30000 }).catch(() => {});
+    await p.waitForSelector('[data-testid^="tile-"]', { timeout: 30000 }).catch(() => {});
     await settle(500, async () => { const tiles = await p.locator('[data-testid^="tile-"]').count(); return tiles >= 2 && tiles < photos.length + 1; });
     const tiles = await p.locator('[data-testid^="tile-"]').count();
     check(tiles >= 2 && tiles < photos.length + 1, `⌘↵ opens the matches in the grid (${tiles} tiles)`);
